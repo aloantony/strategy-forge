@@ -1,9 +1,0 @@
-version: '3.8'
-services:
-  trading-agent:
-    build: .
-    env_file:
-      - env/.env.example
-    volumes:
-      - ./src:/app/src
-    command: ["python", "-m", "src.pipeline.daily_runner"] 

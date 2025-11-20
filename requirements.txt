@@ -2,4 +2,6 @@ pandas
 numpy
 yfinance
 alpaca-trade-api
-python-dotenv 
+python-dotenv
+protobuf>=4.24
+tabulate
