@@ -1,7 +1,4 @@
+MetaTrader5
 pandas
-numpy
-yfinance
-alpaca-trade-api
-python-dotenv
-protobuf>=4.24
-tabulate
+matplotlib
+customtkinter
