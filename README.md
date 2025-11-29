@@ -1,42 +1,64 @@
-# IC Markets cTrader – Data Layer MVP
+# Bot de Trading MetaTrader 5
 
-This module demonstrates a minimal but real connection to IC Markets via the official cTrader Open API. It focuses on streaming and fetching 3‑minute OHLC candles that can be plugged into later strategy/risk components.
+Bot de trading modular y escalable para MetaTrader 5 que implementa una estrategia basada en bandas dinámicas con ATR.
 
-## What is implemented
-- Base `BrokerAPI` interface and `Candle` model (`broker_api/base.py`).
-- Concrete IC Markets connector backed by the official Spotware Open API protobuf messages (`broker_api/icmarkets_ctrader.py`).
-- Up-aggregation helper to build higher timeframes from lower ones (`broker_api/aggregation.py`).
-- CLI demo with `historical` and `stream` commands (`main.py`).
+## Estructura del Proyecto
 
-## Credentials and configuration
-Obtain client credentials and a trading account access token from the official cTrader Open API portal: https://help.ctrader.com/open-api/
+- `config.py` - Configuración del bot (símbolo, timeframe, parámetros de trading, etc.)
+- `mt5_connection.py` - Gestión de conexión con MetaTrader 5
+- `data_feed.py` - Obtención y procesamiento de datos de mercado
+- `strategy_baseline.py` - Lógica de la estrategia de trading
+- `trading.py` - Gestión de órdenes y posiciones
+- `main.py` - Bucle principal del bot
 
-Set the following environment variables (add them to a `.env` file for local runs):
-- `CTRADER_CLIENT_ID`
-- `CTRADER_CLIENT_SECRET`
-- `CTRADER_ACCESS_TOKEN`
-- `CTRADER_ACCOUNT_ID` (CTID numeric account id; if omitted the first account linked to the token is used)
-- `CTRADER_HOST` (optional, defaults to `demo.ctraderapi.com`)
-- `CTRADER_PORT` (optional, defaults to `5035`)
-- `CTRADER_USE_TLS` (optional, defaults to `true`)
-- `DEFAULT_SYMBOL` (optional, defaults to `DE40`)
+## Estrategia
 
-## Quick start
-Install dependencies:
+La estrategia utiliza:
+- **Source**: OHLC4, HLC3, HL2 o CLOSE (configurable)
+- **Average**: Media móvil simple sobre el source
+- **Bandas**: Average ± (ATR × multiplicador)
+- **Señales**:
+  - **Compra**: Cuando `Dir_1` cambia a 1 (L_Set > Upper)
+  - **Venta**: Cuando `Dir_1` cambia a -1 (H_Set < Lower)
+
+## Requisitos
+
+- MetaTrader 5 instalado y ejecutándose
+- Cuenta de trading configurada en MT5
+- Python 3.7+
+
+## Instalación
+
 ```bash
 pip install -r requirements.txt
 ```
 
-Fetch historical candles:
+## Configuración
+
+Edita `config.py` para ajustar:
+- `SYMBOL`: Símbolo a operar (ej: "DE40" para DAX)
+- `TIMEFRAME`: Timeframe de las velas
+- `SOURCE_MODE`: Fuente de precio ("OHLC4", "HLC3", "HL2", "CLOSE")
+- `MA_LENGTH`: Longitud de la media móvil
+- `ATR_LENGTH`: Longitud del ATR
+- `ATR_MULT`: Multiplicador del ATR para las bandas
+- `LOT`: Tamaño de la posición
+- `SL_POINTS`: Stop Loss en puntos
+- `TP_POINTS`: Take Profit en puntos
+- `MAGIC_NUMBER`: Número mágico para identificar órdenes del bot
+
+## Uso
+
 ```bash
-python main.py historical --symbol DE40 --timeframe 3m --limit 100
+python main.py
 ```
 
-Stream closed 3m candles in real time:
-```bash
-python main.py stream --symbol DE40 --timeframe 3m
-```
+El bot se ejecutará en un bucle continuo, analizando el mercado y ejecutando operaciones según las señales generadas.
 
-## Notes
-- Trendbar and authentication messages follow the official Spotware Open API protobuf definitions (bundled under `src/ctrader_open_api/messages`).
-- If the broker does not provide the requested timeframe natively, the connector can subscribe to a lower timeframe (e.g., 1m) and aggregate upward using `aggregate_to_timeframe`.
+Para detener el bot, presiona `Ctrl+C`.
+
+## Notas
+
+- Asegúrate de que MetaTrader 5 esté abierto y conectado antes de ejecutar el bot
+- El bot opera en modo demo o real según la cuenta configurada en MT5
+- Revisa y ajusta los parámetros de riesgo antes de usar en cuenta real
