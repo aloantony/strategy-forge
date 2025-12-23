@@ -59,3 +59,5 @@ gui/
 4. Mejorar tooltips con CustomTkinter
 5. Aplicar tema moderno
 
+
+

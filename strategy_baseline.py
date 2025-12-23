@@ -4,6 +4,13 @@ Lógica de la estrategia de trading.
 
 import pandas as pd
 import config
+from datetime import datetime
+
+
+def log_strategy(message: str):
+    """Imprime mensaje de estrategia con timestamp."""
+    timestamp = datetime.now().strftime("%H:%M:%S")
+    print(f"[{timestamp}] [ESTRATEGIA] {message}")
 
 
 def compute_dir1_and_signals(df: pd.DataFrame, enable_signals: bool) -> pd.DataFrame:
@@ -56,26 +63,60 @@ def compute_dir1_and_signals(df: pd.DataFrame, enable_signals: bool) -> pd.DataF
     return df
 
 
-def get_last_signal(df: pd.DataFrame) -> str:
+def get_last_signal(df: pd.DataFrame, verbose: bool = True) -> str:
     """
-    Obtiene la última señal de la penúltima fila (última vela cerrada).
+    Obtiene la señal basada en la dirección actual de Dir_1.
+    
+    MODO MVP/DEMO: Genera señal basada en la tendencia actual,
+    no solo cuando hay cambio de dirección.
     
     Args:
-        df: DataFrame con columnas up_sig, dn_sig.
+        df: DataFrame con columnas dir1.
+        verbose: Si True, imprime información detallada.
     
     Returns:
         str: "buy", "sell" o "none".
     """
     if len(df) < 2:
+        if verbose:
+            log_strategy("No hay suficientes datos (< 2 velas)")
         return "none"
     
     # Penúltima fila (última vela cerrada)
     last_closed_idx = len(df) - 2
+    row = df.iloc[last_closed_idx]
     
-    if df.loc[last_closed_idx, 'up_sig']:
+    if verbose:
+        # Mostrar análisis detallado
+        print("\n" + "="*60)
+        log_strategy("ANALISIS DE SENALES (MODO MVP)")
+        print("="*60)
+        print(f"   [VELA] Analizada: {row['time']}")
+        print(f"   [PRECIO] OHLC4: {row['h_set']:.2f}")
+        print(f"   [UPPER] Banda superior: {row['upper']:.2f}")
+        print(f"   [LOWER] Banda inferior: {row['lower']:.2f}")
+        print(f"   [MA] Average: {row['average']:.2f}")
+        print()
+        
+        # Estado de Dir_1
+        dir1_current = row['dir1']
+        dir1_names = {1: "ALCISTA (+1)", -1: "BAJISTA (-1)", 0: "NEUTRAL (0)"}
+        print(f"   [DIR1] Direccion actual: {dir1_names.get(dir1_current, dir1_current)}")
+        print()
+    
+    # MODO MVP: Señal basada en dirección actual
+    dir1_current = row['dir1']
+    
+    if dir1_current == 1:
+        if verbose:
+            log_strategy(">>> SENAL BUY - Tendencia ALCISTA <<<")
         return "buy"
-    elif df.loc[last_closed_idx, 'dn_sig']:
+    elif dir1_current == -1:
+        if verbose:
+            log_strategy(">>> SENAL SELL - Tendencia BAJISTA <<<")
         return "sell"
     else:
+        if verbose:
+            log_strategy("Sin senal - Tendencia NEUTRAL")
         return "none"
 

@@ -2,3 +2,4 @@ MetaTrader5
 pandas
 matplotlib
 customtkinter
+lightweight-charts

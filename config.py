@@ -4,7 +4,8 @@ Contiene todas las constantes de configuración.
 """
 
 # Símbolo a operar
-SYMBOL = "DE40"  # Placeholder para DAX
+# SYMBOL = "DE40"  # DAX - cerrado en festivos
+SYMBOL = "EURUSD"  # Forex - abierto 24/5 (ideal para demo)
 
 # Timeframe
 TIMEFRAME = None  # Se establecerá como mt5.TIMEFRAME_M1 en main.py
@@ -22,7 +23,7 @@ MAGIC_NUMBER = 123456
 SOURCE_MODE = "OHLC4"  # "OHLC4" | "HLC3" | "HL2" | "CLOSE"
 MA_LENGTH = 20
 ATR_LENGTH = 14
-ATR_MULT = 2.0
+ATR_MULT = 0.5  # Reducido de 2.0 para generar señales más frecuentes
 
 # Habilitar señales
 ENABLE_SIGNALS = True
