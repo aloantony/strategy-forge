@@ -4,8 +4,8 @@ Contiene todas las constantes de configuración.
 """
 
 # Símbolo a operar
-# SYMBOL = "DE40"  # DAX - cerrado en festivos
-SYMBOL = "EURUSD"  # Forex - abierto 24/5 (ideal para demo)
+SYMBOL = "DE40"  # DAX - cerrado en festivos
+# SYMBOL = "EURUSD"  # Forex - abierto 24/5 (ideal para demo)
 
 # Timeframe
 TIMEFRAME = None  # Se establecerá como mt5.TIMEFRAME_M1 en main.py
