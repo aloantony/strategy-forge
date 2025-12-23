@@ -135,9 +135,9 @@ def close_position(symbol: str, magic_number: int):
             
             result = mt5.order_send(request)
             if result.retcode != mt5.TRADE_RETCODE_DONE:
-                print(f"   ❌ Error al cerrar posición: {result.retcode} - {result.comment}")
+                print(f"   [ERROR] Error al cerrar posicion: {result.retcode} - {result.comment}")
             else:
-                print(f"   ✅ Posición cerrada exitosamente:")
+                print(f"   [OK] Posicion cerrada exitosamente:")
                 print(f"      Ticket: {position.ticket}")
                 print(f"      Profit final: {position.profit:.2f}")
 
@@ -197,9 +197,9 @@ def send_order(symbol: str, direction: int, lot: float, sl_points: float, tp_poi
     
     result = mt5.order_send(request)
     if result.retcode != mt5.TRADE_RETCODE_DONE:
-        print(f"   ❌ Error al enviar orden: {result.retcode} - {result.comment}")
+        print(f"   [ERROR] Error al enviar orden: {result.retcode} - {result.comment}")
     else:
-        print(f"   ✅ Orden ejecutada exitosamente:")
+        print(f"   [OK] Orden ejecutada exitosamente:")
         print(f"      Ticket: {result.order}")
         print(f"      Precio: {price:.2f}")
         print(f"      Volumen: {lot} lotes")
@@ -219,37 +219,54 @@ def apply_signal(symbol: str, signal: str, lot: float, sl_points: float, tp_poin
         tp_points: Take Profit en puntos.
         magic_number: Magic number de las órdenes.
     """
+    timestamp = datetime.now().strftime("%H:%M:%S")
+    
+    print("\n" + "!"*60)
+    print(f"[{timestamp}] >>> EJECUTANDO SENAL: {signal.upper()} <<<")
+    print("!"*60)
+    
     if signal == "none":
+        print(f"   [SKIP] Senal 'none' - No se requiere accion")
         return
     
     current_direction = get_open_position_direction(symbol, magic_number)
     position_info = get_position_info(symbol, magic_number)
     
+    print(f"   [SYMBOL] Simbolo: {symbol}")
+    print(f"   [SIGNAL] Senal recibida: {signal.upper()}")
+    print(f"   [POS] Posicion actual: {'BUY' if current_direction == 1 else 'SELL' if current_direction == -1 else 'NINGUNA'}")
+    print(f"   [LOT] Lote: {lot}")
+    print(f"   [SL] Stop Loss: {sl_points} puntos")
+    print(f"   [TP] Take Profit: {tp_points} puntos")
+    print()
+    
     if signal == "buy":
         if current_direction == 0:
             # No hay posición, abrir largo
-            print(f"   → No hay posición abierta. Abriendo posición BUY...")
+            print(f"   >>> ACCION: Abriendo nueva posicion BUY...")
             send_order(symbol, 1, lot, sl_points, tp_points, magic_number)
         elif current_direction == -1:
             # Hay corto, cerrar y abrir largo
-            print(f"   → Posición SELL abierta (Ticket: {position_info['ticket']}, Profit: {position_info['profit']:.2f}).")
-            print(f"   → Cerrando SELL y abriendo BUY...")
+            print(f"   [CLOSE] Cerrando SELL (Ticket: {position_info['ticket']}, Profit: {position_info['profit']:.2f})")
+            print(f"   >>> ACCION: Abriendo nueva posicion BUY...")
             close_position(symbol, magic_number)
             send_order(symbol, 1, lot, sl_points, tp_points, magic_number)
         else:
-            print(f"   → Ya existe posición BUY (Ticket: {position_info['ticket']}). No se requiere acción.")
+            print(f"   [SKIP] Ya existe posicion BUY (Ticket: {position_info['ticket']}). No se requiere accion.")
     
     elif signal == "sell":
         if current_direction == 0:
             # No hay posición, abrir corto
-            print(f"   → No hay posición abierta. Abriendo posición SELL...")
+            print(f"   >>> ACCION: Abriendo nueva posicion SELL...")
             send_order(symbol, -1, lot, sl_points, tp_points, magic_number)
         elif current_direction == 1:
             # Hay largo, cerrar y abrir corto
-            print(f"   → Posición BUY abierta (Ticket: {position_info['ticket']}, Profit: {position_info['profit']:.2f}).")
-            print(f"   → Cerrando BUY y abriendo SELL...")
+            print(f"   [CLOSE] Cerrando BUY (Ticket: {position_info['ticket']}, Profit: {position_info['profit']:.2f})")
+            print(f"   >>> ACCION: Abriendo nueva posicion SELL...")
             close_position(symbol, magic_number)
             send_order(symbol, -1, lot, sl_points, tp_points, magic_number)
         else:
-            print(f"   → Ya existe posición SELL (Ticket: {position_info['ticket']}). No se requiere acción.")
+            print(f"   [SKIP] Ya existe posicion SELL (Ticket: {position_info['ticket']}). No se requiere accion.")
+    
+    print("!"*60 + "\n")
 

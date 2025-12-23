@@ -31,13 +31,13 @@ def print_market_status(df, signal):
     print("="*80)
     
     # Información de la última vela cerrada
-    print(f"\n📊 ÚLTIMA VELA CERRADA:")
+    print(f"\n[VELA] ULTIMA VELA CERRADA:")
     print(f"   Time: {last_closed['time']}")
     print(f"   OHLC: O={last_closed['open']:.2f} H={last_closed['high']:.2f} "
           f"L={last_closed['low']:.2f} C={last_closed['close']:.2f}")
     
     # Valores calculados
-    print(f"\n📈 VALORES CALCULADOS (Source: {config.SOURCE_MODE}):")
+    print(f"\n[CALC] VALORES CALCULADOS (Source: {config.SOURCE_MODE}):")
     print(f"   H_Set: {last_closed['h_set']:.2f}")
     print(f"   L_Set: {last_closed['l_set']:.2f}")
     print(f"   Average: {last_closed['average']:.2f}")
@@ -49,33 +49,33 @@ def print_market_status(df, signal):
     # Estado de Dir_1
     dir1_prev = df.iloc[last_closed_idx - 1]['dir1'] if last_closed_idx > 0 else 0
     dir1_current = last_closed['dir1']
-    dir1_str = "🟢 +1 (Alcista)" if dir1_current == 1 else "🔴 -1 (Bajista)" if dir1_current == -1 else "⚪ 0 (Neutral)"
-    print(f"\n🎯 ESTADO DE DIR_1:")
+    dir1_str = "[+] ALCISTA" if dir1_current == 1 else "[-] BAJISTA" if dir1_current == -1 else "[0] NEUTRAL"
+    print(f"\n[DIR1] ESTADO DE DIR_1:")
     print(f"   Anterior: {dir1_prev}")
     print(f"   Actual: {dir1_current} {dir1_str}")
     
     # Condiciones de la estrategia
-    print(f"\n🔍 CONDICIONES:")
+    print(f"\n[COND] CONDICIONES:")
     print(f"   L_Set > Upper? {last_closed['l_set']:.2f} > {last_closed['upper']:.2f} = {last_closed['l_set'] > last_closed['upper']}")
     print(f"   H_Set < Lower? {last_closed['h_set']:.2f} < {last_closed['lower']:.2f} = {last_closed['h_set'] < last_closed['lower']}")
     
     # Señales
-    print(f"\n🚦 SEÑALES:")
+    print(f"\n[SIG] SENALES:")
     print(f"   Up_Sig: {last_closed['up_sig']}")
     print(f"   Dn_Sig: {last_closed['dn_sig']}")
-    print(f"   Señal detectada: {signal.upper() if signal != 'none' else 'NINGUNA'}")
+    print(f"   Senal detectada: {signal.upper() if signal != 'none' else 'NINGUNA'}")
     
     # Estado de posiciones
     position_dir = trading.get_open_position_direction(config.SYMBOL, config.MAGIC_NUMBER)
     position_info = trading.get_position_info(config.SYMBOL, config.MAGIC_NUMBER)
-    position_str = "🟢 BUY" if position_dir == 1 else "🔴 SELL" if position_dir == -1 else "⚪ SIN POSICIÓN"
-    print(f"\n💼 POSICIÓN ACTUAL: {position_str}")
+    position_str = "[+] BUY" if position_dir == 1 else "[-] SELL" if position_dir == -1 else "[0] SIN POSICION"
+    print(f"\n[POS] POSICION ACTUAL: {position_str}")
     if position_info:
         print(f"   Ticket: {position_info['ticket']}")
         print(f"   Precio apertura: {position_info['price_open']:.2f}")
         print(f"   Precio actual: {position_info['price_current']:.2f}")
         print(f"   Volumen: {position_info['volume']} lotes")
-        print(f"   Profit: {position_info['profit']:.2f} {'🟢' if position_info['profit'] >= 0 else '🔴'}")
+        print(f"   Profit: {position_info['profit']:.2f} {'(+)' if position_info['profit'] >= 0 else '(-)'}")
         if position_info['sl'] > 0:
             print(f"   SL: {position_info['sl']:.2f}")
         if position_info['tp'] > 0:
@@ -126,15 +126,15 @@ def run_bot_loop():
                 
                 # 7) Mostrar estado del mercado
                 if market_open:
-                    print(f"\n🟢 ESTADO DEL MERCADO: {market_status_msg}")
+                    print(f"\n[OK] ESTADO DEL MERCADO: {market_status_msg}")
                 else:
-                    print(f"\n🔴 ESTADO DEL MERCADO: {market_status_msg}")
-                    print(f"   ⚠️  El bot continuará analizando pero NO ejecutará operaciones")
+                    print(f"\n[!!] ESTADO DEL MERCADO: {market_status_msg}")
+                    print(f"   [WARN] El bot continuara analizando pero NO ejecutara operaciones")
                 
                 # 8) Aplicar señal si existe Y el mercado está abierto
                 if signal != "none":
                     if market_open:
-                        print(f"\n⚡ ACCIÓN: Ejecutando señal {signal.upper()}")
+                        print(f"\n>>> ACCION: Ejecutando senal {signal.upper()}")
                         trading.apply_signal(
                             config.SYMBOL,
                             signal,
@@ -144,16 +144,16 @@ def run_bot_loop():
                             config.MAGIC_NUMBER
                         )
                     else:
-                        print(f"\n⏸️  Señal {signal.upper()} detectada pero MERCADO CERRADO - No se ejecutará")
+                        print(f"\n[WAIT] Senal {signal.upper()} detectada pero MERCADO CERRADO - No se ejecutara")
                 else:
-                    print(f"\n⏸️  Sin acción requerida")
+                    print(f"\n[WAIT] Sin accion requerida")
                 
                 # 7) Esperar antes de la siguiente iteración
-                print(f"\n⏳ Esperando {config.SLEEP_SECONDS} segundos hasta la siguiente iteración...\n")
+                print(f"\n[...] Esperando {config.SLEEP_SECONDS} segundos hasta la siguiente iteracion...\n")
                 time.sleep(config.SLEEP_SECONDS)
                 
             except Exception as e:
-                print(f"\n❌ Error en el bucle: {e}")
+                print(f"\n[ERROR] Error en el bucle: {e}")
                 import traceback
                 traceback.print_exc()
                 time.sleep(config.SLEEP_SECONDS)

@@ -32,3 +32,5 @@ python gui.py
 2. Reestructurar en módulos (ver MIGRATION_PLAN.md)
 3. Agregar más características modernas
 
+
+
