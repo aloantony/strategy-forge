@@ -4,11 +4,20 @@ Contiene todas las constantes de configuración.
 """
 
 # Símbolo a operar
-SYMBOL = "DE40"  # DAX - cerrado en festivos
-# SYMBOL = "EURUSD"  # Forex - abierto 24/5 (ideal para demo)
+# SYMBOL = "DE40"  # DAX - cerrado en festivos
+# SYMBOL = "DE30"   # Variante del DAX
+# SYMBOL = "US30"   # Dow Jones
+# SYMBOL = "EURUSD"  # Forex - abierto 24/5
+SYMBOL = "NVDA"
 
 # Timeframe
 TIMEFRAME = None  # Se establecerá como mt5.TIMEFRAME_M1 en main.py
+
+# Modo de llenado: "AUTO" usa el permitido por el símbolo; FOK/IOC/RETURN fuerzan el modo.
+FILLING_MODE_OVERRIDE = "AUTO"
+
+# Modo de pruebas: fuerza señales para validar ejecuciones
+TEST_MODE = True  # Si True, alterna BUY/SELL en cada iteración
 
 # Historial de velas
 BARS_HISTORY = 500

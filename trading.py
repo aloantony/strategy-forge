@@ -4,7 +4,73 @@ Gestión de órdenes y posiciones en MetaTrader 5.
 
 import MetaTrader5 as mt5
 from datetime import datetime, timedelta
+import math
 import config
+
+
+def choose_filling_mode(symbol_info) -> int:
+    """
+    Elige un modo de llenado permitido por el símbolo.
+    - Si config.FILLING_MODE_OVERRIDE es FOK/IOC/RETURN, lo fuerza.
+    - En AUTO, usa filling_mode expuesto; si no, para EXCHANGE usa FOK (Todo/Nada),
+      y en el resto IOC como fallback.
+    """
+    override = getattr(config, "FILLING_MODE_OVERRIDE", "AUTO")
+    override = override.upper() if isinstance(override, str) else "AUTO"
+
+    mapping = {
+        "FOK": mt5.ORDER_FILLING_FOK,
+        "IOC": mt5.ORDER_FILLING_IOC,
+        "RETURN": mt5.ORDER_FILLING_RETURN,
+    }
+
+    if override in mapping:
+        return mapping[override]
+
+    mode = getattr(symbol_info, "filling_mode", None)
+    if mode in (mt5.ORDER_FILLING_FOK, mt5.ORDER_FILLING_IOC, mt5.ORDER_FILLING_RETURN):
+        return mode
+
+    # Heurística: símbolos con ejecución tipo Exchange suelen requerir FOK/RETURN.
+    trade_exemode = getattr(symbol_info, "trade_exemode", None)
+    if trade_exemode == mt5.SYMBOL_TRADE_EXMODE_EXCHANGE:
+        return mt5.ORDER_FILLING_FOK
+
+    return mt5.ORDER_FILLING_IOC
+
+
+def normalize_volume(requested_volume: float, symbol_info):
+    """
+    Ajusta el volumen solicitado a los limites del simbolo (min, max, step).
+    Devuelve el volumen ajustado y un mensaje si se modifica.
+    """
+    min_vol = getattr(symbol_info, "volume_min", 0.0) or 0.0
+    max_vol = getattr(symbol_info, "volume_max", float("inf")) or float("inf")
+    step = getattr(symbol_info, "volume_step", 0.0) or 0.0
+    digits = getattr(symbol_info, "volume_digits", 2) or 2
+
+    volume = max(requested_volume, min_vol)
+    if max_vol != float("inf"):
+        volume = min(volume, max_vol)
+
+    if step > 0:
+        # Ajustar al multiplo de step mas cercano sin superar max_vol
+        max_steps = math.floor((max_vol - min_vol) / step) if max_vol != float("inf") else None
+        steps = math.floor((volume - min_vol) / step + 1e-9)
+        if max_steps is not None:
+            steps = min(steps, max_steps)
+        volume = min_vol + steps * step
+
+    volume = round(volume, digits)
+    note = None
+    if volume != requested_volume:
+        note = (f"Volumen ajustado de {requested_volume} a {volume} "
+                f"(min {min_vol}, step {step}, max {max_vol if max_vol != float('inf') else 'sin limite'})")
+
+    if volume <= 0:
+        return 0.0, "No se pudo calcular un volumen valido para el simbolo"
+
+    return volume, note
 
 
 def is_market_open(symbol: str):
@@ -118,6 +184,9 @@ def close_position(symbol: str, magic_number: int):
     if positions is None or len(positions) == 0:
         return
     
+    symbol_info = mt5.symbol_info(symbol)
+    filling_mode = choose_filling_mode(symbol_info)
+
     for position in positions:
         if position.magic == magic_number:
             request = {
@@ -130,7 +199,7 @@ def close_position(symbol: str, magic_number: int):
                 "magic": magic_number,
                 "comment": "Cierre automático",
                 "type_time": mt5.ORDER_TIME_GTC,
-                "type_filling": mt5.ORDER_FILLING_IOC,
+                "type_filling": filling_mode,
             }
             
             result = mt5.order_send(request)
@@ -179,7 +248,16 @@ def send_order(symbol: str, direction: int, lot: float, sl_points: float, tp_poi
     else:
         print(f"Error: Dirección inválida: {direction}")
         return
-    
+
+    lot, volume_note = normalize_volume(lot, symbol_info)
+    if volume_note:
+        print(f"   [WARN] {volume_note}")
+    if lot <= 0:
+        print("   [ERROR] Volumen calculado no valido. Orden cancelada.")
+        return
+
+    filling_mode = choose_filling_mode(symbol_info)
+
     request = {
         "action": mt5.TRADE_ACTION_DEAL,
         "symbol": symbol,
@@ -192,7 +270,7 @@ def send_order(symbol: str, direction: int, lot: float, sl_points: float, tp_poi
         "magic": magic_number,
         "comment": "Bot trading",
         "type_time": mt5.ORDER_TIME_GTC,
-        "type_filling": mt5.ORDER_FILLING_IOC,
+        "type_filling": filling_mode,
     }
     
     result = mt5.order_send(request)
@@ -269,4 +347,3 @@ def apply_signal(symbol: str, signal: str, lot: float, sl_points: float, tp_poin
             print(f"   [SKIP] Ya existe posicion SELL (Ticket: {position_info['ticket']}). No se requiere accion.")
     
     print("!"*60 + "\n")
-

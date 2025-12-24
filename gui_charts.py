@@ -122,6 +122,31 @@ class TradingBotGUI:
         # Separador
         self.chart.topbar.textbox('sep2', ' | ')
         
+        # Selector de símbolo desde MT5 (solo símbolos con trading habilitado)
+        symbols_enabled = self.get_enabled_symbols()
+        if config.SYMBOL not in symbols_enabled:
+            symbols_enabled.insert(0, config.SYMBOL)
+        self.chart.topbar.switcher(
+            'symbol_select',
+            tuple(symbols_enabled[:50]),  # limitar tamaño de la lista
+            default=config.SYMBOL,
+            func=self.on_symbol_change
+        )
+        self.chart.topbar.button('reload_symbols', 'Recargar símbolos', func=self.reload_symbols)
+        
+        self.chart.topbar.textbox('sep_fill', ' | ')
+        self.chart.topbar.textbox('fill_label', 'Filling:')
+        default_fill = config.FILLING_MODE_OVERRIDE if config.FILLING_MODE_OVERRIDE in ("AUTO", "FOK", "IOC", "RETURN") else "AUTO"
+        self.chart.topbar.switcher(
+            'filling_mode',
+            ('AUTO', 'FOK', 'IOC', 'RETURN'),
+            default=default_fill,
+            func=self.on_filling_change
+        )
+        
+        # Separador
+        self.chart.topbar.textbox('sep2b', ' | ')
+        
         # Estado del bot
         self.chart.topbar.textbox('status_label', 'Estado:')
         self.chart.topbar.textbox('status', 'Detenido')
@@ -265,29 +290,30 @@ class TradingBotGUI:
                 if len(lower_data) > 0:
                     self.lower_line.set(lower_data)
             
-            # Marcar señales (limitado para no sobrecargar)
-            if 'up_sig' in df.columns and 'dn_sig' in df.columns:
-                buy_signals = df[df['up_sig'] == True].tail(50)
-                sell_signals = df[df['dn_sig'] == True].tail(50)
-                
-                for _, row in buy_signals.iterrows():
-                    self.chart.marker(
-                        time=row['time'],
-                        position='below',
-                        shape='arrow_up',
-                        color='#26a69a',
-                        text='BUY'
-                    )
-                
-                for _, row in sell_signals.iterrows():
-                    self.chart.marker(
-                        time=row['time'],
-                        position='above',
-                        shape='arrow_down',
-                        color='#ef5350',
-                        text='SELL'
-                    )
-            
+            # Marcar solo operaciones reales (deals de entrada con el magic number)
+            try:
+                start_time = df['time'].iloc[0].to_pydatetime()
+                end_time = df['time'].iloc[-1].to_pydatetime()
+                deals = mt5.history_deals_get(start_time, end_time)
+                if deals:
+                    for deal in deals:
+                        if deal.symbol != config.SYMBOL:
+                            continue
+                        if hasattr(deal, "magic") and deal.magic != config.MAGIC_NUMBER:
+                            continue
+                        if deal.entry != mt5.DEAL_ENTRY_IN:
+                            continue
+                        is_buy = deal.type == mt5.DEAL_TYPE_BUY
+                        self.chart.marker(
+                            time=datetime.fromtimestamp(deal.time),
+                            position='below' if is_buy else 'above',
+                            shape='arrow_up' if is_buy else 'arrow_down',
+                            color='#26a69a' if is_buy else '#ef5350',
+                            text='BUY' if is_buy else 'SELL'
+                        )
+            except Exception as e:
+                self.log_message(f"Error al marcar operaciones: {e}")
+
         except Exception as e:
             self.log_message(f"Error al actualizar grafico: {e}")
             import traceback
@@ -344,7 +370,25 @@ class TradingBotGUI:
             self.log_message(f"Error al actualizar equity: {e}")
             import traceback
             traceback.print_exc()
-    
+
+    def get_enabled_symbols(self, pattern=None, limit=200):
+        """
+        Devuelve lista de símbolos con trading habilitado.
+        Opcionalmente filtra por patrón MT5 (ej: 'US*').
+        """
+        try:
+            symbols = mt5.symbols_get(pattern) if pattern else mt5.symbols_get()
+            if not symbols:
+                return [config.SYMBOL]
+            enabled = [s.name for s in symbols if s.trade_mode != mt5.SYMBOL_TRADE_MODE_DISABLED]
+            enabled = sorted(enabled)
+            if limit:
+                enabled = enabled[:limit]
+            return enabled or [config.SYMBOL]
+        except Exception as e:
+            self.log_message(f"No se pudieron obtener símbolos habilitados: {e}")
+            return [config.SYMBOL]
+
     def on_timeframe_change(self, chart):
         """Maneja el cambio de timeframe."""
         try:
@@ -379,6 +423,41 @@ class TradingBotGUI:
             
         except Exception as e:
             self.log_message(f"Error al cambiar periodo: {e}")
+
+    def on_symbol_change(self, chart):
+        """Cambia el símbolo a operar desde la lista."""
+        try:
+            symbol = chart.topbar['symbol_select'].value
+        except Exception:
+            self.log_message("No se pudo leer el símbolo seleccionado")
+            return
+
+        try:
+            mt5_connection.check_symbol(symbol)
+            config.SYMBOL = symbol
+            self.chart.watermark(symbol, color='rgba(180, 180, 200, 0.3)')
+            self.log_message(f"Símbolo cambiado a {symbol}")
+            self.refresh_data()
+        except Exception as e:
+            self.log_message(f"Error al cambiar símbolo: {e}")
+
+    def reload_symbols(self, chart=None):
+        """Recarga la lista de símbolos habilitados y actualiza el switcher."""
+        symbols_enabled = self.get_enabled_symbols()
+        if config.SYMBOL not in symbols_enabled:
+            symbols_enabled.insert(0, config.SYMBOL)
+        self.chart.topbar['symbol_select'].update(tuple(symbols_enabled[:50]))
+        self.log_message(f"Lista de símbolos recargada ({len(symbols_enabled)} habilitados)")
+
+    def on_filling_change(self, chart):
+        """Actualiza el modo de llenado desde la interfaz."""
+        try:
+            mode = chart.topbar['filling_mode'].value
+        except Exception:
+            self.log_message("No se pudo leer el filling mode")
+            return
+        config.FILLING_MODE_OVERRIDE = mode
+        self.log_message(f"Filling mode configurado: {mode}")
     
     def start_bot(self, chart=None):
         """Inicia el bot."""
@@ -423,8 +502,13 @@ class TradingBotGUI:
                     )
                     df = strategy_baseline.compute_dir1_and_signals(df, config.ENABLE_SIGNALS)
                     
-                    signal = strategy_baseline.get_last_signal(df)
-                    market_open, _ = trading.is_market_open(config.SYMBOL)
+                    test_mode = getattr(config, "TEST_MODE", False)
+                    if test_mode:
+                        signal = strategy_baseline.get_test_signal()
+                        market_open, market_status = True, "TEST_MODE (sin check)"
+                    else:
+                        signal = strategy_baseline.get_last_signal(df, verbose=False)
+                        market_open, market_status = trading.is_market_open(config.SYMBOL)
                     
                     self.price_data = df
                     self.update_chart(df)
@@ -435,6 +519,8 @@ class TradingBotGUI:
                             config.SYMBOL, signal, config.LOT,
                             config.SL_POINTS, config.TP_POINTS, config.MAGIC_NUMBER
                         )
+                    elif signal != "none":
+                        self.log_message(f"Skip: mercado cerrado ({market_status})")
                     
                     sleep_time = max(config.SLEEP_SECONDS, 10)
                     if self.stop_event.wait(timeout=sleep_time):

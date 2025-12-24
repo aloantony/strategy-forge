@@ -63,6 +63,17 @@ def compute_dir1_and_signals(df: pd.DataFrame, enable_signals: bool) -> pd.DataF
     return df
 
 
+# --- Modo de prueba: alternar señales para validar ejecuciones ---
+_test_flip = False
+
+
+def get_test_signal() -> str:
+    """Alterna BUY/SELL en cada llamada para probar ejecuciones."""
+    global _test_flip
+    _test_flip = not _test_flip
+    return "buy" if _test_flip else "sell"
+
+
 def get_last_signal(df: pd.DataFrame, verbose: bool = True) -> str:
     """
     Obtiene la señal basada en la dirección actual de Dir_1.
