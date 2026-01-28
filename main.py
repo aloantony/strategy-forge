@@ -121,7 +121,7 @@ def run_bot_loop():
                     signal = strategy_baseline.get_test_signal()
                     market_open, market_status_msg = True, "TEST_MODE (sin check)"
                 else:
-                    signal = strategy_baseline.get_last_signal(df, verbose=False)
+                    signal = strategy_baseline.get_last_signal(df, verbose=True)  # Logs detallados para demo
                     # 5) Verificar si el mercado está abierto
                     market_open, market_status_msg = trading.is_market_open(config.SYMBOL)
                 
