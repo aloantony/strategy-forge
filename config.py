@@ -4,28 +4,24 @@ Contiene todas las constantes de configuración.
 """
 
 # Símbolo a operar
-# SYMBOL = "DE40"  # DAX - cerrado en festivos
-# SYMBOL = "DE30"   # Variante del DAX
-# SYMBOL = "US30"   # Dow Jones
+SYMBOL = "#Germany40"  # DAX Spot Index CFD - FxPro (requiere prefijo #)
+# SYMBOL = "#GER40_Z25"  # DAX Future Dec 2025
+# SYMBOL = "DE40"  # DAX (otros brokers)
 # SYMBOL = "EURUSD"  # Forex - abierto 24/5
-SYMBOL = "NVDA"
 
 # Timeframe
 TIMEFRAME = None  # Se establecerá como mt5.TIMEFRAME_M1 en main.py
 
-# Modo de llenado: "AUTO" usa el permitido por el símbolo; FOK/IOC/RETURN fuerzan el modo.
-FILLING_MODE_OVERRIDE = "AUTO"
-
 # Modo de pruebas: fuerza señales para validar ejecuciones
-TEST_MODE = True  # Si True, alterna BUY/SELL en cada iteración
+TEST_MODE = False  # Si True, alterna BUY/SELL en cada iteración (desactivado para demo real)
 
 # Historial de velas
 BARS_HISTORY = 500
 
 # Parámetros de trading
-LOT = 0.01
-SL_POINTS = 50.0
-TP_POINTS = 100.0
+LOT = 0.01  # Tamaño mínimo para demo
+SL_POINTS = 300.0  # Stop Loss en puntos (ajustado para DAX con spread de 200)
+TP_POINTS = 500.0  # Take Profit en puntos (ajustado para DAX con spread de 200)
 MAGIC_NUMBER = 123456
 
 # Configuración de la estrategia
@@ -33,6 +29,17 @@ SOURCE_MODE = "OHLC4"  # "OHLC4" | "HLC3" | "HL2" | "CLOSE"
 MA_LENGTH = 20
 ATR_LENGTH = 14
 ATR_MULT = 0.5  # Reducido de 2.0 para generar señales más frecuentes
+
+# Indicadores extra (solo visualización en la interfaz)
+SUPERTREND_ATR_LENGTH = 10
+SUPERTREND_MULT = 3.0
+SUPERTREND_SOURCE = "close"  # close | h_set | l_set | OHLC4
+SUPERTREND_USE_HMA = True
+HMA_LENGTH = 55
+
+TCI_FAST = 9
+TCI_SLOW = 21
+TCI_SIGNAL = 5
 
 # Habilitar señales
 ENABLE_SIGNALS = True
@@ -54,7 +61,14 @@ def print_config():
     print(f"MA_LENGTH: {MA_LENGTH}")
     print(f"ATR_LENGTH: {ATR_LENGTH}")
     print(f"ATR_MULT: {ATR_MULT}")
+    print(f"SUPERTREND_ATR_LENGTH: {SUPERTREND_ATR_LENGTH}")
+    print(f"SUPERTREND_MULT: {SUPERTREND_MULT}")
+    print(f"SUPERTREND_SOURCE: {SUPERTREND_SOURCE}")
+    print(f"SUPERTREND_USE_HMA: {SUPERTREND_USE_HMA}")
+    print(f"HMA_LENGTH: {HMA_LENGTH}")
+    print(f"TCI_FAST: {TCI_FAST}")
+    print(f"TCI_SLOW: {TCI_SLOW}")
+    print(f"TCI_SIGNAL: {TCI_SIGNAL}")
     print(f"ENABLE_SIGNALS: {ENABLE_SIGNALS}")
     print(f"SLEEP_SECONDS: {SLEEP_SECONDS}")
     print("=====================")
-
