@@ -9,7 +9,7 @@ from datetime import datetime
 import config
 import mt5_connection
 import data_feed
-import strategy_baseline
+from strategies import strategy_baseline
 import trading
 
 

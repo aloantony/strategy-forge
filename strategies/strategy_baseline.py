@@ -3,7 +3,6 @@ Lógica de la estrategia de trading.
 """
 
 import pandas as pd
-import config
 from datetime import datetime
 
 
@@ -11,6 +10,10 @@ def log_strategy(message: str):
     """Imprime mensaje de estrategia con timestamp."""
     timestamp = datetime.now().strftime("%H:%M:%S")
     print(f"[{timestamp}] [ESTRATEGIA] {message}")
+
+
+# Indicadores usados por la estrategia (GUI Object Tree)
+OBJECT_TREE_ITEMS = ["baseline", "atr_bands"]
 
 
 def compute_dir1_and_signals(df: pd.DataFrame, enable_signals: bool) -> pd.DataFrame:
@@ -130,4 +133,3 @@ def get_last_signal(df: pd.DataFrame, verbose: bool = True) -> str:
         if verbose:
             log_strategy("Sin senal - Tendencia NEUTRAL")
         return "none"
-

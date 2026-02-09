@@ -7,7 +7,8 @@ Bot de trading modular y escalable para MetaTrader 5 que implementa una estrateg
 - `config.py` - Configuración del bot (símbolo, timeframe, parámetros de trading, etc.)
 - `mt5_connection.py` - Gestión de conexión con MetaTrader 5
 - `data_feed.py` - Obtención y procesamiento de datos de mercado
-- `strategy_baseline.py` - Lógica de la estrategia de trading
+- `strategies/` - Estrategias de trading (módulos independientes)
+- `strategies/strategy_baseline.py` - Lógica de la estrategia de trading
 - `trading.py` - Gestión de órdenes y posiciones
 - `main.py` - Bucle principal del bot
 

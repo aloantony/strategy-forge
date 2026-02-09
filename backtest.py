@@ -8,7 +8,7 @@ import MetaTrader5 as mt5
 from datetime import datetime, timedelta
 import config
 import data_feed
-import strategy_baseline
+from strategies import strategy_baseline
 
 
 class BacktestEngine:
