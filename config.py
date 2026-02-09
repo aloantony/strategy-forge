@@ -25,6 +25,9 @@ TP_POINTS = 500.0  # Take Profit en puntos (ajustado para DAX con spread de 200)
 MAGIC_NUMBER = 123456
 
 # Configuración de la estrategia
+STRATEGY_KEY = "baseline"
+STRATEGY_MODULE = "strategies.strategy_baseline"
+STRATEGY_DIR = "strategies"
 SOURCE_MODE = "OHLC4"  # "OHLC4" | "HLC3" | "HL2" | "CLOSE"
 MA_LENGTH = 20
 ATR_LENGTH = 14
@@ -47,6 +50,13 @@ ENABLE_SIGNALS = True
 # Intervalo de ejecución del bot (segundos)
 SLEEP_SECONDS = 10
 
+# Feedback / sugerencias
+# Si FEEDBACK_WEBHOOK_URL tiene un valor, se enviará un POST con JSON.
+# Si no, se guardará en un archivo local en FEEDBACK_SAVE_DIR.
+FEEDBACK_WEBHOOK_URL = ""
+FEEDBACK_SAVE_DIR = "feedback"
+FEEDBACK_TIMEOUT_SECONDS = 4
+
 
 def print_config():
     """Imprime la configuración actual para depuración."""
@@ -57,6 +67,9 @@ def print_config():
     print(f"SL_POINTS: {SL_POINTS}")
     print(f"TP_POINTS: {TP_POINTS}")
     print(f"MAGIC_NUMBER: {MAGIC_NUMBER}")
+    print(f"STRATEGY_KEY: {STRATEGY_KEY}")
+    print(f"STRATEGY_MODULE: {STRATEGY_MODULE}")
+    print(f"STRATEGY_DIR: {STRATEGY_DIR}")
     print(f"SOURCE_MODE: {SOURCE_MODE}")
     print(f"MA_LENGTH: {MA_LENGTH}")
     print(f"ATR_LENGTH: {ATR_LENGTH}")
