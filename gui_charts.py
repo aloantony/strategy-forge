@@ -25,7 +25,6 @@ import json
 import urllib.error
 import urllib.request
 from urllib.parse import unquote, urlparse, urlunparse
-import webbrowser
 
 import config
 import mt5_connection
@@ -1148,39 +1147,6 @@ class TradingBotGUI:
         source_path = self._resolve_strategy_source_path(entry)
         source_info = self._inspect_strategy_source_code(source_path)
 
-        checks = [
-            {
-                "ok": bool(entry.get("module_obj") is not None),
-                "required": True,
-                "text": "El modulo debe cargar sin errores de sintaxis/importacion.",
-            },
-            {
-                "ok": bool(source_info.get("has_get_last_signal")),
-                "required": True,
-                "text": "Define get_last_signal(df, verbose=False) y retorna buy/sell/none.",
-            },
-            {
-                "ok": bool(
-                    source_info.get("has_prepare_dataframe") or source_info.get("has_compute_signals")
-                ),
-                "required": True,
-                "text": (
-                    "Agrega prepare_dataframe(df) o "
-                    "compute_signals/compute_dir1_and_signals(df, enable_signals)."
-                ),
-            },
-            {
-                "ok": bool(source_info.get("has_timeframe")),
-                "required": False,
-                "text": "Declara TIMEFRAME='M1' (o get_timeframe()) para fijar el marco temporal.",
-            },
-            {
-                "ok": bool(source_info.get("has_data_window_fields")),
-                "required": False,
-                "text": "Opcional: define DATA_WINDOW_FIELDS para mostrar metricas propias.",
-            },
-        ]
-
         if not source_info.get("exists"):
             fallback_error = "No se encontro el archivo de la estrategia."
         elif not source_info.get("has_code"):
@@ -1196,15 +1162,11 @@ class TradingBotGUI:
             subtitle_parts.append(f"Archivo: {source_path}")
 
         strategy_name = entry.get("label") or entry.get("key") or "sin_nombre"
-        guide_url = self._get_strategy_guide_url()
         return {
             "visible": True,
             "title": f"Estrategia incompleta: {strategy_name}",
             "subtitle": " | ".join(subtitle_parts),
             "error": error_text or fallback_error,
-            "checks": checks,
-            "guide_url": guide_url,
-            "handler": getattr(self, "side_panel_handler", "") or "",
         }
 
     def _render_strategy_readiness_overlay(self, entry: dict = None):
@@ -1220,49 +1182,65 @@ class TradingBotGUI:
             ;(function() {{
                 const payload = {payload_json};
                 const chartHost = {self.chart.id} && {self.chart.id}.div ? {self.chart.id}.div : null;
+                const tciHost = {self.tci_chart.id} && {self.tci_chart.id}.div ? {self.tci_chart.id}.div : null;
                 if (!chartHost) return;
-
-                if (!chartHost.style.position || chartHost.style.position === "static") {{
-                    chartHost.style.position = "relative";
-                }}
-
-                let overlay = chartHost.querySelector("#tv-strategy-readiness-overlay");
+                const rootHost = window.containerDiv || document.body;
+                let overlay = document.getElementById("tv-strategy-readiness-overlay");
                 if (!overlay) {{
                     overlay = document.createElement("div");
                     overlay.id = "tv-strategy-readiness-overlay";
                     overlay.className = "tv-strategy-readiness-overlay";
-                    overlay.innerHTML = `
-                        <div class="tv-strategy-readiness-card">
-                            <div class="tv-strategy-readiness-badge">Strategy setup</div>
-                            <div class="tv-strategy-readiness-title" id="tv-strategy-readiness-title"></div>
-                            <div class="tv-strategy-readiness-subtitle" id="tv-strategy-readiness-subtitle"></div>
-                            <div class="tv-strategy-readiness-error" id="tv-strategy-readiness-error"></div>
-                            <div class="tv-strategy-readiness-section">Checklist para visualizar</div>
-                            <div class="tv-strategy-readiness-list" id="tv-strategy-readiness-list"></div>
-                            <div class="tv-strategy-readiness-actions" id="tv-strategy-readiness-actions">
-                                <button type="button" class="tv-strategy-readiness-guide-btn" id="tv-strategy-readiness-guide-btn">
-                                    Ver guía completa
-                                </button>
-                                <div class="tv-strategy-readiness-guide-url" id="tv-strategy-readiness-guide-url"></div>
-                            </div>
-                        </div>
-                    `;
-                    chartHost.appendChild(overlay);
+                    rootHost.appendChild(overlay);
+                }} else if (overlay.parentElement !== rootHost) {{
+                    rootHost.appendChild(overlay);
                 }}
+
+                const sidePanel = document.getElementById("tv-side-panel");
+                const sideToolbar = document.getElementById("tv-side-toolbar");
+                const rightInset =
+                    (sidePanel ? sidePanel.getBoundingClientRect().width : 0) +
+                    (sideToolbar ? sideToolbar.getBoundingClientRect().width : 0);
+                overlay.style.setProperty("--tv-readiness-right-inset", Math.max(0, Math.round(rightInset)) + "px");
+                const expectedMarkup = `
+                    <div class="tv-strategy-readiness-card">
+                        <div class="tv-strategy-readiness-badge">Strategy setup</div>
+                        <div class="tv-strategy-readiness-title" id="tv-strategy-readiness-title"></div>
+                        <div class="tv-strategy-readiness-subtitle" id="tv-strategy-readiness-subtitle"></div>
+                        <div class="tv-strategy-readiness-error" id="tv-strategy-readiness-error"></div>
+                    </div>
+                `;
+                if (overlay.dataset.version !== "message_v2") {{
+                    overlay.innerHTML = expectedMarkup;
+                    overlay.dataset.version = "message_v2";
+                }}
+
+                const applyFogToChart = (enabled) => {{
+                    [chartHost, tciHost].forEach((host) => {{
+                        if (!host) return;
+                        const targets = host.querySelectorAll("canvas");
+                        targets.forEach((node) => {{
+                            if (!(node instanceof HTMLElement)) return;
+                            node.style.transition = "filter 0.2s ease";
+                            if (enabled) {{
+                                node.style.filter = "blur(2.8px) saturate(0.78) brightness(0.74)";
+                            }} else {{
+                                node.style.filter = "";
+                            }}
+                        }});
+                    }});
+                }};
 
                 if (!payload || !payload.visible) {{
                     overlay.classList.remove("open");
+                    applyFogToChart(false);
                     return;
                 }}
+                applyFogToChart(true);
                 overlay.classList.add("open");
 
                 const titleEl = overlay.querySelector("#tv-strategy-readiness-title");
                 const subtitleEl = overlay.querySelector("#tv-strategy-readiness-subtitle");
                 const errorEl = overlay.querySelector("#tv-strategy-readiness-error");
-                const listEl = overlay.querySelector("#tv-strategy-readiness-list");
-                const actionsEl = overlay.querySelector("#tv-strategy-readiness-actions");
-                const guideBtn = overlay.querySelector("#tv-strategy-readiness-guide-btn");
-                const guideUrlEl = overlay.querySelector("#tv-strategy-readiness-guide-url");
 
                 if (titleEl) {{
                     titleEl.textContent = payload.title || "Estrategia incompleta";
@@ -1274,59 +1252,6 @@ class TradingBotGUI:
                 if (errorEl) {{
                     errorEl.textContent = payload.error || "";
                     errorEl.style.display = payload.error ? "block" : "none";
-                }}
-                if (listEl) {{
-                    listEl.innerHTML = "";
-                    const checks = Array.isArray(payload.checks) ? payload.checks : [];
-                    checks.forEach((check) => {{
-                        const row = document.createElement("div");
-                        row.className = "tv-strategy-readiness-item" + (check && check.ok ? " done" : " pending");
-
-                        const icon = document.createElement("span");
-                        icon.className = "tv-strategy-readiness-icon";
-                        icon.textContent = check && check.ok ? "OK" : "TODO";
-
-                        const text = document.createElement("span");
-                        text.className = "tv-strategy-readiness-text";
-                        text.textContent = check && check.text ? check.text : "";
-
-                        const level = document.createElement("span");
-                        level.className = "tv-strategy-readiness-level";
-                        level.textContent = check && check.required ? "Requerido" : "Opcional";
-
-                        row.appendChild(icon);
-                        row.appendChild(text);
-                        row.appendChild(level);
-                        listEl.appendChild(row);
-                    }});
-                }}
-
-                const guideUrl = (payload && payload.guide_url) ? String(payload.guide_url) : "";
-                if (actionsEl) {{
-                    actionsEl.style.display = guideUrl ? "flex" : "none";
-                }}
-                if (guideBtn) {{
-                    guideBtn.dataset.url = guideUrl;
-                    guideBtn.dataset.handler = payload && payload.handler ? String(payload.handler) : "";
-                    if (!guideBtn.dataset.bound) {{
-                        guideBtn.dataset.bound = "1";
-                        guideBtn.addEventListener("click", () => {{
-                            const targetUrl = (guideBtn.dataset.url || "").trim();
-                            if (!targetUrl) return;
-                            const handler = (guideBtn.dataset.handler || "").trim();
-                            if (handler) {{
-                                const encodedUrl = encodeURIComponent(targetUrl);
-                                window.callbackFunction(handler + "_~_open_strategy_guide;;;" + encodedUrl);
-                                return;
-                            }}
-                            if (window.open) {{
-                                window.open(targetUrl, "_blank", "noopener,noreferrer");
-                            }}
-                        }});
-                    }}
-                }}
-                if (guideUrlEl) {{
-                    guideUrlEl.textContent = guideUrl || "";
                 }}
             }})();
         ''')
@@ -2153,7 +2078,7 @@ class TradingBotGUI:
                     .tv-data-trades-list {
                         flex: 0 0 auto;
                         min-height: 0;
-                        max-height: 240px;
+                        max-height: 480px;
                         overflow-y: auto;
                         display: flex;
                         flex-direction: column;
@@ -2479,21 +2404,31 @@ class TradingBotGUI:
                     }
 
                     .tv-strategy-readiness-overlay {
-                        position: absolute;
-                        inset: 14px;
+                        position: fixed;
+                        top: var(--tv-topbar-height);
+                        left: 0;
+                        right: var(--tv-readiness-right-inset, 0px);
+                        bottom: var(--tv-bottom-height);
+                        padding: 18px;
+                        box-sizing: border-box;
                         display: none;
                         align-items: center;
                         justify-content: center;
                         pointer-events: none;
                         z-index: 1008;
+                        background: transparent;
                     }
                     .tv-strategy-readiness-overlay.open {
                         display: flex;
+                        background:
+                            radial-gradient(circle at 28% 18%, rgba(208, 220, 236, 0.14), rgba(208, 220, 236, 0.04) 36%, rgba(8, 11, 18, 0.58) 100%);
+                        -webkit-backdrop-filter: blur(2px);
+                        backdrop-filter: blur(2px);
                     }
                     .tv-strategy-readiness-card {
-                        width: min(760px, calc(100% - 20px));
-                        max-height: calc(100% - 20px);
-                        overflow: auto;
+                        width: min(940px, calc(100% - 24px));
+                        max-height: min(690px, calc(100% - 24px));
+                        overflow: hidden;
                         pointer-events: auto;
                         background:
                             linear-gradient(150deg, rgba(40, 24, 24, 0.92), rgba(22, 22, 22, 0.96)),
@@ -2541,99 +2476,6 @@ class TradingBotGUI:
                         border-radius: 8px;
                         padding: 8px 9px;
                         white-space: pre-wrap;
-                    }
-                    .tv-strategy-readiness-section {
-                        font-size: 12px;
-                        font-weight: 700;
-                        letter-spacing: 0.04em;
-                        text-transform: uppercase;
-                        color: #f4d0d0;
-                        margin-top: 2px;
-                    }
-                    .tv-strategy-readiness-list {
-                        display: flex;
-                        flex-direction: column;
-                        gap: 7px;
-                    }
-                    .tv-strategy-readiness-item {
-                        display: grid;
-                        grid-template-columns: auto 1fr auto;
-                        align-items: center;
-                        gap: 10px;
-                        padding: 8px 10px;
-                        border-radius: 9px;
-                        border: 1px solid #3d3434;
-                        background: rgba(31, 31, 31, 0.72);
-                        color: #dedede;
-                    }
-                    .tv-strategy-readiness-item.done {
-                        border-color: rgba(61, 136, 83, 0.7);
-                        background: rgba(24, 58, 37, 0.55);
-                    }
-                    .tv-strategy-readiness-item.pending {
-                        border-color: rgba(146, 62, 62, 0.68);
-                    }
-                    .tv-strategy-readiness-icon {
-                        min-width: 42px;
-                        text-align: center;
-                        border-radius: 999px;
-                        border: 1px solid #665454;
-                        background: rgba(70, 52, 52, 0.6);
-                        color: #f2d4d4;
-                        font-size: 10px;
-                        font-weight: 700;
-                        letter-spacing: 0.06em;
-                        padding: 3px 6px;
-                    }
-                    .tv-strategy-readiness-item.done .tv-strategy-readiness-icon {
-                        border-color: rgba(95, 178, 118, 0.72);
-                        background: rgba(38, 88, 52, 0.65);
-                        color: #c9f0d4;
-                    }
-                    .tv-strategy-readiness-text {
-                        font-size: 12px;
-                        line-height: 1.35;
-                    }
-                    .tv-strategy-readiness-level {
-                        font-size: 10px;
-                        text-transform: uppercase;
-                        letter-spacing: 0.07em;
-                        color: #c8b0b0;
-                        background: rgba(46, 46, 46, 0.72);
-                        border-radius: 999px;
-                        padding: 3px 8px;
-                    }
-                    .tv-strategy-readiness-item.done .tv-strategy-readiness-level {
-                        color: #c7e6d0;
-                    }
-                    .tv-strategy-readiness-actions {
-                        display: none;
-                        flex-direction: column;
-                        gap: 6px;
-                        margin-top: 4px;
-                        padding-top: 8px;
-                        border-top: 1px solid rgba(148, 104, 104, 0.35);
-                    }
-                    .tv-strategy-readiness-guide-btn {
-                        align-self: flex-start;
-                        border: 1px solid rgba(216, 101, 101, 0.55);
-                        background: linear-gradient(135deg, rgba(190, 45, 45, 0.32), rgba(112, 31, 31, 0.5));
-                        color: #ffe1e1;
-                        border-radius: 8px;
-                        padding: 7px 12px;
-                        font-size: 12px;
-                        font-weight: 700;
-                        cursor: pointer;
-                    }
-                    .tv-strategy-readiness-guide-btn:hover {
-                        background: linear-gradient(135deg, rgba(208, 62, 62, 0.4), rgba(125, 39, 39, 0.58));
-                    }
-                    .tv-strategy-readiness-guide-url {
-                        font-family: Consolas, "Courier New", monospace;
-                        font-size: 11px;
-                        color: #c7b9b9;
-                        opacity: 0.9;
-                        word-break: break-all;
                     }
                     @keyframes tvStrategyReadinessIn {
                         from {
@@ -4200,10 +4042,6 @@ class TradingBotGUI:
         if action == "feedback_list":
             self._handle_feedback_list()
             return
-        if action == "open_strategy_guide":
-            target_url = unquote(args[0]) if len(args) > 0 else ""
-            self._open_strategy_guide_url(target_url)
-            return
         if action == "toggle" and args:
             self.toggle_indicator(args[0])
             return
@@ -4325,40 +4163,6 @@ class TradingBotGUI:
             return urlunparse(parsed._replace(path=path))
         except Exception:
             return ""
-
-    def _get_strategy_guide_url(self) -> str:
-        # Para peques: esta funcion sirve para construir URL de guia de estrategias.
-        guide_url = (getattr(config, "STRATEGY_GUIDE_URL", "") or "").strip()
-        if guide_url:
-            return guide_url
-
-        webhook_url = (getattr(config, "FEEDBACK_WEBHOOK_URL", "") or "").strip()
-        if not webhook_url:
-            return ""
-        try:
-            parsed = urlparse(webhook_url)
-            path = parsed.path or ""
-            if path.endswith("/feedback"):
-                path = path[:-len("/feedback")] + "/strategies/guide"
-            else:
-                path = path.rstrip("/") + "/strategies/guide"
-            return urlunparse(parsed._replace(path=path, query="", fragment=""))
-        except Exception:
-            return ""
-
-    def _open_strategy_guide_url(self, target_url: str = ""):
-        # Para peques: esta funcion sirve para abrir en navegador la guia de estrategias.
-        target = (target_url or "").strip() or self._get_strategy_guide_url()
-        if not target:
-            self.log_message("Guía de estrategias no configurada.")
-            return
-        try:
-            opened = webbrowser.open(target, new=2)
-            if not opened:
-                self.log_message(f"No se pudo abrir automáticamente. URL: {target}")
-        except Exception as e:
-            self.log_message(f"No se pudo abrir la guía: {e}")
-            self.log_message(f"URL guía: {target}")
 
     def _handle_feedback_list(self):
         # Para peques: esta funcion sirve para gestionar la lista de comentarios.
@@ -4811,6 +4615,57 @@ class TradingBotGUI:
         if entry and isinstance(entry.get("magic_number"), int) and entry.get("magic_number") > 0:
             return int(entry.get("magic_number"))
         return int(getattr(config, "MAGIC_NUMBER", 0) or 0)
+
+    def _get_marker_strategy_scope(self, strategy_entry=None):
+        # Para peques: esta funcion sirve para decidir que estrategias aparecen en marcadores.
+        tracked_magics = set()
+        magic_labels = {}
+
+        entries = []
+        if self.strategy_data_all_actives:
+            entries = self._get_enabled_strategy_entries()
+        elif isinstance(strategy_entry, dict):
+            entries = [strategy_entry]
+        else:
+            selected_entry = self._get_selected_strategy_entry()
+            if isinstance(selected_entry, dict):
+                entries = [selected_entry]
+
+        for entry in entries:
+            if not isinstance(entry, dict):
+                continue
+            magic_number = entry.get("magic_number")
+            if not isinstance(magic_number, int) or magic_number <= 0:
+                continue
+            magic_number = int(magic_number)
+            tracked_magics.add(magic_number)
+            if magic_number in magic_labels:
+                continue
+            label = (entry.get("label") or entry.get("key") or "").strip()
+            if label:
+                magic_labels[magic_number] = label
+
+        if not tracked_magics:
+            fallback_magic = int(getattr(config, "MAGIC_NUMBER", 0) or 0)
+            if fallback_magic > 0:
+                tracked_magics.add(fallback_magic)
+
+        return tracked_magics, magic_labels
+
+    def _resolve_deal_strategy_label(self, deal, magic_labels=None) -> str:
+        # Para peques: esta funcion sirve para sacar el nombre de estrategia de un deal.
+        if magic_labels is None:
+            magic_labels = {}
+        try:
+            deal_magic = int(getattr(deal, "magic", 0) or 0)
+        except Exception:
+            deal_magic = 0
+
+        if deal_magic in magic_labels:
+            return magic_labels[deal_magic]
+        if deal_magic > 0:
+            return f"Magic {deal_magic}"
+        return "Sin estrategia"
 
     def _strategy_timeframe_value(self, entry: dict, fallback=None):
         # Para peques: esta funcion sirve para valor del marco de tiempo de la estrategia.
@@ -5792,10 +5647,53 @@ class TradingBotGUI:
             import traceback
             traceback.print_exc()
 
+    def _ensure_tci_visual_guard(self):
+        # Para peques: esta funcion sirve para mantener estable la escala del subchart TuTCI.
+        """Evita que el panel TuTCI quede fuera de escala tras zoom/pan."""
+        try:
+            guard_key = f"tciAutoScaleGuard_{self.tci_chart.id}"
+            self.chart.run_script(f'''
+                ;(function() {{
+                    try {{
+                        if (window["{guard_key}"]) return;
+                        const chartApi = {self.tci_chart.id}.chart;
+                        const applyAutoScale = () => {{
+                            try {{
+                                let priceScale = null;
+                                if (chartApi && typeof chartApi.priceScale === "function") {{
+                                    try {{
+                                        priceScale = chartApi.priceScale("right");
+                                    }} catch (_) {{
+                                        priceScale = chartApi.priceScale();
+                                    }}
+                                }}
+                                if (priceScale && typeof priceScale.applyOptions === "function") {{
+                                    priceScale.applyOptions({{ autoScale: true, mode: 0 }});
+                                }}
+                            }} catch (_) {{}}
+                        }};
+                        applyAutoScale();
+                        if (chartApi && chartApi.timeScale) {{
+                            const ts = chartApi.timeScale();
+                            if (ts && typeof ts.subscribeVisibleLogicalRangeChange === "function") {{
+                                ts.subscribeVisibleLogicalRangeChange(() => applyAutoScale());
+                            }}
+                            if (ts && typeof ts.subscribeVisibleTimeRangeChange === "function") {{
+                                ts.subscribeVisibleTimeRangeChange(() => applyAutoScale());
+                            }}
+                        }}
+                        window["{guard_key}"] = true;
+                    }} catch (_) {{}}
+                }})();
+            ''')
+        except Exception:
+            pass
+
     def update_tci_chart(self, df: pd.DataFrame):
         # Para peques: esta funcion sirve para actualizar tci grafico.
         """Actualiza el subchart TuTCI."""
         try:
+            self._ensure_tci_visual_guard()
             if df is None or len(df) < 2:
                 self.tci_hist.set(pd.DataFrame())
                 self.tci_fill.set(pd.DataFrame())
@@ -5841,6 +5739,26 @@ class TradingBotGUI:
                 self.tci_signal.set(signal_df)
             else:
                 self.tci_signal.set(pd.DataFrame())
+
+            # Refrescar autoscale tras set() para evitar que el zoom deje el panel sin trazas visibles.
+            self.chart.run_script(f'''
+                ;(function() {{
+                    try {{
+                        const chartApi = {self.tci_chart.id}.chart;
+                        let priceScale = null;
+                        if (chartApi && typeof chartApi.priceScale === "function") {{
+                            try {{
+                                priceScale = chartApi.priceScale("right");
+                            }} catch (_) {{
+                                priceScale = chartApi.priceScale();
+                            }}
+                        }}
+                        if (priceScale && typeof priceScale.applyOptions === "function") {{
+                            priceScale.applyOptions({{ autoScale: true, mode: 0 }});
+                        }}
+                    }} catch (_) {{}}
+                }})();
+            ''')
 
         except Exception as e:
             self.log_message(f"Error al actualizar TuTCI: {e}")

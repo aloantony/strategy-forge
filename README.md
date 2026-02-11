@@ -60,12 +60,6 @@ python gui_charts.py
 Guía completa: `strategies/README.md`  
 A continuación tienes el camino corto para arrancar rápido.
 
-También puedes usar la guía web visual desplegada en el servidor:
-
-- `https://TU_DOMINIO_KOYEB/strategies/guide`
-
-Si ya tienes `FEEDBACK_WEBHOOK_URL` en `config.py`, la GUI deriva esa URL automáticamente y la muestra en el aviso de "Estrategia incompleta" como acceso directo a la guía.
-
 ### 1) Crea tu módulo
 
 Archivo recomendado:
