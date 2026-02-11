@@ -20,7 +20,8 @@ flowchart LR
 ```
 
 > [!IMPORTANT]
-> Abre MetaTrader 5 y deja la cuenta conectada antes de lanzar el bot.
+> Abre MetaTrader 5 y deja la cuenta conectada antes de lanzar el bot la primera vez.
+> Si al abrir MetaTrader 5 te inicia solo en la cuenta con la que deseas operar, no te preocupes si no abres MT5 antes que el programa.
 
 ## Inicio rápido en 5 pasos (GUI)
 
