@@ -10,6 +10,7 @@ import backtest
 
 
 def main():
+    # Para peques: esta funcion sirve para arrancar todo el programa.
     """
     Función principal para ejecutar el backtesting.
     """

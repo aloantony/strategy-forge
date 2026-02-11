@@ -7,16 +7,33 @@ from datetime import datetime
 
 
 def log_strategy(message: str):
+    # Para peques: esta funcion sirve para escribir en el log estrategia.
     """Imprime mensaje de estrategia con timestamp."""
     timestamp = datetime.now().strftime("%H:%M:%S")
     print(f"[{timestamp}] [ESTRATEGIA] {message}")
 
 
+# Timeframe sobre el que opera esta estrategia (usado por la GUI)
+TIMEFRAME = "M1"
+
 # Indicadores usados por la estrategia (GUI Object Tree)
 OBJECT_TREE_ITEMS = ["baseline", "atr_bands"]
 
+# Campos recomendados para el Data Window de esta estrategia
+DATA_WINDOW_FIELDS = [
+    {"key": "h_set", "label": "H_Set", "format": "price", "section": "Estrategia"},
+    {"key": "l_set", "label": "L_Set", "format": "price", "section": "Estrategia"},
+    {"key": "average", "label": "Average", "format": "price", "section": "Baseline", "group": "baseline"},
+    {"key": "upper", "label": "Upper", "format": "price", "section": "ATR Bands", "group": "atr_bands"},
+    {"key": "lower", "label": "Lower", "format": "price", "section": "ATR Bands", "group": "atr_bands"},
+    {"key": "dir1", "label": "Dir_1", "format": "number", "section": "Senales"},
+    {"key": "up_sig", "label": "Up_Sig", "format": "number", "section": "Senales"},
+    {"key": "dn_sig", "label": "Dn_Sig", "format": "number", "section": "Senales"},
+]
+
 
 def compute_dir1_and_signals(df: pd.DataFrame, enable_signals: bool) -> pd.DataFrame:
+    # Para peques: esta funcion sirve para compute dir1 and senales.
     """
     Calcula Dir_1 y las señales Up_Sig y Dn_Sig.
     
@@ -71,6 +88,7 @@ _test_flip = False
 
 
 def get_test_signal() -> str:
+    # Para peques: esta funcion sirve para obtener test senal.
     """Alterna BUY/SELL en cada llamada para probar ejecuciones."""
     global _test_flip
     _test_flip = not _test_flip
@@ -78,6 +96,7 @@ def get_test_signal() -> str:
 
 
 def get_last_signal(df: pd.DataFrame, verbose: bool = True) -> str:
+    # Para peques: esta funcion sirve para obtener last senal.
     """
     Obtiene la señal basada en la dirección actual de Dir_1.
     

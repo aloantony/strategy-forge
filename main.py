@@ -4,6 +4,7 @@ Bot de trading principal para MetaTrader 5.
 
 import MetaTrader5 as mt5
 import time
+import importlib
 import pandas as pd
 from datetime import datetime
 import config
@@ -14,12 +15,14 @@ import trading
 
 
 def print_market_status(df, signal):
+    # Para peques: aqui imprimimos un "resumen del partido" para entender que vio el bot.
     """
     Imprime el estado actual del mercado y la estrategia.
     """
     if len(df) < 2:
         return
     
+    # La ultima vela puede seguir moviendose; por eso usamos la penultima (cerrada) para decidir.
     last_idx = len(df) - 1
     last_closed_idx = len(df) - 2
     
@@ -30,13 +33,13 @@ def print_market_status(df, signal):
     print(f"[{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}] Análisis del mercado")
     print("="*80)
     
-    # Información de la última vela cerrada
+    # Le mostramos al usuario la vela cerrada, que es la que ya no cambia.
     print(f"\n[VELA] ULTIMA VELA CERRADA:")
     print(f"   Time: {last_closed['time']}")
     print(f"   OHLC: O={last_closed['open']:.2f} H={last_closed['high']:.2f} "
           f"L={last_closed['low']:.2f} C={last_closed['close']:.2f}")
     
-    # Valores calculados
+    # Estos numeros salen de los indicadores y ayudan a decidir BUY/SELL.
     print(f"\n[CALC] VALORES CALCULADOS (Source: {config.SOURCE_MODE}):")
     print(f"   H_Set: {last_closed['h_set']:.2f}")
     print(f"   L_Set: {last_closed['l_set']:.2f}")
@@ -46,7 +49,7 @@ def print_market_status(df, signal):
     if not pd.isna(last_closed.get('atr', None)):
         print(f"   ATR: {last_closed['atr']:.2f}")
     
-    # Estado de Dir_1
+    # Dir_1 dice "direccion" de la estrategia: 1 alcista, -1 bajista, 0 neutral.
     dir1_prev = df.iloc[last_closed_idx - 1]['dir1'] if last_closed_idx > 0 else 0
     dir1_current = last_closed['dir1']
     dir1_str = "[+] ALCISTA" if dir1_current == 1 else "[-] BAJISTA" if dir1_current == -1 else "[0] NEUTRAL"
@@ -54,18 +57,18 @@ def print_market_status(df, signal):
     print(f"   Anterior: {dir1_prev}")
     print(f"   Actual: {dir1_current} {dir1_str}")
     
-    # Condiciones de la estrategia
+    # Aqui se imprimen comparaciones simples para ver por que la estrategia cambia de direccion.
     print(f"\n[COND] CONDICIONES:")
     print(f"   L_Set > Upper? {last_closed['l_set']:.2f} > {last_closed['upper']:.2f} = {last_closed['l_set'] > last_closed['upper']}")
     print(f"   H_Set < Lower? {last_closed['h_set']:.2f} < {last_closed['lower']:.2f} = {last_closed['h_set'] < last_closed['lower']}")
     
-    # Señales
+    # Up_Sig y Dn_Sig son "luces" que indican si aparecio una senal nueva.
     print(f"\n[SIG] SENALES:")
     print(f"   Up_Sig: {last_closed['up_sig']}")
     print(f"   Dn_Sig: {last_closed['dn_sig']}")
     print(f"   Senal detectada: {signal.upper() if signal != 'none' else 'NINGUNA'}")
     
-    # Estado de posiciones
+    # Tambien mostramos si hay una operacion abierta ahora mismo.
     position_dir = trading.get_open_position_direction(config.SYMBOL, config.MAGIC_NUMBER)
     position_info = trading.get_position_info(config.SYMBOL, config.MAGIC_NUMBER)
     position_str = "[+] BUY" if position_dir == 1 else "[-] SELL" if position_dir == -1 else "[0] SIN POSICION"
@@ -85,6 +88,7 @@ def print_market_status(df, signal):
 
 
 def run_bot_loop():
+    # Para peques: este es el corazon del bot: mirar mercado, decidir, y actuar en bucle.
     """
     Bucle principal del bot de trading.
     """
@@ -92,6 +96,7 @@ def run_bot_loop():
     
     try:
         while True:
+            # Este ciclo se repite cada pocos segundos mientras el bot este encendido.
             try:
                 # 1) Obtener DataFrame de velas
                 df = data_feed.get_rates_df(
@@ -115,27 +120,27 @@ def run_bot_loop():
                     config.ENABLE_SIGNALS
                 )
                 
-                # 4) Obtener última señal (o forzar test)
+                # 4) Obtener la señal de la estrategia (o forzar una senal en modo prueba)
                 test_mode = getattr(config, "TEST_MODE", False)
                 if test_mode:
                     signal = strategy_baseline.get_test_signal()
                     market_open, market_status_msg = True, "TEST_MODE (sin check)"
                 else:
                     signal = strategy_baseline.get_last_signal(df, verbose=True)  # Logs detallados para demo
-                    # 5) Verificar si el mercado está abierto
+                    # 5) Antes de operar, comprobar si el mercado permite abrir/cerrar posiciones.
                     market_open, market_status_msg = trading.is_market_open(config.SYMBOL)
                 
                 # 6) Mostrar información detallada
                 print_market_status(df, signal)
                 
-                # 7) Mostrar estado del mercado
+                # 7) Explicar en consola si se puede operar o no.
                 if market_open:
                     print(f"\n[OK] ESTADO DEL MERCADO: {market_status_msg}")
                 else:
                     print(f"\n[!!] ESTADO DEL MERCADO: {market_status_msg}")
                     print(f"   [WARN] El bot continuara analizando pero NO ejecutara operaciones")
                 
-                # 8) Aplicar señal si existe Y el mercado está abierto
+                # 8) Solo operamos cuando hay senal real y el mercado esta abierto.
                 if signal != "none":
                     if market_open:
                         print(f"\n>>> ACCION: Ejecutando senal {signal.upper()}")
@@ -152,7 +157,7 @@ def run_bot_loop():
                 else:
                     print(f"\n[WAIT] Sin accion requerida")
                 
-                # 7) Esperar antes de la siguiente iteración
+                # 9) Esperar un rato para no saturar MT5 con consultas continuas.
                 print(f"\n[...] Esperando {config.SLEEP_SECONDS} segundos hasta la siguiente iteracion...\n")
                 time.sleep(config.SLEEP_SECONDS)
                 
@@ -169,20 +174,52 @@ def run_bot_loop():
 
 
 def main():
+    # Para peques: esta funcion sirve para arrancar todo el programa.
     """
     Función principal del bot.
     """
-    # Establecer timeframe
+    # Primero elegimos el marco de tiempo (M1, M5, H1...) que usara la estrategia.
     config.TIMEFRAME = mt5.TIMEFRAME_M1
+    strategy_timeframe = None
+    timeframe_map = {
+        "M1": mt5.TIMEFRAME_M1,
+        "M5": mt5.TIMEFRAME_M5,
+        "M15": mt5.TIMEFRAME_M15,
+        "M30": mt5.TIMEFRAME_M30,
+        "H1": mt5.TIMEFRAME_H1,
+        "H4": mt5.TIMEFRAME_H4,
+        "D1": mt5.TIMEFRAME_D1
+    }
+    try:
+        module_ref = getattr(config, "STRATEGY_MODULE", "") or "strategies.strategy_baseline"
+        module = importlib.import_module(module_ref)
+        module = importlib.reload(module)
+        if hasattr(module, "get_timeframe"):
+            strategy_timeframe = module.get_timeframe()
+        else:
+            for key in ("TIMEFRAME", "STRATEGY_TIMEFRAME", "TIMEFRAME_STR"):
+                if hasattr(module, key):
+                    strategy_timeframe = getattr(module, key)
+                    break
+    except Exception as e:
+        print(f"[WARN] No se pudo cargar timeframe de estrategia: {e}")
+        strategy_timeframe = None
+
+    if isinstance(strategy_timeframe, str):
+        tf_value = timeframe_map.get(strategy_timeframe.strip().upper())
+        if tf_value is not None:
+            config.TIMEFRAME = tf_value
+    elif isinstance(strategy_timeframe, int) and strategy_timeframe in timeframe_map.values():
+        config.TIMEFRAME = strategy_timeframe
     
-    # Inicializar MT5
+    # Conectamos con MetaTrader 5.
     try:
         mt5_connection.initialize_mt5()
     except Exception as e:
         print(f"Error al inicializar MT5: {e}")
         return
     
-    # Verificar símbolo
+    # Comprobamos que el simbolo exista y este disponible.
     try:
         mt5_connection.check_symbol(config.SYMBOL)
     except Exception as e:
@@ -190,13 +227,13 @@ def main():
         mt5.shutdown()
         return
     
-    # Imprimir configuración
+    # Mostrar la configuracion ayuda a depurar si algo no cuadra.
     config.print_config()
     
-    # Ejecutar bucle del bot
+    # Arranca el ciclo infinito del bot.
     run_bot_loop()
     
-    # Cerrar conexión
+    # Si el bucle termina, cerramos la conexion de forma limpia.
     mt5.shutdown()
 
 
