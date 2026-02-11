@@ -12,11 +12,13 @@ from strategies import strategy_baseline
 
 
 class BacktestEngine:
+    # Para peques: esta clase simula operaciones pasadas para ver como habria ido la estrategia.
     """
     Motor de backtesting que simula operaciones con datos históricos.
     """
     
     def __init__(self, symbol: str, timeframe, lot: float, sl_points: float, tp_points: float):
+        # Para peques: esta funcion sirve para preparar todo al inicio.
         """
         Inicializa el motor de backtesting.
         
@@ -57,6 +59,7 @@ class BacktestEngine:
         self.tick_value = symbol_info.trade_tick_value
     
     def calculate_profit(self, entry_price: float, exit_price: float, direction: int, volume: float) -> float:
+        # Para peques: esta funcion sirve para calculate profit.
         """
         Calcula el profit de una operación.
         
@@ -74,6 +77,7 @@ class BacktestEngine:
         return profit
     
     def check_sl_tp(self, candle: pd.Series, position: dict) -> tuple[bool, str, float]:
+        # Para peques: esta funcion sirve para comprobar sl tp.
         """
         Verifica si se activó el SL o TP.
         
@@ -107,6 +111,7 @@ class BacktestEngine:
         return False, '', 0.0
     
     def open_position(self, candle: pd.Series, direction: int, signal_type: str):
+        # Para peques: esta funcion sirve para abrir posicion.
         """
         Abre una nueva posición.
         
@@ -144,6 +149,7 @@ class BacktestEngine:
         }
     
     def close_position(self, candle: pd.Series, reason: str):
+        # Para peques: esta funcion sirve para cerrar posicion.
         """
         Cierra la posición actual.
         
@@ -209,6 +215,7 @@ class BacktestEngine:
         self.current_position = None
     
     def run(self, start_date: datetime, end_date: datetime):
+        # Para peques: esta funcion sirve para ejecutar el proceso completo.
         """
         Ejecuta el backtesting en el rango de fechas especificado.
         
@@ -291,6 +298,7 @@ class BacktestEngine:
         print("✓ Simulación completada\n")
     
     def get_results(self) -> dict:
+        # Para peques: esta funcion sirve para obtener results.
         """
         Calcula y retorna las métricas del backtesting.
         
@@ -327,6 +335,7 @@ class BacktestEngine:
         }
     
     def print_results(self):
+        # Para peques: esta funcion sirve para mostrar results.
         """
         Imprime los resultados del backtesting de forma legible.
         """
@@ -374,6 +383,7 @@ class BacktestEngine:
 
 def run_backtest(symbol: str, timeframe, start_date: datetime, end_date: datetime,
                  lot: float = None, sl_points: float = None, tp_points: float = None):
+    # Para peques: esta funcion lanza una prueba con datos pasados y devuelve el resumen.
     """
     Función de conveniencia para ejecutar un backtest.
     

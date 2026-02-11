@@ -9,6 +9,7 @@ import config
 
 
 def get_rates_df(symbol: str, timeframe, bars: int) -> pd.DataFrame:
+    # Para peques: pedimos velas a MT5 y las convertimos en una tabla facil de usar.
     """
     Obtiene las velas históricas desde MetaTrader 5.
     
@@ -25,12 +26,14 @@ def get_rates_df(symbol: str, timeframe, bars: int) -> pd.DataFrame:
         raise Exception(f"No se pudieron obtener datos para {symbol}")
     
     df = pd.DataFrame(rates)
-    df['time'] = pd.to_datetime(df['time'], unit='s')
+    # Los timestamps de MT5 llegan en época UTC; mantenerlos explícitos evita desfases.
+    df['time'] = pd.to_datetime(df['time'], unit='s', utc=True)
     
     return df
 
 
 def add_source_columns(df: pd.DataFrame, source_mode: str) -> pd.DataFrame:
+    # Para peques: creamos "precios resumidos" (OHLC4, HLC3...) para que la estrategia elija uno.
     """
     Calcula las columnas de fuente (OHLC4, HLC3, HL2, CLOSE) y H_Set, L_Set.
     
@@ -43,13 +46,13 @@ def add_source_columns(df: pd.DataFrame, source_mode: str) -> pd.DataFrame:
     """
     df = df.copy()
     
-    # Calcular todas las fuentes posibles
+    # Calculamos varias formas de resumir el precio de cada vela.
     df['OHLC4'] = (df['open'] + df['high'] + df['low'] + df['close']) / 4
     df['HLC3'] = (df['high'] + df['low'] + df['close']) / 3
     df['HL2'] = (df['high'] + df['low']) / 2
     df['CLOSE'] = df['close']
     
-    # Seleccionar H_Set y L_Set según source_mode
+    # Segun SOURCE_MODE, elegimos cual de esos resúmenes sera la base de la estrategia.
     if source_mode == "OHLC4":
         df['h_set'] = df['OHLC4']
         df['l_set'] = df['OHLC4']
@@ -69,6 +72,7 @@ def add_source_columns(df: pd.DataFrame, source_mode: str) -> pd.DataFrame:
 
 
 def add_baseline_bands(df: pd.DataFrame, ma_length: int, atr_length: int, atr_mult: float) -> pd.DataFrame:
+    # Para peques: dibujamos una linea central y dos "barandillas" arriba y abajo.
     """
     Calcula la media móvil (Average) y las bandas superior e inferior usando ATR.
     
@@ -86,7 +90,7 @@ def add_baseline_bands(df: pd.DataFrame, ma_length: int, atr_length: int, atr_mu
     # Calcular Average (SMA sobre h_set como fuente)
     df['average'] = df['h_set'].rolling(window=ma_length).mean()
     
-    # Calcular ATR clásico
+    # ATR mide cuanto se mueve el precio; lo usamos para separar las barandillas.
     high_low = df['high'] - df['low']
     high_close = abs(df['high'] - df['close'].shift())
     low_close = abs(df['low'] - df['close'].shift())
@@ -94,7 +98,7 @@ def add_baseline_bands(df: pd.DataFrame, ma_length: int, atr_length: int, atr_mu
     tr = pd.concat([high_low, high_close, low_close], axis=1).max(axis=1)
     df['atr'] = tr.rolling(window=atr_length).mean()
     
-    # Calcular bandas
+    # Upper y Lower son limites dinamicos alrededor de la media.
     df['upper'] = df['average'] + (df['atr'] * atr_mult)
     df['lower'] = df['average'] - (df['atr'] * atr_mult)
     
@@ -102,6 +106,7 @@ def add_baseline_bands(df: pd.DataFrame, ma_length: int, atr_length: int, atr_mu
 
 
 def weighted_moving_average(series: pd.Series, length: int) -> pd.Series:
+    # Para peques: esta media da mas importancia a los datos mas recientes.
     """
     Calcula la media móvil ponderada (WMA).
     """
@@ -113,6 +118,7 @@ def weighted_moving_average(series: pd.Series, length: int) -> pd.Series:
 
 
 def hull_moving_average(series: pd.Series, length: int) -> pd.Series:
+    # Para peques: HMA intenta ser suave como una media, pero reaccionar mas rapido.
     """
     Calcula la media móvil de Hull (HMA).
     """
@@ -133,6 +139,7 @@ def add_supertrend(
     use_hma: bool = True,
     hma_length: int = 55
 ) -> pd.DataFrame:
+    # Para peques: calculamos una guia de tendencia que va cambiando de lado del precio.
     """
     Calcula el Supertrend (opcionalmente suavizado con HMA).
 
@@ -144,7 +151,7 @@ def add_supertrend(
     """
     df = df.copy()
 
-    # ATR específico para Supertrend (no sobrescribe el ATR base)
+    # Usamos un ATR propio para Supertrend, separado del ATR base.
     atr_col = f"atr_st_{atr_length}"
     if atr_col not in df.columns or df[atr_col].isna().all():
         high_low = df['high'] - df['low']
@@ -157,6 +164,7 @@ def add_supertrend(
 
     source = df[source_col] if source_col in df.columns else df['close']
     if use_hma:
+        # Si se activa HMA, usamos un precio suavizado para evitar ruido.
         df['hma'] = hull_moving_average(source, hma_length)
         price = df['hma']
     else:
@@ -171,11 +179,13 @@ def add_supertrend(
     supertrend = np.full(len(df), np.nan)
     direction = np.zeros(len(df))
 
+    # Recorremos vela por vela para decidir si la tendencia sigue o cambia.
     for i in range(len(df)):
         if pd.isna(atr.iloc[i]):
             continue
 
         if i == 0:
+            # Primera vela valida: solo sembramos valores iniciales.
             final_upper[i] = basic_upper.iloc[i]
             final_lower[i] = basic_lower.iloc[i]
             continue
@@ -209,6 +219,7 @@ def add_supertrend(
                 direction[i] = -1
             continue
 
+        # Si antes estabamos "arriba", verificamos si toca seguir arriba o cruzar abajo (y viceversa).
         if prev_super == prev_final_upper:
             if price.iloc[i] <= final_upper[i]:
                 supertrend[i] = final_upper[i]
@@ -238,6 +249,7 @@ def add_tci(
     signal_length: int = 5,
     atr_col: str = "atr"
 ) -> pd.DataFrame:
+    # Para peques: creamos un oscilador para saber si el impulso sube o baja.
     """
     Calcula un oscilador tipo TCI (normalizado por ATR o volatilidad).
 
@@ -253,6 +265,7 @@ def add_tci(
     ema_slow = price.ewm(span=slow_length, adjust=False).mean()
     tci_raw = ema_fast - ema_slow
 
+    # Normalizamos por ATR (o por desviacion) para comparar mejor entre momentos de distinta volatilidad.
     if atr_col in df.columns and not df[atr_col].isna().all():
         denom = df[atr_col].replace(0, np.nan)
     else:

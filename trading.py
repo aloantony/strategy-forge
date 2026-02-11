@@ -5,6 +5,7 @@ Gestión de órdenes y posiciones en MetaTrader 5.
 import MetaTrader5 as mt5
 from datetime import datetime, timedelta
 import math
+import time
 import config
 
 _FILLING_NAME = {
@@ -13,8 +14,42 @@ _FILLING_NAME = {
     getattr(mt5, "ORDER_FILLING_RETURN", 2): "RETURN",
 }
 
+# Recordamos la ultima accion por simbolo para no operar demasiadas veces seguidas.
+_last_action_ts = {}
+
+
+def _get_timeframe_seconds(timeframe_value=None) -> int:
+    # Para peques: convierte M1, M5, H1... en segundos para medir esperas.
+    """Devuelve el intervalo minimo entre ejecuciones segun el timeframe."""
+    timeframe_seconds = {
+        mt5.TIMEFRAME_M1: 60,
+        mt5.TIMEFRAME_M5: 5 * 60,
+        mt5.TIMEFRAME_M15: 15 * 60,
+        mt5.TIMEFRAME_M30: 30 * 60,
+        mt5.TIMEFRAME_H1: 60 * 60,
+        mt5.TIMEFRAME_H4: 4 * 60 * 60,
+        mt5.TIMEFRAME_D1: 24 * 60 * 60
+    }
+    tf = timeframe_value if timeframe_value is not None else config.TIMEFRAME
+    return int(timeframe_seconds.get(tf, 60))
+
+
+def _should_throttle(symbol: str, magic_number: int, now_ts: float, min_interval: int = None):
+    # Para peques: revisa si aun toca esperar antes de permitir otra operacion.
+    key = (symbol, magic_number)
+    last_ts = _last_action_ts.get(key)
+    if last_ts is None:
+        return False, 0
+    if min_interval is None:
+        min_interval = _get_timeframe_seconds()
+    elapsed = now_ts - last_ts
+    if elapsed < min_interval:
+        return True, int(min_interval - elapsed)
+    return False, 0
+
 
 def get_allowed_filling_modes(symbol_info):
+    # Para peques: pregunta que tipos de ejecucion de orden acepta este broker.
     """
     Devuelve la lista de modos de llenado permitidos según el bitmask trade_fillings.
     """
@@ -37,6 +72,7 @@ def get_allowed_filling_modes(symbol_info):
 
 
 def describe_fillings(symbol_info, allowed_modes):
+    # Para peques: crea un texto legible con los modos de llenado permitidos.
     """
     Devuelve cadena legible con trade_fillings, filling_mode y modos permitidos.
     """
@@ -51,6 +87,7 @@ def describe_fillings(symbol_info, allowed_modes):
 
 
 def choose_filling_mode(symbol_info, allowed_modes=None) -> int:
+    # Para peques: elige el mejor modo de llenado para aumentar la probabilidad de exito.
     """
     Elige un modo de llenado permitido por el símbolo.
     - Prioriza el filling_mode expuesto si es válido.
@@ -75,6 +112,7 @@ def choose_filling_mode(symbol_info, allowed_modes=None) -> int:
 
 
 def _is_unsupported_filling(result) -> bool:
+    # Para peques: detecta si MT5 rechazo la orden por un modo de llenado no valido.
     """
     Detecta si el retcode/comentario indica filling mode no soportado.
     """
@@ -87,6 +125,7 @@ def _is_unsupported_filling(result) -> bool:
 
 
 def order_send_with_filling_retry(request: dict, symbol_info):
+    # Para peques: intenta enviar la orden probando varios modos hasta que uno funcione.
     """
     Envía una orden intentando automáticamente los modos de llenado permitidos.
     Devuelve (result, modo_usado, modos_intentados).
@@ -111,6 +150,7 @@ def order_send_with_filling_retry(request: dict, symbol_info):
     last_mode = None
 
     for mode in modes_to_try:
+        # Probamos uno por uno; si alguno funciona, paramos ahi.
         request["type_filling"] = mode
         last_mode = mode
         result = mt5.order_send(request)
@@ -123,6 +163,7 @@ def order_send_with_filling_retry(request: dict, symbol_info):
 
 
 def normalize_volume(requested_volume: float, symbol_info):
+    # Para peques: ajusta el volumen al minimo, maximo y paso permitidos por el simbolo.
     """
     Ajusta el volumen solicitado a los limites del simbolo (min, max, step).
     Devuelve el volumen ajustado y un mensaje si se modifica.
@@ -157,6 +198,7 @@ def normalize_volume(requested_volume: float, symbol_info):
 
 
 def adjust_stops(direction: int, price: float, sl: float, tp: float, symbol_info, tick):
+    # Para peques: mueve SL/TP si estan demasiado cerca del precio actual.
     """
     Ajusta SL/TP para cumplir con el nivel mínimo de stops del símbolo.
     Devuelve (sl, tp, nota) si hubo ajuste.
@@ -180,6 +222,7 @@ def adjust_stops(direction: int, price: float, sl: float, tp: float, symbol_info
 
     adjusted = False
     if direction == 1:  # BUY
+        # En compra, el SL va por debajo y el TP por encima del precio.
         if sl > 0 and (ref_price - sl) < min_dist:
             sl = ref_price - min_dist
             adjusted = True
@@ -187,6 +230,7 @@ def adjust_stops(direction: int, price: float, sl: float, tp: float, symbol_info
             tp = ref_price + min_dist
             adjusted = True
     else:  # SELL
+        # En venta, se invierte la logica: SL arriba y TP abajo.
         if sl > 0 and (sl - ref_price) < min_dist:
             sl = ref_price + min_dist
             adjusted = True
@@ -204,6 +248,7 @@ def adjust_stops(direction: int, price: float, sl: float, tp: float, symbol_info
 
 
 def is_market_open(symbol: str):
+    # Para peques: revisa si hay precios recientes y validos para poder operar.
     """
     Verifica si el mercado está abierto para el símbolo dado.
     
@@ -248,6 +293,7 @@ def is_market_open(symbol: str):
 
 
 def get_open_position_direction(symbol: str, magic_number: int) -> int:
+    # Para peques: dice si ahora mismo tenemos BUY, SELL o nada en ese simbolo.
     """
     Obtiene la dirección de la posición abierta para el símbolo y magic number.
     
@@ -274,6 +320,7 @@ def get_open_position_direction(symbol: str, magic_number: int) -> int:
 
 
 def get_position_info(symbol: str, magic_number: int) -> dict:
+    # Para peques: devuelve detalles de la posicion abierta (ticket, precio, profit, etc.).
     """
     Obtiene información detallada de la posición abierta.
     
@@ -302,6 +349,7 @@ def get_position_info(symbol: str, magic_number: int) -> dict:
 
 
 def close_position(symbol: str, magic_number: int):
+    # Para peques: cierra la posicion abierta del bot para ese simbolo.
     """
     Cierra la posición abierta del símbolo con el magic number especificado.
     
@@ -338,6 +386,7 @@ def close_position(symbol: str, magic_number: int):
 
     for position in positions:
         if position.magic == magic_number:
+            # Para cerrar, enviamos una orden contraria a la posicion actual.
             request = {
                 "action": mt5.TRADE_ACTION_DEAL,
                 "symbol": symbol,
@@ -382,6 +431,7 @@ def close_position(symbol: str, magic_number: int):
 
 
 def send_order(symbol: str, direction: int, lot: float, sl_points: float, tp_points: float, magic_number: int):
+    # Para peques: abre una operacion nueva (compra o venta) con SL/TP.
     """
     Envía una orden de compra o venta.
     
@@ -413,11 +463,13 @@ def send_order(symbol: str, direction: int, lot: float, sl_points: float, tp_poi
     bid = tick.bid if tick else 0.0
     
     if direction == 1:  # BUY
+        # En compra se entra al ASK.
         price = ask
         sl = price - (sl_points * point) if sl_points > 0 else 0
         tp = price + (tp_points * point) if tp_points > 0 else 0
         order_type = mt5.ORDER_TYPE_BUY
     elif direction == -1:  # SELL
+        # En venta se entra al BID.
         price = bid
         sl = price + (sl_points * point) if sl_points > 0 else 0
         tp = price - (tp_points * point) if tp_points > 0 else 0
@@ -432,6 +484,7 @@ def send_order(symbol: str, direction: int, lot: float, sl_points: float, tp_poi
             "error": f"Dirección inválida: {direction}"
         }
 
+    # Ajustamos parametros para que cumplan reglas del broker antes de enviar nada.
     lot, volume_note = normalize_volume(lot, symbol_info)
     if volume_note:
         print(f"   [WARN] {volume_note}")
@@ -504,7 +557,16 @@ def send_order(symbol: str, direction: int, lot: float, sl_points: float, tp_poi
     return result_info
 
 
-def apply_signal(symbol: str, signal: str, lot: float, sl_points: float, tp_points: float, magic_number: int):
+def apply_signal(
+    symbol: str,
+    signal: str,
+    lot: float,
+    sl_points: float,
+    tp_points: float,
+    magic_number: int,
+    timeframe_value: int = None
+):
+    # Para peques: traduce la senal (buy/sell/none) en acciones reales de trading.
     """
     Aplica una señal de trading: abre o cierra posiciones según corresponda.
     
@@ -523,9 +585,18 @@ def apply_signal(symbol: str, signal: str, lot: float, sl_points: float, tp_poin
     print("!"*60)
     
     if signal == "none":
+        # "none" significa mirar y esperar, sin tocar posiciones.
         print(f"   [SKIP] Senal 'none' - No se requiere accion")
         return None
+
+    now_ts = time.time()
+    min_interval = _get_timeframe_seconds(timeframe_value)
+    throttled, remaining = _should_throttle(symbol, magic_number, now_ts, min_interval=min_interval)
+    if throttled:
+        print(f"   [SKIP] Esperando cooldown ({remaining}s) para nueva ejecucion.")
+        return None
     
+    # Miramos en que estado estamos antes de decidir (sin posicion, buy o sell).
     current_direction = get_open_position_direction(symbol, magic_number)
     position_info = get_position_info(symbol, magic_number)
     
@@ -575,6 +646,8 @@ def apply_signal(symbol: str, signal: str, lot: float, sl_points: float, tp_poin
 
     actions = [a for a in actions if a] if isinstance(actions, list) else []
     if actions:
+        if any(isinstance(a, dict) and a.get("success") is True for a in actions):
+            _last_action_ts[(symbol, magic_number)] = time.time()
         return {
             "timestamp": datetime.now(),
             "symbol": symbol,

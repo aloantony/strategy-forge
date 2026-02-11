@@ -9,6 +9,8 @@ Guarda tu estrategia como un modulo Python dentro de `strategies/`.
 Ejemplos:
 - `strategies/mi_estrategia.py`
 - `strategies/strategy_baseline.py`
+- `strategies/strategy_m1_test.py`
+- `strategies/strategy_m1_candle.py`
 
 ## Reglas basicas
 
@@ -27,8 +29,24 @@ Retorna:
 
 ## API opcional (recomendada)
 
+- `TIMEFRAME = "M1"` (o `"M5"`, `"M15"`, `"M30"`, `"H1"`, `"H4"`, `"D1"`)
+  - Define el timeframe de velas sobre el que opera la estrategia.
+  - La GUI usará este timeframe para cargar y mostrar las velas.
+  - Usa string para evitar dependencias con MT5 en la estrategia.
+- `get_timeframe() -> str`
+  - Alternativa si necesitas decidir el timeframe de forma dinamica.
 - `prepare_dataframe(df) -> pd.DataFrame`
   - Prepara columnas propias necesarias para la estrategia.
+- `DATA_WINDOW_FIELDS = [...]`
+  - Lista de campos para el Data Window de la GUI.
+  - Formato recomendado:
+    - `{"key": "ema_fast", "label": "EMA Fast", "format": "price", "section": "EMA Cross"}`
+  - Claves opcionales:
+    - `group`: para respetar visibilidad de Object Tree.
+    - `shift`: desplaza la serie (ej. `1` para usar vela cerrada).
+- `MAGIC_NUMBER = 123456789`
+  - Opcional para forzar un magic number fijo por estrategia.
+  - Si no se define, la GUI genera uno estable automáticamente.
 - `compute_dir1_and_signals(df, enable_signals) -> pd.DataFrame`
   - O bien `compute_signals(df, enable_signals) -> pd.DataFrame`.
 - `get_test_signal() -> str`
@@ -102,6 +120,51 @@ def get_last_signal(df: pd.DataFrame, verbose: bool = False) -> str:
 # Opcional
 # def get_test_signal() -> str:
 #     return "buy"
+```
+
+## Ejemplo M1 (EMA cross)
+
+```python
+TIMEFRAME = "M1"
+EMA_FAST = 9
+EMA_SLOW = 21
+
+def prepare_dataframe(df):
+    df["ema_fast"] = df["close"].ewm(span=EMA_FAST, adjust=False).mean()
+    df["ema_slow"] = df["close"].ewm(span=EMA_SLOW, adjust=False).mean()
+    return df
+
+def get_last_signal(df, verbose=False):
+    if len(df) < 3:
+        return "none"
+    last_idx = len(df) - 2
+    prev_idx = last_idx - 1
+    fast = df.iloc[last_idx]["ema_fast"]
+    slow = df.iloc[last_idx]["ema_slow"]
+    fast_prev = df.iloc[prev_idx]["ema_fast"]
+    slow_prev = df.iloc[prev_idx]["ema_slow"]
+    if fast_prev <= slow_prev and fast > slow:
+        return "buy"
+    if fast_prev >= slow_prev and fast < slow:
+        return "sell"
+    return "none"
+```
+
+## Ejemplo M1 (vela confirmada)
+
+```python
+TIMEFRAME = "M1"
+MIN_BODY_POINTS = 40.0
+
+def get_last_signal(df, verbose=False):
+    if len(df) < 2:
+        return "none"
+    row = df.iloc[len(df) - 2]
+    body = row["close"] - row["open"]
+    points = abs(body) * 10 ** 2  # ajusta según dígitos del símbolo
+    if points >= MIN_BODY_POINTS:
+        return "buy" if body > 0 else "sell"
+    return "none"
 ```
 
 ## Como activar tu estrategia

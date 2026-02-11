@@ -27,6 +27,7 @@ MAGIC_NUMBER = 123456
 # Configuración de la estrategia
 STRATEGY_KEY = "baseline"
 STRATEGY_MODULE = "strategies.strategy_baseline"
+ACTIVE_STRATEGIES = [STRATEGY_KEY]
 STRATEGY_DIR = "strategies"
 SOURCE_MODE = "OHLC4"  # "OHLC4" | "HLC3" | "HL2" | "CLOSE"
 MA_LENGTH = 20
@@ -53,12 +54,14 @@ SLEEP_SECONDS = 10
 # Feedback / sugerencias
 # Si FEEDBACK_WEBHOOK_URL tiene un valor, se enviará un POST con JSON.
 # Si no, se guardará en un archivo local en FEEDBACK_SAVE_DIR.
-FEEDBACK_WEBHOOK_URL = ""
+FEEDBACK_WEBHOOK_URL = "https://outside-adelheid-bralsolving-397f3acf.koyeb.app/feedback?key=98679247c1d14aea9d11cf16fd9482cf"
 FEEDBACK_SAVE_DIR = "feedback"
 FEEDBACK_TIMEOUT_SECONDS = 4
+FEEDBACK_LIST_URL = ""
 
 
 def print_config():
+    # Para peques: esta funcion sirve para mostrar config.
     """Imprime la configuración actual para depuración."""
     print("=== CONFIGURACIÓN ===")
     print(f"SYMBOL: {SYMBOL}")
@@ -69,6 +72,7 @@ def print_config():
     print(f"MAGIC_NUMBER: {MAGIC_NUMBER}")
     print(f"STRATEGY_KEY: {STRATEGY_KEY}")
     print(f"STRATEGY_MODULE: {STRATEGY_MODULE}")
+    print(f"ACTIVE_STRATEGIES: {ACTIVE_STRATEGIES}")
     print(f"STRATEGY_DIR: {STRATEGY_DIR}")
     print(f"SOURCE_MODE: {SOURCE_MODE}")
     print(f"MA_LENGTH: {MA_LENGTH}")
