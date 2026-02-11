@@ -58,6 +58,8 @@ FEEDBACK_WEBHOOK_URL = "https://outside-adelheid-bralsolving-397f3acf.koyeb.app/
 FEEDBACK_SAVE_DIR = "feedback"
 FEEDBACK_TIMEOUT_SECONDS = 4
 FEEDBACK_LIST_URL = ""
+# Opcional: URL pública de la guía de estrategias (si se deja vacío se deriva de FEEDBACK_WEBHOOK_URL)
+STRATEGY_GUIDE_URL = ""
 
 
 def print_config():

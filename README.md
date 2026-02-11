@@ -60,6 +60,12 @@ python gui_charts.py
 Guía completa: `strategies/README.md`  
 A continuación tienes el camino corto para arrancar rápido.
 
+También puedes usar la guía web visual desplegada en el servidor:
+
+- `https://TU_DOMINIO_KOYEB/strategies/guide`
+
+Si ya tienes `FEEDBACK_WEBHOOK_URL` en `config.py`, la GUI deriva esa URL automáticamente y la muestra en el aviso de "Estrategia incompleta" como acceso directo a la guía.
+
 ### 1) Crea tu módulo
 
 Archivo recomendado:
@@ -135,3 +141,6 @@ python main.py
 - Prueba primero en cuenta demo.
 - Empieza con lotaje bajo.
 - Verifica símbolo y horario de mercado antes de operar en real.
+- Si expones `feedback_server.py` en internet, restringe `GET /feedback/list`:
+  - `FEEDBACK_LIST_ALLOWED_IPS=TU_IP_PUBLICA` (una o varias IP/CIDR separadas por coma).
+  - o `FEEDBACK_LIST_LOCAL_ONLY=true` para permitir solo localhost.
