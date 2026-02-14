@@ -26,7 +26,7 @@ TOKEN = (os.getenv("FEEDBACK_WEBHOOK_TOKEN", "") or "").strip()
 HOST = os.getenv("FEEDBACK_HOST", "0.0.0.0")
 
 def _get_port():
-    # Para peques: decidimos en que "puerta" (puerto) va a escuchar el servidor.
+    # decidimos en que "puerta" (puerto) va a escuchar el servidor.
     port_raw = (os.getenv("PORT") or "").strip()
     if port_raw:
         try:
@@ -44,7 +44,7 @@ MAX_BODY_BYTES = int(os.getenv("FEEDBACK_MAX_BYTES", "32768"))
 
 
 def _env_flag(name: str, default: bool = False) -> bool:
-    # Para peques: convierte texto de variables de entorno en True/False.
+    # convierte texto de variables de entorno en True/False.
     raw = (os.getenv(name) or "").strip().lower()
     if not raw:
         return default
@@ -52,7 +52,7 @@ def _env_flag(name: str, default: bool = False) -> bool:
 
 
 def _parse_allowed_ip_networks(raw: str):
-    # Para peques: transforma "1.2.3.4,10.0.0.0/24" en reglas de red válidas.
+    # transforma "1.2.3.4,10.0.0.0/24" en reglas de red válidas.
     networks = []
     for part in (raw or "").split(","):
         item = part.strip()
@@ -76,7 +76,7 @@ LIST_ALLOWED_NETWORKS = _parse_allowed_ip_networks(LIST_ALLOWED_IPS_RAW)
 
 
 def _json_response(handler, status_code: int, payload: dict):
-    # Para peques: empaquetamos la respuesta en JSON y la devolvemos al cliente.
+    # empaquetamos la respuesta en JSON y la devolvemos al cliente.
     body = json.dumps(payload).encode("utf-8")
     handler.send_response(status_code)
     handler.send_header("Content-Type", "application/json; charset=utf-8")
@@ -87,7 +87,7 @@ def _json_response(handler, status_code: int, payload: dict):
 
 
 def _check_token(parsed) -> bool:
-    # Para peques: comprobamos la llave secreta para evitar que cualquiera envie datos.
+    # comprobamos la llave secreta para evitar que cualquiera envie datos.
     if not TOKEN:
         return True
     query = parse_qs(parsed.query)
@@ -96,7 +96,7 @@ def _check_token(parsed) -> bool:
 
 
 def _parse_limit(parsed, default=50, max_limit=200):
-    # Para peques: leemos cuantas sugerencias pidio el usuario, con limites seguros.
+    # leemos cuantas sugerencias pidio el usuario, con limites seguros.
     query = parse_qs(parsed.query)
     raw = (query.get("limit") or [""])[0]
     try:
@@ -109,7 +109,7 @@ def _parse_limit(parsed, default=50, max_limit=200):
 
 
 def _read_recent_feedback(limit: int):
-    # Para peques: abrimos archivos de feedback y devolvemos lo mas nuevo primero.
+    # abrimos archivos de feedback y devolvemos lo mas nuevo primero.
     if not os.path.isdir(SAVE_DIR):
         return []
 
@@ -146,7 +146,7 @@ def _read_recent_feedback(limit: int):
 
 
 def _get_client_ip(handler):
-    # Para peques: intentamos detectar la IP real del cliente (directa o via proxy).
+    # intentamos detectar la IP real del cliente (directa o via proxy).
     xff_raw = (handler.headers.get("X-Forwarded-For") or "").strip()
     if xff_raw:
         candidate = xff_raw.split(",", 1)[0].strip()
@@ -159,7 +159,7 @@ def _get_client_ip(handler):
 
 
 def _is_feedback_list_client_allowed(handler) -> bool:
-    # Para peques: decide si este cliente puede leer /feedback/list.
+    # decide si este cliente puede leer /feedback/list.
     client_ip = _get_client_ip(handler)
     if client_ip is None:
         return False
@@ -174,9 +174,9 @@ def _is_feedback_list_client_allowed(handler) -> bool:
 
 
 class FeedbackHandler(BaseHTTPRequestHandler):
-    # Para peques: esta clase atiende las peticiones que llegan por internet.
+    # esta clase atiende las peticiones que llegan por internet.
     def do_GET(self):
-        # Para peques: esta funcion sirve para atender peticiones GET del servidor.
+        # esta funcion sirve para atender peticiones GET del servidor.
         parsed = urlparse(self.path)
         if parsed.path in ("/", "/health"):
             _json_response(self, 200, {"ok": True})
@@ -196,7 +196,7 @@ class FeedbackHandler(BaseHTTPRequestHandler):
         _json_response(self, 404, {"ok": False, "error": "not_found"})
 
     def do_POST(self):
-        # Para peques: esta funcion sirve para atender peticiones POST del servidor.
+        # esta funcion sirve para atender peticiones POST del servidor.
         parsed = urlparse(self.path)
         if parsed.path != "/feedback":
             _json_response(self, 404, {"ok": False, "error": "not_found"})
@@ -259,13 +259,13 @@ class FeedbackHandler(BaseHTTPRequestHandler):
         _json_response(self, 200, {"ok": True})
 
     def log_message(self, format, *args):
-        # Para peques: dejamos esto vacio para que la consola no se llene de mensajes HTTP.
+        # dejamos esto vacio para que la consola no se llene de mensajes HTTP.
         # Reduce ruido en consola; comenta esta función si quieres logs HTTP.
         return
 
 
 def main():
-    # Para peques: esta funcion sirve para arrancar todo el programa.
+    # esta funcion sirve para arrancar todo el programa.
     # Creamos el servidor y lo dejamos escuchando sin parar.
     server = ThreadingHTTPServer((HOST, PORT), FeedbackHandler)
     print(f"Feedback server escuchando en http://{HOST}:{PORT}/feedback")
@@ -285,4 +285,5 @@ def main():
 
 if __name__ == "__main__":
     main()
+
 

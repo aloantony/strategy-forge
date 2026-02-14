@@ -7,7 +7,7 @@ import config
 
 
 def initialize_mt5():
-    # Para peques: esta funcion sirve para initialize mt5.
+    # esta funcion sirve para initialize mt5.
     """
     Inicializa la conexión con MetaTrader 5.
     
@@ -35,7 +35,7 @@ def initialize_mt5():
 
 
 def check_symbol(symbol: str):
-    # Para peques: esta funcion sirve para comprobar simbolo.
+    # esta funcion sirve para comprobar simbolo.
     """
     Verifica que el símbolo existe y está disponible.
     
@@ -58,4 +58,5 @@ def check_symbol(symbol: str):
     
     print(f"Símbolo {symbol} verificado correctamente")
     return True
+
 

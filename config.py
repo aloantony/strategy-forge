@@ -24,10 +24,14 @@ SL_POINTS = 300.0  # Stop Loss en puntos (ajustado para DAX con spread de 200)
 TP_POINTS = 500.0  # Take Profit en puntos (ajustado para DAX con spread de 200)
 MAGIC_NUMBER = 123456
 
-# Configuración de la estrategia
-STRATEGY_KEY = "baseline"
-STRATEGY_MODULE = "strategies.strategy_baseline"
-ACTIVE_STRATEGIES = [STRATEGY_KEY]
+# Configuración de estrategias
+STRATEGY_KEY = "ema_rsi_trend"
+STRATEGY_MODULE = ""  # Opcional. Si esta vacio, se resuelve por convencion: strategies.strategy_<STRATEGY_KEY>
+ACTIVE_STRATEGIES = [
+    "ema_rsi_trend",
+    "bollinger_rsi_reversion",
+    "donchian_breakout",
+]
 STRATEGY_DIR = "strategies"
 SOURCE_MODE = "OHLC4"  # "OHLC4" | "HLC3" | "HL2" | "CLOSE"
 MA_LENGTH = 20
@@ -51,6 +55,11 @@ ENABLE_SIGNALS = True
 # Intervalo de ejecución del bot (segundos)
 SLEEP_SECONDS = 10
 
+# Escalado para muchas estrategias en vivo
+STRATEGY_MAX_WORKERS = 8  # Hilos para análisis concurrente (0 = automático)
+STRATEGY_ANALYSIS_TIMEOUT_SECONDS = 15  # Timeout total del análisis por ciclo
+MAX_ORDERS_PER_ITERATION = 10  # Límite de órdenes enviadas por ciclo
+
 # Feedback / sugerencias
 # Si FEEDBACK_WEBHOOK_URL tiene un valor, se enviará un POST con JSON.
 # Si no, se guardará en un archivo local en FEEDBACK_SAVE_DIR.
@@ -61,7 +70,7 @@ FEEDBACK_LIST_URL = ""
 
 
 def print_config():
-    # Para peques: esta funcion sirve para mostrar config.
+    # esta funcion sirve para mostrar config.
     """Imprime la configuración actual para depuración."""
     print("=== CONFIGURACIÓN ===")
     print(f"SYMBOL: {SYMBOL}")
@@ -88,4 +97,7 @@ def print_config():
     print(f"TCI_SIGNAL: {TCI_SIGNAL}")
     print(f"ENABLE_SIGNALS: {ENABLE_SIGNALS}")
     print(f"SLEEP_SECONDS: {SLEEP_SECONDS}")
+    print(f"STRATEGY_MAX_WORKERS: {STRATEGY_MAX_WORKERS}")
+    print(f"STRATEGY_ANALYSIS_TIMEOUT_SECONDS: {STRATEGY_ANALYSIS_TIMEOUT_SECONDS}")
+    print(f"MAX_ORDERS_PER_ITERATION: {MAX_ORDERS_PER_ITERATION}")
     print("=====================")

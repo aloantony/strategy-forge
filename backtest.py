@@ -6,19 +6,82 @@ Simula operaciones con datos históricos y calcula métricas de rendimiento.
 import pandas as pd
 import MetaTrader5 as mt5
 from datetime import datetime, timedelta
+import importlib
 import config
 import data_feed
-from strategies import strategy_baseline
+
+
+def _load_backtest_strategy_module() -> tuple:
+    default_key = str(getattr(config, "STRATEGY_KEY", "") or "").strip()
+    if not default_key:
+        active = getattr(config, "ACTIVE_STRATEGIES", [])
+        if isinstance(active, (list, tuple)) and active:
+            default_key = str(active[0] or "").strip()
+    if not default_key:
+        default_key = "ema_rsi_trend"
+
+    explicit_module_ref = str(getattr(config, "STRATEGY_MODULE", "") or "").strip()
+    candidate_refs = []
+    if explicit_module_ref:
+        candidate_refs.append(explicit_module_ref)
+    candidate_refs.extend(
+        [
+            f"strategies.strategy_{default_key}",
+            f"strategies.{default_key}",
+        ]
+    )
+
+    seen = set()
+    errors = []
+    for module_ref in candidate_refs:
+        cleaned = module_ref.strip()
+        if not cleaned or cleaned in seen:
+            continue
+        seen.add(cleaned)
+        try:
+            module = importlib.reload(importlib.import_module(cleaned))
+            return module, cleaned
+        except Exception as error:
+            errors.append(f"{cleaned}: {error}")
+
+    details = "; ".join(errors) if errors else "sin detalle"
+    raise RuntimeError(f"No se pudo cargar la estrategia del backtest. Intentos: {details}")
+
+
+def _apply_strategy_to_dataframe(df: pd.DataFrame, strategy_module) -> pd.DataFrame:
+    out = df.copy()
+
+    if hasattr(strategy_module, "prepare_dataframe"):
+        candidate = strategy_module.prepare_dataframe(out)
+        if isinstance(candidate, pd.DataFrame):
+            out = candidate
+
+    if hasattr(strategy_module, "compute_dir1_and_signals"):
+        candidate = strategy_module.compute_dir1_and_signals(out, config.ENABLE_SIGNALS)
+        if isinstance(candidate, pd.DataFrame):
+            out = candidate
+    elif hasattr(strategy_module, "compute_signals"):
+        candidate = strategy_module.compute_signals(out, config.ENABLE_SIGNALS)
+        if isinstance(candidate, pd.DataFrame):
+            out = candidate
+    else:
+        raise RuntimeError(
+            "La estrategia no implementa compute_signals() ni compute_dir1_and_signals()."
+        )
+
+    out["up_sig"] = pd.to_numeric(out.get("up_sig", 0), errors="coerce").fillna(0).astype(int)
+    out["dn_sig"] = pd.to_numeric(out.get("dn_sig", 0), errors="coerce").fillna(0).astype(int)
+    return out
 
 
 class BacktestEngine:
-    # Para peques: esta clase simula operaciones pasadas para ver como habria ido la estrategia.
+    # esta clase simula operaciones pasadas para ver como habria ido la estrategia.
     """
     Motor de backtesting que simula operaciones con datos históricos.
     """
     
     def __init__(self, symbol: str, timeframe, lot: float, sl_points: float, tp_points: float):
-        # Para peques: esta funcion sirve para preparar todo al inicio.
+        # esta funcion sirve para preparar todo al inicio.
         """
         Inicializa el motor de backtesting.
         
@@ -59,7 +122,7 @@ class BacktestEngine:
         self.tick_value = symbol_info.trade_tick_value
     
     def calculate_profit(self, entry_price: float, exit_price: float, direction: int, volume: float) -> float:
-        # Para peques: esta funcion sirve para calculate profit.
+        # esta funcion sirve para calculate profit.
         """
         Calcula el profit de una operación.
         
@@ -77,7 +140,7 @@ class BacktestEngine:
         return profit
     
     def check_sl_tp(self, candle: pd.Series, position: dict) -> tuple[bool, str, float]:
-        # Para peques: esta funcion sirve para comprobar sl tp.
+        # esta funcion sirve para comprobar sl tp.
         """
         Verifica si se activó el SL o TP.
         
@@ -111,7 +174,7 @@ class BacktestEngine:
         return False, '', 0.0
     
     def open_position(self, candle: pd.Series, direction: int, signal_type: str):
-        # Para peques: esta funcion sirve para abrir posicion.
+        # esta funcion sirve para abrir posicion.
         """
         Abre una nueva posición.
         
@@ -149,7 +212,7 @@ class BacktestEngine:
         }
     
     def close_position(self, candle: pd.Series, reason: str):
-        # Para peques: esta funcion sirve para cerrar posicion.
+        # esta funcion sirve para cerrar posicion.
         """
         Cierra la posición actual.
         
@@ -215,7 +278,7 @@ class BacktestEngine:
         self.current_position = None
     
     def run(self, start_date: datetime, end_date: datetime):
-        # Para peques: esta funcion sirve para ejecutar el proceso completo.
+        # esta funcion sirve para ejecutar el proceso completo.
         """
         Ejecuta el backtesting en el rango de fechas especificado.
         
@@ -245,6 +308,8 @@ class BacktestEngine:
         
         # Procesar datos
         print("Procesando datos...")
+        strategy_module, strategy_ref = _load_backtest_strategy_module()
+        print(f"Estrategia backtest: {strategy_ref}")
         df = data_feed.add_source_columns(df, config.SOURCE_MODE)
         df = data_feed.add_baseline_bands(
             df,
@@ -252,7 +317,7 @@ class BacktestEngine:
             config.ATR_LENGTH,
             config.ATR_MULT
         )
-        df = strategy_baseline.compute_dir1_and_signals(df, config.ENABLE_SIGNALS)
+        df = _apply_strategy_to_dataframe(df, strategy_module)
         print("✓ Datos procesados\n")
         
         # Simular trading
@@ -261,7 +326,7 @@ class BacktestEngine:
             candle = df.iloc[i]
             
             # Saltar velas sin datos válidos
-            if pd.isna(candle.get('upper')) or pd.isna(candle.get('lower')):
+            if pd.isna(candle.get('close')):
                 continue
             
             # Verificar señales (usar vela anterior si no es la primera)
@@ -298,7 +363,7 @@ class BacktestEngine:
         print("✓ Simulación completada\n")
     
     def get_results(self) -> dict:
-        # Para peques: esta funcion sirve para obtener results.
+        # esta funcion sirve para obtener results.
         """
         Calcula y retorna las métricas del backtesting.
         
@@ -335,7 +400,7 @@ class BacktestEngine:
         }
     
     def print_results(self):
-        # Para peques: esta funcion sirve para mostrar results.
+        # esta funcion sirve para mostrar results.
         """
         Imprime los resultados del backtesting de forma legible.
         """
@@ -383,7 +448,7 @@ class BacktestEngine:
 
 def run_backtest(symbol: str, timeframe, start_date: datetime, end_date: datetime,
                  lot: float = None, sl_points: float = None, tp_points: float = None):
-    # Para peques: esta funcion lanza una prueba con datos pasados y devuelve el resumen.
+    # esta funcion lanza una prueba con datos pasados y devuelve el resumen.
     """
     Función de conveniencia para ejecutar un backtest.
     
@@ -408,4 +473,5 @@ def run_backtest(symbol: str, timeframe, start_date: datetime, end_date: datetim
     engine.print_results()
     
     return engine
+
 

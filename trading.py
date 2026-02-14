@@ -5,6 +5,7 @@ Gestión de órdenes y posiciones en MetaTrader 5.
 import MetaTrader5 as mt5
 from datetime import datetime, timedelta
 import math
+import re
 import time
 import config
 
@@ -17,9 +18,135 @@ _FILLING_NAME = {
 # Recordamos la ultima accion por simbolo para no operar demasiadas veces seguidas.
 _last_action_ts = {}
 
+# Prefijo para comentarios de órdenes creadas por el bot.
+_TRADE_COMMENT_PREFIX = "TA"
+_DEFAULT_OPEN_COMMENT = "Bot trading"
+_DEFAULT_CLOSE_COMMENT = "Cierre automatico"
+_MT5_COMMENT_MAX_LEN = 31
+_STRATEGY_TOKEN_MAX_LEN = 10
+_REASON_TOKEN_MAX_LEN = 24
+_FALLBACK_OPEN_COMMENT = "TAOPEN"
+_FALLBACK_CLOSE_COMMENT = "TACLOSE"
+
+
+def _sanitize_comment_token(value: str, max_len: int) -> str:
+    # compacta un texto libre en un token seguro para el comentario de MT5.
+    token = re.sub(r"[^a-z0-9]+", "_", str(value or "").strip().lower())
+    token = re.sub(r"_+", "_", token).strip("_")
+    if not token:
+        return ""
+    return token[:max_len].strip("_")
+
+
+def _is_invalid_comment_error(last_error) -> bool:
+    # detecta si MT5 rechazo el request por argumento comment invalido.
+    if not isinstance(last_error, (tuple, list)) or len(last_error) < 2:
+        return False
+    try:
+        code = int(last_error[0])
+    except Exception:
+        code = None
+    message = str(last_error[1] or "").lower()
+    return code == -2 and "comment" in message and "invalid" in message
+
+
+def _fallback_comment_from_request(request: dict) -> str:
+    # retorna un comentario ultraseguro para brokers estrictos.
+    if isinstance(request, dict) and request.get("position"):
+        return _FALLBACK_CLOSE_COMMENT
+    return _FALLBACK_OPEN_COMMENT
+
+
+def _humanize_reason_token(token: str) -> str:
+    # transforma token tipo "ema_cross_up" en texto legible.
+    text = str(token or "").strip().replace("_", " ")
+    text = re.sub(r"\s+", " ", text).strip()
+    return text
+
+
+def build_trade_comment(
+    strategy_key: str = "",
+    signal_reason: str = "",
+    action_kind: str = "open"
+) -> str:
+    # arma comentario compacto para recuperar motivo desde history_deals_get.
+    action_code = "o" if str(action_kind or "").strip().lower() == "open" else "c"
+    strategy_token = _sanitize_comment_token(strategy_key, _STRATEGY_TOKEN_MAX_LEN)
+    reason_token = _sanitize_comment_token(signal_reason, _REASON_TOKEN_MAX_LEN)
+    parts = [_TRADE_COMMENT_PREFIX, action_code]
+    if strategy_token:
+        parts.append(f"s={strategy_token}")
+    if reason_token:
+        parts.append(f"r={reason_token}")
+    comment = "|".join(parts)
+    if len(comment) <= _MT5_COMMENT_MAX_LEN:
+        return comment
+
+    # Prioriza conservar un motivo legible antes que el token de estrategia.
+    if strategy_token and reason_token:
+        no_strategy = "|".join([_TRADE_COMMENT_PREFIX, action_code, f"r={reason_token}"])
+        if len(no_strategy) <= _MT5_COMMENT_MAX_LEN:
+            return no_strategy
+
+    # Ajuste progresivo por si el broker limita el tamaño del comentario.
+    if reason_token:
+        allowed_reason_len = max(4, _MT5_COMMENT_MAX_LEN - len("|".join(parts[:-1])) - 3)
+        reason_token = reason_token[:allowed_reason_len].strip("_")
+        parts[-1] = f"r={reason_token}" if reason_token else ""
+        parts = [p for p in parts if p]
+    comment = "|".join(parts)
+    if len(comment) <= _MT5_COMMENT_MAX_LEN:
+        return comment
+
+    if strategy_token:
+        # Si aún excede, prioriza conservar acción + motivo.
+        parts = [_TRADE_COMMENT_PREFIX, action_code]
+        if reason_token:
+            parts.append(f"r={reason_token}")
+    comment = "|".join(parts)
+    return comment[:_MT5_COMMENT_MAX_LEN]
+
+
+def decode_trade_comment(comment: str) -> dict:
+    # parsea comentario MT5 generado por build_trade_comment.
+    result = {
+        "raw": str(comment or ""),
+        "is_bot_comment": False,
+        "action": "",
+        "strategy": "",
+        "reason_token": "",
+        "reason": "",
+    }
+    text = str(comment or "").strip()
+    if not text:
+        return result
+    parts = text.split("|")
+    if len(parts) < 2 or parts[0] != _TRADE_COMMENT_PREFIX:
+        return result
+
+    result["is_bot_comment"] = True
+    action_code = (parts[1] or "").strip().lower()
+    if action_code == "o":
+        result["action"] = "open"
+    elif action_code == "c":
+        result["action"] = "close"
+
+    for item in parts[2:]:
+        if item.startswith("s="):
+            token = item[2:].strip()
+            result["strategy"] = _humanize_reason_token(token)
+            continue
+        if item.startswith("r="):
+            token = item[2:].strip()
+            result["reason_token"] = token
+            result["reason"] = _humanize_reason_token(token)
+            break
+
+    return result
+
 
 def _get_timeframe_seconds(timeframe_value=None) -> int:
-    # Para peques: convierte M1, M5, H1... en segundos para medir esperas.
+    # convierte M1, M5, H1... en segundos para medir esperas.
     """Devuelve el intervalo minimo entre ejecuciones segun el timeframe."""
     timeframe_seconds = {
         mt5.TIMEFRAME_M1: 60,
@@ -35,7 +162,7 @@ def _get_timeframe_seconds(timeframe_value=None) -> int:
 
 
 def _should_throttle(symbol: str, magic_number: int, now_ts: float, min_interval: int = None):
-    # Para peques: revisa si aun toca esperar antes de permitir otra operacion.
+    # revisa si aun toca esperar antes de permitir otra operacion.
     key = (symbol, magic_number)
     last_ts = _last_action_ts.get(key)
     if last_ts is None:
@@ -49,7 +176,7 @@ def _should_throttle(symbol: str, magic_number: int, now_ts: float, min_interval
 
 
 def get_allowed_filling_modes(symbol_info):
-    # Para peques: pregunta que tipos de ejecucion de orden acepta este broker.
+    # pregunta que tipos de ejecucion de orden acepta este broker.
     """
     Devuelve la lista de modos de llenado permitidos según el bitmask trade_fillings.
     """
@@ -72,7 +199,7 @@ def get_allowed_filling_modes(symbol_info):
 
 
 def describe_fillings(symbol_info, allowed_modes):
-    # Para peques: crea un texto legible con los modos de llenado permitidos.
+    # crea un texto legible con los modos de llenado permitidos.
     """
     Devuelve cadena legible con trade_fillings, filling_mode y modos permitidos.
     """
@@ -87,7 +214,7 @@ def describe_fillings(symbol_info, allowed_modes):
 
 
 def choose_filling_mode(symbol_info, allowed_modes=None) -> int:
-    # Para peques: elige el mejor modo de llenado para aumentar la probabilidad de exito.
+    # elige el mejor modo de llenado para aumentar la probabilidad de exito.
     """
     Elige un modo de llenado permitido por el símbolo.
     - Prioriza el filling_mode expuesto si es válido.
@@ -112,10 +239,13 @@ def choose_filling_mode(symbol_info, allowed_modes=None) -> int:
 
 
 def _is_unsupported_filling(result) -> bool:
-    # Para peques: detecta si MT5 rechazo la orden por un modo de llenado no valido.
+    # detecta si MT5 rechazo la orden por un modo de llenado no valido.
     """
     Detecta si el retcode/comentario indica filling mode no soportado.
     """
+    if result is None:
+        return False
+
     invalid_fill_code = getattr(mt5, "TRADE_RETCODE_INVALID_FILL", None)
     if invalid_fill_code is not None and result.retcode == invalid_fill_code:
         return True
@@ -125,10 +255,10 @@ def _is_unsupported_filling(result) -> bool:
 
 
 def order_send_with_filling_retry(request: dict, symbol_info):
-    # Para peques: intenta enviar la orden probando varios modos hasta que uno funcione.
+    # intenta enviar la orden probando varios modos hasta que uno funcione.
     """
     Envía una orden intentando automáticamente los modos de llenado permitidos.
-    Devuelve (result, modo_usado, modos_intentados).
+    Devuelve (result, modo_usado, modos_intentados, ultimo_last_error).
     """
     allowed_modes = get_allowed_filling_modes(symbol_info)
     initial_mode = request.get("type_filling")
@@ -148,22 +278,48 @@ def order_send_with_filling_retry(request: dict, symbol_info):
 
     result = None
     last_mode = None
+    last_error = None
+    fallback_comment_applied = False
 
     for mode in modes_to_try:
         # Probamos uno por uno; si alguno funciona, paramos ahi.
         request["type_filling"] = mode
         last_mode = mode
         result = mt5.order_send(request)
+        if result is None:
+            try:
+                last_error = mt5.last_error()
+            except Exception:
+                last_error = None
+            if _is_invalid_comment_error(last_error):
+                safe_comment = _fallback_comment_from_request(request)
+                if request.get("comment") != safe_comment:
+                    request["comment"] = safe_comment
+                    fallback_comment_applied = True
+                    result = mt5.order_send(request)
+                    if result is None:
+                        try:
+                            last_error = mt5.last_error()
+                        except Exception:
+                            last_error = None
+                        continue
+                    if result.retcode == mt5.TRADE_RETCODE_DONE:
+                        return result, mode, modes_to_try, last_error
+                    if not _is_unsupported_filling(result):
+                        return result, mode, modes_to_try, last_error
+            continue
         if result.retcode == mt5.TRADE_RETCODE_DONE:
-            return result, mode, modes_to_try
+            return result, mode, modes_to_try, last_error
         if not _is_unsupported_filling(result):
-            return result, mode, modes_to_try
+            return result, mode, modes_to_try, last_error
 
-    return result, last_mode, modes_to_try
+    if fallback_comment_applied:
+        request["comment"] = request.get("comment", _fallback_comment_from_request(request))
+    return result, last_mode, modes_to_try, last_error
 
 
 def normalize_volume(requested_volume: float, symbol_info):
-    # Para peques: ajusta el volumen al minimo, maximo y paso permitidos por el simbolo.
+    # ajusta el volumen al minimo, maximo y paso permitidos por el simbolo.
     """
     Ajusta el volumen solicitado a los limites del simbolo (min, max, step).
     Devuelve el volumen ajustado y un mensaje si se modifica.
@@ -198,7 +354,7 @@ def normalize_volume(requested_volume: float, symbol_info):
 
 
 def adjust_stops(direction: int, price: float, sl: float, tp: float, symbol_info, tick):
-    # Para peques: mueve SL/TP si estan demasiado cerca del precio actual.
+    # mueve SL/TP si estan demasiado cerca del precio actual.
     """
     Ajusta SL/TP para cumplir con el nivel mínimo de stops del símbolo.
     Devuelve (sl, tp, nota) si hubo ajuste.
@@ -248,7 +404,7 @@ def adjust_stops(direction: int, price: float, sl: float, tp: float, symbol_info
 
 
 def is_market_open(symbol: str):
-    # Para peques: revisa si hay precios recientes y validos para poder operar.
+    # revisa si hay precios recientes y validos para poder operar.
     """
     Verifica si el mercado está abierto para el símbolo dado.
     
@@ -293,7 +449,7 @@ def is_market_open(symbol: str):
 
 
 def get_open_position_direction(symbol: str, magic_number: int) -> int:
-    # Para peques: dice si ahora mismo tenemos BUY, SELL o nada en ese simbolo.
+    # dice si ahora mismo tenemos BUY, SELL o nada en ese simbolo.
     """
     Obtiene la dirección de la posición abierta para el símbolo y magic number.
     
@@ -320,7 +476,7 @@ def get_open_position_direction(symbol: str, magic_number: int) -> int:
 
 
 def get_position_info(symbol: str, magic_number: int) -> dict:
-    # Para peques: devuelve detalles de la posicion abierta (ticket, precio, profit, etc.).
+    # devuelve detalles de la posicion abierta (ticket, precio, profit, etc.).
     """
     Obtiene información detallada de la posición abierta.
     
@@ -348,8 +504,8 @@ def get_position_info(symbol: str, magic_number: int) -> dict:
     return None
 
 
-def close_position(symbol: str, magic_number: int):
-    # Para peques: cierra la posicion abierta del bot para ese simbolo.
+def close_position(symbol: str, magic_number: int, order_comment: str = ""):
+    # cierra la posicion abierta del bot para ese simbolo.
     """
     Cierra la posición abierta del símbolo con el magic number especificado.
     
@@ -384,6 +540,8 @@ def close_position(symbol: str, magic_number: int):
     print(f"   [FILL] {describe_fillings(symbol_info, allowed_modes)}")
     filling_mode = choose_filling_mode(symbol_info, allowed_modes)
 
+    request_comment = (order_comment or "").strip() or _DEFAULT_CLOSE_COMMENT
+
     for position in positions:
         if position.magic == magic_number:
             # Para cerrar, enviamos una orden contraria a la posicion actual.
@@ -395,13 +553,14 @@ def close_position(symbol: str, magic_number: int):
                 "position": position.ticket,
                 "deviation": 20,
                 "magic": magic_number,
-                "comment": "Cierre automático",
+                "comment": request_comment,
                 "type_time": mt5.ORDER_TIME_GTC,
                 "type_filling": filling_mode,
             }
 
-            result, used_mode, tried_modes = order_send_with_filling_retry(request, symbol_info)
+            result, used_mode, tried_modes, last_error = order_send_with_filling_retry(request, symbol_info)
             success = result is not None and result.retcode == mt5.TRADE_RETCODE_DONE
+            used_comment = str(request.get("comment") or request_comment)
 
             result_info = {
                 "kind": "close",
@@ -413,13 +572,22 @@ def close_position(symbol: str, magic_number: int):
                 "success": success,
                 "retcode": getattr(result, "retcode", None),
                 "comment": getattr(result, "comment", None),
+                "mt5_last_error": last_error,
+                "order_comment": request_comment,
+                "used_order_comment": used_comment,
                 "filling_mode": used_mode,
                 "tried_fillings": tried_modes
             }
             results.append(result_info)
 
             if not success:
-                print(f"   [ERROR] Error al cerrar posicion: {result.retcode} - {result.comment}")
+                if result is None:
+                    print(
+                        f"   [ERROR] Error al cerrar posicion: order_send devolvio None | "
+                        f"last_error={last_error} | comment={used_comment}"
+                    )
+                else:
+                    print(f"   [ERROR] Error al cerrar posicion: {result.retcode} - {result.comment}")
                 if _is_unsupported_filling(result) and len(tried_modes) > 1:
                     print(f"   [INFO] Modos intentados: {tried_modes}")
             else:
@@ -430,8 +598,16 @@ def close_position(symbol: str, magic_number: int):
     return results
 
 
-def send_order(symbol: str, direction: int, lot: float, sl_points: float, tp_points: float, magic_number: int):
-    # Para peques: abre una operacion nueva (compra o venta) con SL/TP.
+def send_order(
+    symbol: str,
+    direction: int,
+    lot: float,
+    sl_points: float,
+    tp_points: float,
+    magic_number: int,
+    order_comment: str = ""
+):
+    # abre una operacion nueva (compra o venta) con SL/TP.
     """
     Envía una orden de compra o venta.
     
@@ -506,6 +682,7 @@ def send_order(symbol: str, direction: int, lot: float, sl_points: float, tp_poi
     allowed_modes = get_allowed_filling_modes(symbol_info)
     print(f"   [FILL] {describe_fillings(symbol_info, allowed_modes)}")
     filling_mode = choose_filling_mode(symbol_info, allowed_modes)
+    request_comment = (order_comment or "").strip() or _DEFAULT_OPEN_COMMENT
 
     request = {
         "action": mt5.TRADE_ACTION_DEAL,
@@ -517,13 +694,14 @@ def send_order(symbol: str, direction: int, lot: float, sl_points: float, tp_poi
         "tp": tp,
         "deviation": 20,
         "magic": magic_number,
-        "comment": "Bot trading",
+        "comment": request_comment,
         "type_time": mt5.ORDER_TIME_GTC,
         "type_filling": filling_mode,
     }
     
-    result, used_mode, tried_modes = order_send_with_filling_retry(request, symbol_info)
+    result, used_mode, tried_modes, last_error = order_send_with_filling_retry(request, symbol_info)
     success = result is not None and result.retcode == mt5.TRADE_RETCODE_DONE
+    used_comment = str(request.get("comment") or request_comment)
 
     result_info = {
         "kind": "open",
@@ -537,13 +715,22 @@ def send_order(symbol: str, direction: int, lot: float, sl_points: float, tp_poi
         "ticket": getattr(result, "order", None),
         "retcode": getattr(result, "retcode", None),
         "comment": getattr(result, "comment", None),
+        "mt5_last_error": last_error,
+        "order_comment": request_comment,
+        "used_order_comment": used_comment,
         "filling_mode": used_mode,
         "tried_fillings": tried_modes,
         "volume_note": volume_note
     }
 
     if not success:
-        print(f"   [ERROR] Error al enviar orden: {result.retcode} - {result.comment}")
+        if result is None:
+            print(
+                f"   [ERROR] Error al enviar orden: order_send devolvio None | "
+                f"last_error={last_error} | comment={used_comment}"
+            )
+        else:
+            print(f"   [ERROR] Error al enviar orden: {result.retcode} - {result.comment}")
         if _is_unsupported_filling(result) and len(tried_modes) > 1:
             print(f"   [INFO] Modos intentados: {tried_modes}")
     else:
@@ -564,9 +751,12 @@ def apply_signal(
     sl_points: float,
     tp_points: float,
     magic_number: int,
-    timeframe_value: int = None
+    timeframe_value: int = None,
+    strategy_key: str = "",
+    strategy_label: str = "",
+    signal_reason: str = "",
 ):
-    # Para peques: traduce la senal (buy/sell/none) en acciones reales de trading.
+    # traduce la senal (buy/sell/none) en acciones reales de trading.
     """
     Aplica una señal de trading: abre o cierra posiciones según corresponda.
     
@@ -577,6 +767,10 @@ def apply_signal(
         sl_points: Stop Loss en puntos.
         tp_points: Take Profit en puntos.
         magic_number: Magic number de las órdenes.
+        timeframe_value: Timeframe para cooldown por estrategia.
+        strategy_key: Clave de estrategia que originó la señal.
+        strategy_label: Etiqueta de estrategia que originó la señal.
+        signal_reason: Motivo textual resumido de la señal.
     """
     timestamp = datetime.now().strftime("%H:%M:%S")
     
@@ -602,6 +796,12 @@ def apply_signal(
     
     print(f"   [SYMBOL] Simbolo: {symbol}")
     print(f"   [SIGNAL] Senal recibida: {signal.upper()}")
+    strategy_text = (strategy_label or strategy_key or "").strip()
+    if strategy_text:
+        print(f"   [STRATEGY] {strategy_text}")
+    signal_reason = str(signal_reason or "").strip()
+    if signal_reason:
+        print(f"   [REASON] {signal_reason}")
     print(f"   [POS] Posicion actual: {'BUY' if current_direction == 1 else 'SELL' if current_direction == -1 else 'NINGUNA'}")
     print(f"   [LOT] Lote: {lot}")
     print(f"   [SL] Stop Loss: {sl_points} puntos")
@@ -609,19 +809,25 @@ def apply_signal(
     print()
     
     actions = []
+    open_comment = build_trade_comment(
+        strategy_key=strategy_key, signal_reason=signal_reason, action_kind="open"
+    )
+    close_comment = build_trade_comment(
+        strategy_key=strategy_key, signal_reason=signal_reason, action_kind="close"
+    )
     
     if signal == "buy":
         if current_direction == 0:
             # No hay posición, abrir largo
             print(f"   >>> ACCION: Abriendo nueva posicion BUY...")
-            actions = [send_order(symbol, 1, lot, sl_points, tp_points, magic_number)]
+            actions = [send_order(symbol, 1, lot, sl_points, tp_points, magic_number, order_comment=open_comment)]
         elif current_direction == -1:
             # Hay corto, cerrar y abrir largo
             print(f"   [CLOSE] Cerrando SELL (Ticket: {position_info['ticket']}, Profit: {position_info['profit']:.2f})")
             print(f"   >>> ACCION: Abriendo nueva posicion BUY...")
             actions = []
-            actions.extend(close_position(symbol, magic_number) or [])
-            actions.append(send_order(symbol, 1, lot, sl_points, tp_points, magic_number))
+            actions.extend(close_position(symbol, magic_number, order_comment=close_comment) or [])
+            actions.append(send_order(symbol, 1, lot, sl_points, tp_points, magic_number, order_comment=open_comment))
         else:
             print(f"   [SKIP] Ya existe posicion BUY (Ticket: {position_info['ticket']}). No se requiere accion.")
             actions = []
@@ -630,14 +836,14 @@ def apply_signal(
         if current_direction == 0:
             # No hay posición, abrir corto
             print(f"   >>> ACCION: Abriendo nueva posicion SELL...")
-            actions = [send_order(symbol, -1, lot, sl_points, tp_points, magic_number)]
+            actions = [send_order(symbol, -1, lot, sl_points, tp_points, magic_number, order_comment=open_comment)]
         elif current_direction == 1:
             # Hay largo, cerrar y abrir corto
             print(f"   [CLOSE] Cerrando BUY (Ticket: {position_info['ticket']}, Profit: {position_info['profit']:.2f})")
             print(f"   >>> ACCION: Abriendo nueva posicion SELL...")
             actions = []
-            actions.extend(close_position(symbol, magic_number) or [])
-            actions.append(send_order(symbol, -1, lot, sl_points, tp_points, magic_number))
+            actions.extend(close_position(symbol, magic_number, order_comment=close_comment) or [])
+            actions.append(send_order(symbol, -1, lot, sl_points, tp_points, magic_number, order_comment=open_comment))
         else:
             print(f"   [SKIP] Ya existe posicion SELL (Ticket: {position_info['ticket']}). No se requiere accion.")
             actions = []
@@ -652,6 +858,9 @@ def apply_signal(
             "timestamp": datetime.now(),
             "symbol": symbol,
             "signal": signal,
+            "strategy": strategy_key,
+            "strategy_label": strategy_label,
+            "signal_reason": signal_reason,
             "actions": actions
         }
 

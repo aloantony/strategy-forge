@@ -6,7 +6,7 @@ Script para encontrar símbolos disponibles en MetaTrader 5.
 import MetaTrader5 as mt5
 
 def find_dax_symbols():
-    # Para peques: esta funcion sirve para find dax symbols.
+    # esta funcion sirve para find dax symbols.
     """Busca símbolos relacionados con DAX."""
     if not mt5.initialize():
         print("Error al inicializar MT5")
@@ -55,4 +55,5 @@ def find_dax_symbols():
 
 if __name__ == "__main__":
     find_dax_symbols()
+
 

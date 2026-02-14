@@ -8,9 +8,9 @@ Guarda tu estrategia como un modulo Python dentro de `strategies/`.
 
 Ejemplos:
 - `strategies/mi_estrategia.py`
-- `strategies/strategy_baseline.py`
-- `strategies/strategy_m1_test.py`
-- `strategies/strategy_m1_candle.py`
+- `strategies/strategy_ema_rsi_trend.py`
+- `strategies/strategy_bollinger_rsi_reversion.py`
+- `strategies/strategy_donchian_breakout.py`
 
 ## Reglas basicas
 
@@ -49,13 +49,17 @@ Retorna:
   - Si no se define, la GUI genera uno estable automáticamente.
 - `compute_dir1_and_signals(df, enable_signals) -> pd.DataFrame`
   - O bien `compute_signals(df, enable_signals) -> pd.DataFrame`.
+- `get_last_signal_payload(df, verbose=False) -> dict`
+  - Permite devolver señal + motivo para UI/tooltip.
+  - Ejemplo: `{"signal": "buy", "reason": "Cruce EMA alcista"}`.
 - `get_test_signal() -> str`
   - Usado cuando `TEST_MODE=True`.
 
 La GUI llamara en este orden:
 1. `prepare_dataframe` (si existe)
 2. `compute_dir1_and_signals` o `compute_signals` (si existe)
-3. `get_last_signal`
+3. `get_last_signal_payload` (si existe)
+4. `get_last_signal`
 
 ## Columnas recomendadas
 

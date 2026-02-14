@@ -5,7 +5,7 @@ Script para probar si un símbolo funciona correctamente.
 import MetaTrader5 as mt5
 
 def test_symbol(symbol_name):
-    # Para peques: esta funcion sirve para test simbolo.
+    # esta funcion sirve para test simbolo.
     """Prueba si un símbolo está disponible y funciona."""
     if not mt5.initialize():
         print("Error al inicializar MT5")
@@ -56,6 +56,10 @@ if __name__ == "__main__":
     test_symbol("Germany40")
     print("\n" + "="*60 + "\n")
     test_symbol("#Germany40")
+
+
+
+
 
 
 

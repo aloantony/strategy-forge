@@ -36,6 +36,7 @@ pip install -r requirements.txt
    - `LOT`
    - `SL_POINTS` y `TP_POINTS`
    - `STRATEGY_KEY`, `STRATEGY_MODULE`, `ACTIVE_STRATEGIES` (opcional)
+   - Si ejecutas muchas estrategias en vivo: `STRATEGY_MAX_WORKERS`, `STRATEGY_ANALYSIS_TIMEOUT_SECONDS`, `MAX_ORDERS_PER_ITERATION`
 4. Inicia la interfaz:
 
 ```bash
@@ -73,6 +74,11 @@ Tu módulo debe exponer al menos `get_last_signal(df, verbose=False) -> str` y d
 - `"buy"`
 - `"sell"`
 - `"none"`
+
+Opcional (recomendado si quieres ver el motivo de señal en GUI/tooltip):
+
+- `get_last_signal_payload(df, verbose=False) -> dict`
+- Formato sugerido: `{"signal": "buy"|"sell"|"none", "reason": "texto corto"}`
 
 Plantilla mínima:
 
@@ -118,9 +124,9 @@ En la pestaña `Estrategias`:
 
 ## Estrategias incluidas
 
-- `strategies.strategy_baseline`
-- `strategies.strategy_m1_test`
-- `strategies.strategy_m1_candle`
+- `strategies.strategy_ema_rsi_trend`
+- `strategies.strategy_bollinger_rsi_reversion`
+- `strategies.strategy_donchian_breakout`
 
 ## Modo consola (opcional, sin GUI)
 

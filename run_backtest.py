@@ -10,7 +10,7 @@ import backtest
 
 
 def main():
-    # Para peques: esta funcion sirve para arrancar todo el programa.
+    # esta funcion sirve para arrancar todo el programa.
     """
     Función principal para ejecutar el backtesting.
     """
@@ -84,4 +84,5 @@ def main():
 
 if __name__ == "__main__":
     main()
+
 

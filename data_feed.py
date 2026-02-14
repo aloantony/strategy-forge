@@ -9,7 +9,7 @@ import config
 
 
 def get_rates_df(symbol: str, timeframe, bars: int) -> pd.DataFrame:
-    # Para peques: pedimos velas a MT5 y las convertimos en una tabla facil de usar.
+    # pedimos velas a MT5 y las convertimos en una tabla facil de usar.
     """
     Obtiene las velas históricas desde MetaTrader 5.
     
@@ -33,7 +33,7 @@ def get_rates_df(symbol: str, timeframe, bars: int) -> pd.DataFrame:
 
 
 def add_source_columns(df: pd.DataFrame, source_mode: str) -> pd.DataFrame:
-    # Para peques: creamos "precios resumidos" (OHLC4, HLC3...) para que la estrategia elija uno.
+    # creamos "precios resumidos" (OHLC4, HLC3...) para que la estrategia elija uno.
     """
     Calcula las columnas de fuente (OHLC4, HLC3, HL2, CLOSE) y H_Set, L_Set.
     
@@ -72,7 +72,7 @@ def add_source_columns(df: pd.DataFrame, source_mode: str) -> pd.DataFrame:
 
 
 def add_baseline_bands(df: pd.DataFrame, ma_length: int, atr_length: int, atr_mult: float) -> pd.DataFrame:
-    # Para peques: dibujamos una linea central y dos "barandillas" arriba y abajo.
+    # dibujamos una linea central y dos "barandillas" arriba y abajo.
     """
     Calcula la media móvil (Average) y las bandas superior e inferior usando ATR.
     
@@ -106,7 +106,7 @@ def add_baseline_bands(df: pd.DataFrame, ma_length: int, atr_length: int, atr_mu
 
 
 def weighted_moving_average(series: pd.Series, length: int) -> pd.Series:
-    # Para peques: esta media da mas importancia a los datos mas recientes.
+    # esta media da mas importancia a los datos mas recientes.
     """
     Calcula la media móvil ponderada (WMA).
     """
@@ -118,7 +118,7 @@ def weighted_moving_average(series: pd.Series, length: int) -> pd.Series:
 
 
 def hull_moving_average(series: pd.Series, length: int) -> pd.Series:
-    # Para peques: HMA intenta ser suave como una media, pero reaccionar mas rapido.
+    # HMA intenta ser suave como una media, pero reaccionar mas rapido.
     """
     Calcula la media móvil de Hull (HMA).
     """
@@ -139,7 +139,7 @@ def add_supertrend(
     use_hma: bool = True,
     hma_length: int = 55
 ) -> pd.DataFrame:
-    # Para peques: calculamos una guia de tendencia que va cambiando de lado del precio.
+    # calculamos una guia de tendencia que va cambiando de lado del precio.
     """
     Calcula el Supertrend (opcionalmente suavizado con HMA).
 
@@ -249,7 +249,7 @@ def add_tci(
     signal_length: int = 5,
     atr_col: str = "atr"
 ) -> pd.DataFrame:
-    # Para peques: creamos un oscilador para saber si el impulso sube o baja.
+    # creamos un oscilador para saber si el impulso sube o baja.
     """
     Calcula un oscilador tipo TCI (normalizado por ATR o volatilidad).
 
@@ -279,4 +279,5 @@ def add_tci(
     df['tci_signal'] = tci_signal
     df['tci_hist'] = tci_hist
     return df
+
 

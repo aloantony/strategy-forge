@@ -1,16 +1,17 @@
-# Para peques: esta imagen trae Python listo para correr nuestro mini servidor.
+# esta imagen trae Python listo para correr nuestro mini servidor.
 FROM python:3.11-slim
 
-# Para peques: estas variables dicen "escribe logs al momento" y "usa el puerto 8080".
+# estas variables dicen "escribe logs al momento" y "usa el puerto 8080".
 ENV PYTHONUNBUFFERED=1
 ENV PORT=8080
 
-# Para peques: aqui sera la carpeta de trabajo dentro del contenedor.
+# aqui sera la carpeta de trabajo dentro del contenedor.
 WORKDIR /app
-# Para peques: copiamos solo el archivo del servidor al contenedor.
+# copiamos solo el archivo del servidor al contenedor.
 COPY feedback_server.py /app/feedback_server.py
 
-# Para peques: avisamos que este contenedor escucha en el puerto 8080.
+# avisamos que este contenedor escucha en el puerto 8080.
 EXPOSE 8080
-# Para peques: este es el comando que se ejecuta al arrancar el contenedor.
+# este es el comando que se ejecuta al arrancar el contenedor.
 CMD ["python", "feedback_server.py"]
+

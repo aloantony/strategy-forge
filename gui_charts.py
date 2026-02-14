@@ -29,8 +29,44 @@ from urllib.parse import unquote, urlparse, urlunparse
 import config
 import mt5_connection
 import data_feed
-from strategies import strategy_baseline
+from strategies import strategy_ema_rsi_trend as default_strategy_module
 import trading
+
+
+def _patch_lightweight_charts_js_worker():
+    # esta funcion sirve para evitar que un error JS mate el worker de lightweight_charts.
+    """Parche defensivo para errores JS sin line/column en lightweight_charts."""
+    try:
+        import lightweight_charts.chart as lw_chart_module
+        from webview.errors import JavascriptException as WebviewJavascriptException
+    except Exception:
+        return
+
+    pywv_cls = getattr(lw_chart_module, "PyWV", None)
+    if pywv_cls is None:
+        return
+    if getattr(pywv_cls, "_safe_js_error_patch", False):
+        return
+
+    original_loop = pywv_cls.loop
+
+    def patched_loop(self):
+        while getattr(self, "is_alive", False):
+            try:
+                return original_loop(self)
+            except KeyError as exc:
+                missing_key = str(exc).strip("'\"")
+                if missing_key in {"line", "column"}:
+                    continue
+                raise
+            except WebviewJavascriptException as exc:
+                # Error conocido en sync de crosshair cuando una serie queda sin valor.
+                if "Value is null" in str(exc):
+                    continue
+                raise
+
+    pywv_cls.loop = patched_loop
+    pywv_cls._safe_js_error_patch = True
 
 # Configurar stdout para UTF-8
 try:
@@ -41,13 +77,13 @@ except:
 
 
 class TradingBotGUI:
-    # Para peques: esta clase controla la interfaz del bot (grafico, botones y paneles).
+    # esta clase controla la interfaz del bot (grafico, botones y paneles).
     """
     Interfaz gráfica del bot de trading usando Lightweight Charts.
     """
     
     def __init__(self):
-        # Para peques: esta funcion sirve para preparar todo al inicio.
+        # esta funcion sirve para preparar todo al inicio.
         # Estado del bot
         self.bot_running = False
         self.bot_thread = None
@@ -71,6 +107,7 @@ class TradingBotGUI:
         self.strategy_timeframe = None
         self.timeframe_locked = False
         self._last_strategy_sync_ts = 0.0
+        self._strategy_selection_seq = 0
 
         # Panel de indicadores
         self.indicator_panel = None
@@ -99,6 +136,8 @@ class TradingBotGUI:
         self.strategy_module = None
         self.strategy_data_all_actives = False
         self._init_strategy_registry()
+
+        _patch_lightweight_charts_js_worker()
         
         # Crear gráfico principal
         self.chart = Chart(
@@ -231,31 +270,33 @@ class TradingBotGUI:
         # Por ahora usamos los botones de la topbar
 
     def _init_strategy_registry(self):
-        # Para peques: esta funcion sirve para iniciar registro de estrategias.
+        # esta funcion sirve para iniciar registro de estrategias.
         """Inicializa el registro de estrategias disponibles."""
         self.strategy_registry = {}
-        baseline_module = "strategies.strategy_baseline"
-        legacy_baseline_module = "strategy_baseline"
+        default_module_ref = "strategies.strategy_ema_rsi_trend"
         self._register_strategy(
-            key="baseline",
-            label="Baseline (Dir_1)",
-            module_ref=baseline_module
+            key="ema_rsi_trend",
+            label="Scalp M1 EMA+VWAP",
+            module_ref=default_module_ref
         )
         self._register_strategy(
-            key="m1_test",
-            label="M1 Test (EMA Cross)",
-            module_ref="strategies.strategy_m1_test"
+            key="bollinger_rsi_reversion",
+            label="Scalp M1 BB+RSI",
+            module_ref="strategies.strategy_bollinger_rsi_reversion"
         )
         self._register_strategy(
-            key="m1_candle",
-            label="M1 Candle Confirmed",
-            module_ref="strategies.strategy_m1_candle"
+            key="donchian_breakout",
+            label="Scalp M1 Donchian",
+            module_ref="strategies.strategy_donchian_breakout"
         )
-        cfg_key = getattr(config, "STRATEGY_KEY", "baseline")
-        cfg_module = getattr(config, "STRATEGY_MODULE", baseline_module)
-        if cfg_module == legacy_baseline_module:
-            cfg_module = baseline_module
-        if cfg_module and cfg_module != baseline_module:
+        cfg_key = getattr(config, "STRATEGY_KEY", "ema_rsi_trend")
+        cfg_module = getattr(config, "STRATEGY_MODULE", default_module_ref)
+        legacy_map = {
+            "strategy_baseline": default_module_ref,
+            "strategies.strategy_baseline": default_module_ref,
+        }
+        cfg_module = legacy_map.get(cfg_module, cfg_module)
+        if cfg_module and cfg_module != default_module_ref:
             custom_key = self._slugify(cfg_key or cfg_module)
             if custom_key not in self.strategy_registry:
                 self._register_strategy(custom_key, cfg_key or custom_key, cfg_module)
@@ -265,7 +306,7 @@ class TradingBotGUI:
         self._sync_strategy_registry_from_disk(load_entries=False, force=True)
         default_key = cfg_key
         if default_key not in self.strategy_registry:
-            default_key = "baseline"
+            default_key = "ema_rsi_trend"
 
         active_from_config = getattr(config, "ACTIVE_STRATEGIES", None)
         if isinstance(active_from_config, (list, tuple, set)):
@@ -285,7 +326,7 @@ class TradingBotGUI:
         self._set_strategy_by_key(default_key, refresh=False, sync_ui=False)
 
     def _register_strategy(self, key: str, label: str, module_ref: str):
-        # Para peques: esta funcion sirve para registrar una estrategia.
+        # esta funcion sirve para registrar una estrategia.
         self.strategy_registry[key] = {
             "key": key,
             "label": label,
@@ -296,6 +337,7 @@ class TradingBotGUI:
             "timeframe_label": "",
             "magic_number": None,
             "last_signal": "none",
+            "last_signal_reason": "",
             "last_market_status": "",
             "last_error": "",
             "last_run_at": "",
@@ -331,9 +373,9 @@ class TradingBotGUI:
         base_dir = self._get_strategy_dir()
         reserved_stems = {
             "__init__",
-            "strategy_baseline",
-            "strategy_m1_test",
-            "strategy_m1_candle",
+            "strategy_ema_rsi_trend",
+            "strategy_bollinger_rsi_reversion",
+            "strategy_donchian_breakout",
         }
         discovered = []
 
@@ -424,7 +466,7 @@ class TradingBotGUI:
         return added
 
     def _resolve_strategy_magic_number(self, key: str, module) -> int:
-        # Para peques: esta funcion sirve para calcular el numero magico de una estrategia.
+        # esta funcion sirve para calcular el numero magico de una estrategia.
         """Genera un magic number estable por estrategia."""
         module_magic = getattr(module, "MAGIC_NUMBER", None) if module is not None else None
         if isinstance(module_magic, int) and module_magic > 0:
@@ -439,7 +481,7 @@ class TradingBotGUI:
         return int(candidate)
 
     def _load_strategy_entry(self, entry: dict) -> bool:
-        # Para peques: esta funcion sirve para cargar una estrategia del registro.
+        # esta funcion sirve para cargar una estrategia del registro.
         """Carga y valida una estrategia del registro."""
         if not isinstance(entry, dict):
             return False
@@ -457,10 +499,13 @@ class TradingBotGUI:
             entry["last_error"] = "No se pudo cargar el módulo"
             return False
 
-        if not hasattr(module, "get_last_signal"):
+        if not hasattr(module, "get_last_signal") and not hasattr(module, "get_last_signal_payload"):
             entry["module_obj"] = None
-            entry["last_error"] = "La estrategia no define get_last_signal()."
-            self.log_message(f"Estrategia inválida {entry.get('label', '')}: falta get_last_signal().")
+            entry["last_error"] = "La estrategia no define get_last_signal() ni get_last_signal_payload()."
+            self.log_message(
+                f"Estrategia inválida {entry.get('label', '')}: "
+                "falta get_last_signal() o get_last_signal_payload()."
+            )
             return False
 
         raw_value = self._get_strategy_timeframe(module)
@@ -481,11 +526,40 @@ class TradingBotGUI:
         return True
 
     def _get_strategy_entry(self, key: str):
-        # Para peques: esta funcion sirve para obtener una estrategia del registro.
-        return self.strategy_registry.get((key or "").strip())
+        # esta funcion sirve para obtener una estrategia del registro.
+        resolved_key = self._resolve_strategy_key(key)
+        if not resolved_key:
+            return None
+        return self.strategy_registry.get(resolved_key)
+
+    def _resolve_strategy_key(self, raw_key: str) -> str:
+        # esta funcion sirve para normalizar una clave de estrategia recibida desde la interfaz.
+        candidate = unquote(str(raw_key or "")).strip()
+        if not candidate:
+            return ""
+
+        if candidate in self.strategy_registry:
+            return candidate
+
+        slug_candidate = self._slugify(candidate)
+        if slug_candidate in self.strategy_registry:
+            return slug_candidate
+
+        lower_candidate = candidate.lower()
+        for key, entry in self.strategy_registry.items():
+            label = str(entry.get("label") or "")
+            module_ref = str(entry.get("module") or "")
+            if lower_candidate == label.lower():
+                return key
+            if self._slugify(label) == slug_candidate:
+                return key
+            if self._strategy_module_stem(module_ref) == lower_candidate:
+                return key
+
+        return ""
 
     def _get_selected_strategy_entry(self):
-        # Para peques: esta funcion sirve para obtener la estrategia seleccionada.
+        # esta funcion sirve para obtener la estrategia seleccionada.
         entry = self._get_strategy_entry(self.current_strategy_key or "")
         if entry:
             return entry
@@ -494,7 +568,7 @@ class TradingBotGUI:
         return None
 
     def _get_enabled_strategy_entries(self):
-        # Para peques: esta funcion sirve para obtener las estrategias activas.
+        # esta funcion sirve para obtener las estrategias activas.
         entries = []
         for entry in self.strategy_registry.values():
             if not entry.get("enabled"):
@@ -506,8 +580,9 @@ class TradingBotGUI:
         return entries
 
     def _set_strategy_enabled(self, key: str, enabled: bool, sync_ui: bool = True):
-        # Para peques: esta funcion sirve para activar o desactivar una estrategia.
-        entry = self._get_strategy_entry(key)
+        # esta funcion sirve para activar o desactivar una estrategia.
+        resolved_key = self._resolve_strategy_key(key)
+        entry = self.strategy_registry.get(resolved_key) if resolved_key else None
         if not entry:
             self.log_message(f"Estrategia desconocida: {key}")
             return
@@ -529,7 +604,7 @@ class TradingBotGUI:
             self._render_strategy_panel()
 
     def _get_strategy_dir(self) -> str:
-        # Para peques: esta funcion sirve para obtener la carpeta de estrategias.
+        # esta funcion sirve para obtener la carpeta de estrategias.
         base_dir = getattr(config, "STRATEGY_DIR", "strategies")
         if not os.path.isabs(base_dir):
             base_dir = os.path.join(os.path.dirname(__file__), base_dir)
@@ -537,7 +612,7 @@ class TradingBotGUI:
         return base_dir
 
     def _sanitize_strategy_filename(self, filename: str) -> str:
-        # Para peques: esta funcion sirve para limpiar el nombre del archivo de estrategia.
+        # esta funcion sirve para limpiar el nombre del archivo de estrategia.
         name = os.path.basename(filename or "").strip()
         name = name.replace(" ", "_")
         name = re.sub(r"[^A-Za-z0-9_.-]+", "_", name)
@@ -548,7 +623,7 @@ class TradingBotGUI:
         return name
 
     def _save_strategy_file(self, filename: str, content: bytes):
-        # Para peques: esta funcion sirve para guardar un archivo de estrategia.
+        # esta funcion sirve para guardar un archivo de estrategia.
         try:
             base_dir = self._get_strategy_dir()
             safe_name = self._sanitize_strategy_filename(filename)
@@ -566,14 +641,14 @@ class TradingBotGUI:
             return None
 
     def _slugify(self, text: str) -> str:
-        # Para peques: esta funcion sirve para crear nombre corto.
+        # esta funcion sirve para crear nombre corto.
         text = (text or "").strip().lower()
         text = re.sub(r"[^a-z0-9_]+", "_", text)
         text = text.strip("_")
         return text or "strategy"
 
     def _get_strategy_payload(self):
-        # Para peques: esta funcion sirve para armar la lista de estrategias para la interfaz.
+        # esta funcion sirve para armar la lista de estrategias para la interfaz.
         payload = []
         for entry in self.strategy_registry.values():
             signal = (entry.get("last_signal") or "none").upper()
@@ -584,6 +659,10 @@ class TradingBotGUI:
                 status_parts.append("inactiva")
             if signal and signal != "NONE":
                 status_parts.append(f"senal: {signal}")
+                reason = str(entry.get("last_signal_reason") or "").strip()
+                if reason:
+                    short_reason = reason if len(reason) <= 46 else (reason[:43].rstrip() + "...")
+                    status_parts.append(f"motivo: {short_reason}")
             market_status = (entry.get("last_market_status") or "").strip()
             if market_status:
                 status_parts.append(market_status)
@@ -604,7 +683,7 @@ class TradingBotGUI:
         return payload
 
     def _get_side_panel_icons(self):
-        # Para peques: esta funcion sirve para obtener los iconos del panel lateral.
+        # esta funcion sirve para obtener los iconos del panel lateral.
         return {
             "chart": "<svg viewBox='0 0 16 16' fill='none' stroke='currentColor' stroke-width='1.4'><rect x='2' y='3' width='12' height='10' rx='1.5'/><path d='M4 10 L7 7 L9 9 L12 6'/></svg>",
             "line": "<svg viewBox='0 0 16 16' fill='none' stroke='currentColor' stroke-width='1.4'><path d='M2 11 L6 7 L9 9 L14 4'/></svg>",
@@ -616,7 +695,7 @@ class TradingBotGUI:
         }
 
     def _get_object_tree_catalog(self):
-        # Para peques: esta funcion sirve para obtener el catalogo del arbol de objetos.
+        # esta funcion sirve para obtener el catalogo del arbol de objetos.
         return {
             "baseline": {"label": "Baseline", "icon": "line", "toggle": True, "visible": True},
             "atr_bands": {"label": "ATR Bands", "icon": "bands", "toggle": True, "visible": True},
@@ -625,14 +704,14 @@ class TradingBotGUI:
         }
 
     def _get_default_object_tree_items(self):
-        # Para peques: esta funcion sirve para obtener los elementos por defecto del arbol de objetos.
+        # esta funcion sirve para obtener los elementos por defecto del arbol de objetos.
         defaults = getattr(config, "OBJECT_TREE_DEFAULT_ITEMS", None)
         if isinstance(defaults, (list, tuple)) and defaults:
             return list(defaults)
         return ["baseline", "atr_bands", "supertrend", "tci"]
 
     def _merge_object_tree_items(self, primary, fallback):
-        # Para peques: esta funcion sirve para unir listas de elementos del arbol de objetos.
+        # esta funcion sirve para unir listas de elementos del arbol de objetos.
         combined = []
         for items in (primary, fallback):
             if not items:
@@ -644,7 +723,7 @@ class TradingBotGUI:
         return combined
 
     def _normalize_object_tree_items(self, items):
-        # Para peques: esta funcion sirve para ordenar y limpiar elementos del arbol de objetos.
+        # esta funcion sirve para ordenar y limpiar elementos del arbol de objetos.
         catalog = self._get_object_tree_catalog()
         normalized = []
         seen = set()
@@ -692,7 +771,7 @@ class TradingBotGUI:
         return normalized
 
     def _get_strategy_object_tree_items(self, module=None):
-        # Para peques: esta funcion sirve para obtener elementos del arbol segun la estrategia.
+        # esta funcion sirve para obtener elementos del arbol segun la estrategia.
         if module is None:
             module = self.strategy_module
         if module is None:
@@ -726,7 +805,7 @@ class TradingBotGUI:
         return self._normalize_object_tree_items(combined)
 
     def _get_active_strategies_object_tree_items(self):
-        # Para peques: esta funcion sirve para unir elementos del arbol de todas las estrategias activas.
+        # esta funcion sirve para unir elementos del arbol de todas las estrategias activas.
         items = []
         for entry in self._get_enabled_strategy_entries():
             module = entry.get("module_obj")
@@ -736,7 +815,7 @@ class TradingBotGUI:
         return items
 
     def _build_object_tree_items(self):
-        # Para peques: esta funcion sirve para construir la lista final del arbol de objetos.
+        # esta funcion sirve para construir la lista final del arbol de objetos.
         if self.strategy_data_all_actives:
             items = list(self._get_active_strategies_object_tree_items())
         else:
@@ -753,7 +832,7 @@ class TradingBotGUI:
         return combined
 
     def _apply_indicator_visibility_for_items(self, items):
-        # Para peques: esta funcion sirve para aplicar visibilidad de indicadores en varios elementos.
+        # esta funcion sirve para aplicar visibilidad de indicadores en varios elementos.
         active_keys = {item["key"] for item in items if item.get("toggle")}
         for item in items:
             if not item.get("toggle"):
@@ -767,7 +846,7 @@ class TradingBotGUI:
                 self._apply_indicator_visibility(key, False)
 
     def _get_strategy_data_scope(self, items=None) -> str:
-        # Para peques: esta funcion sirve para obtener la estrategia seleccionada en el selector.
+        # esta funcion sirve para obtener la estrategia seleccionada en el selector.
         key = (self.current_strategy_key or "").strip()
         if key and key in self.strategy_registry:
             return key
@@ -776,7 +855,7 @@ class TradingBotGUI:
         return ""
 
     def _get_strategy_data_scope_options(self, items=None):
-        # Para peques: esta funcion sirve para construir opciones del selector de estrategias.
+        # esta funcion sirve para construir opciones del selector de estrategias.
         options = []
         seen = set()
         for strategy in self._get_strategy_payload():
@@ -789,7 +868,7 @@ class TradingBotGUI:
         return options
 
     def _render_strategy_data_scope_selector(self, items=None):
-        # Para peques: esta funcion sirve para refrescar el desplegable de datos de estrategia.
+        # esta funcion sirve para refrescar el desplegable de datos de estrategia.
         handler = getattr(self, "side_panel_handler", None)
         if not handler:
             return
@@ -811,7 +890,7 @@ class TradingBotGUI:
         ''')
 
     def _render_data_window_strategy_selector(self, items=None):
-        # Para peques: esta funcion sirve para refrescar el selector de estrategia en data window.
+        # esta funcion sirve para refrescar el selector de estrategia en data window.
         handler = getattr(self, "side_panel_handler", None)
         if not handler:
             return
@@ -832,7 +911,7 @@ class TradingBotGUI:
         ''')
 
     def _set_strategy_data_scope(self, scope: str):
-        # Para peques: esta funcion sirve para aplicar la estrategia elegida en el selector.
+        # esta funcion sirve para aplicar la estrategia elegida en el selector.
         scope = (scope or "").strip()
         if not scope:
             scope = self._get_strategy_data_scope()
@@ -848,7 +927,7 @@ class TradingBotGUI:
         self._set_strategy_by_key(scope, refresh=True, sync_ui=True)
 
     def _set_strategy_data_all_actives(self):
-        # Para peques: esta funcion sirve para mostrar datos de todas las estrategias activas.
+        # esta funcion sirve para mostrar datos de todas las estrategias activas.
         enabled_entries = self._get_enabled_strategy_entries()
         if not enabled_entries:
             self.strategy_data_all_actives = False
@@ -859,7 +938,7 @@ class TradingBotGUI:
         self._refresh_object_tree_items()
 
     def _render_object_tree(self, items=None):
-        # Para peques: esta funcion sirve para dibujar arbol de objetos.
+        # esta funcion sirve para dibujar arbol de objetos.
         handler = getattr(self, "side_panel_handler", None)
         if not handler:
             return
@@ -884,7 +963,7 @@ class TradingBotGUI:
         ''')
 
     def _refresh_object_tree_items(self, render: bool = True):
-        # Para peques: esta funcion sirve para refrescar los elementos del arbol de objetos.
+        # esta funcion sirve para refrescar los elementos del arbol de objetos.
         items = self._build_object_tree_items()
         self.object_tree_items = items
         if self.indicator_series:
@@ -893,7 +972,7 @@ class TradingBotGUI:
             self._render_object_tree(items)
 
     def _load_strategy_module(self, module_ref: str):
-        # Para peques: esta funcion sirve para cargar el modulo de una estrategia.
+        # esta funcion sirve para cargar el modulo de una estrategia.
         """Carga dinámicamente un módulo de estrategia."""
         if not module_ref:
             return None
@@ -926,7 +1005,7 @@ class TradingBotGUI:
         return importlib.reload(module)
 
     def _resolve_timeframe_value(self, value):
-        # Para peques: esta funcion sirve para convertir el marco de tiempo a su valor de MT5.
+        # esta funcion sirve para convertir el marco de tiempo a su valor de MT5.
         if value is None:
             return None
         timeframe_map = {
@@ -947,7 +1026,7 @@ class TradingBotGUI:
         return None
 
     def _timeframe_label(self, timeframe_value):
-        # Para peques: esta funcion sirve para crear la etiqueta de texto del marco de tiempo.
+        # esta funcion sirve para crear la etiqueta de texto del marco de tiempo.
         reverse_map = {
             mt5.TIMEFRAME_M1: "M1",
             mt5.TIMEFRAME_M5: "M5",
@@ -960,7 +1039,7 @@ class TradingBotGUI:
         return reverse_map.get(timeframe_value, "")
 
     def _get_strategy_timeframe(self, module):
-        # Para peques: esta funcion sirve para obtener el marco de tiempo de una estrategia.
+        # esta funcion sirve para obtener el marco de tiempo de una estrategia.
         if module is None:
             return None
         if hasattr(module, "get_timeframe"):
@@ -977,7 +1056,7 @@ class TradingBotGUI:
         return None
 
     def _apply_strategy_timeframe(self, module_or_entry, refresh: bool = True):
-        # Para peques: esta funcion sirve para aplicar el marco de tiempo elegido por la estrategia.
+        # esta funcion sirve para aplicar el marco de tiempo elegido por la estrategia.
         if isinstance(module_or_entry, dict):
             timeframe_value = module_or_entry.get("timeframe_value")
             label = module_or_entry.get("timeframe_label") or ""
@@ -1019,19 +1098,21 @@ class TradingBotGUI:
         return changed
 
     def _set_strategy_by_key(self, key: str, refresh: bool = True, sync_ui: bool = True):
-        # Para peques: esta funcion sirve para cambiar la estrategia seleccionada por clave.
-        entry = self.strategy_registry.get(key)
+        # esta funcion sirve para cambiar la estrategia seleccionada por clave.
+        resolved_key = self._resolve_strategy_key(key)
+        entry = self.strategy_registry.get(resolved_key) if resolved_key else None
         if not entry:
             self.log_message(f"Estrategia desconocida: {key}")
             return
 
         loaded_ok = self._load_strategy_entry(entry)
-        self.current_strategy_key = key
-        config.STRATEGY_KEY = key
+        self.current_strategy_key = resolved_key
+        self._strategy_selection_seq = int(getattr(self, "_strategy_selection_seq", 0)) + 1
+        config.STRATEGY_KEY = resolved_key
         config.STRATEGY_MODULE = entry["module"]
 
         if loaded_ok:
-            self.strategy_module = entry.get("module_obj") or strategy_baseline
+            self.strategy_module = entry.get("module_obj") or default_strategy_module
             self.log_message(f"Interfaz activa: {entry['label']} ({entry['module']})")
             self._apply_strategy_timeframe(entry, refresh=False)
             self._refresh_object_tree_items()
@@ -1041,7 +1122,7 @@ class TradingBotGUI:
             self.timeframe_locked = False
             error_text = (entry.get("last_error") or "La estrategia no cumple la API minima").strip()
             self.log_message(
-                f"Estrategia no disponible para visualizar: {entry.get('label', key)} ({error_text})"
+                f"Estrategia no disponible para visualizar: {entry.get('label', resolved_key)} ({error_text})"
             )
             self._refresh_object_tree_items()
 
@@ -1257,7 +1338,7 @@ class TradingBotGUI:
         ''')
 
     def _add_strategy_from_input(self, label: str, module_ref: str):
-        # Para peques: esta funcion sirve para agregar una estrategia escrita por el usuario.
+        # esta funcion sirve para agregar una estrategia escrita por el usuario.
         label = (label or "").strip()
         module_ref = (module_ref or "").strip()
         if not module_ref:
@@ -1284,7 +1365,7 @@ class TradingBotGUI:
         self._set_strategy_by_key(key, refresh=True, sync_ui=True)
 
     def _add_strategy_from_drop(self, filename: str, data_uri: str):
-        # Para peques: esta funcion sirve para agregar una estrategia arrastrando un archivo.
+        # esta funcion sirve para agregar una estrategia arrastrando un archivo.
         filename = (filename or "").strip()
         data_uri = (data_uri or "").strip()
         if not filename or not data_uri:
@@ -1333,7 +1414,7 @@ class TradingBotGUI:
         self._set_strategy_by_key(key, refresh=True, sync_ui=True)
 
     def _render_strategy_panel(self):
-        # Para peques: esta funcion sirve para dibujar el panel de estrategias.
+        # esta funcion sirve para dibujar el panel de estrategias.
         self._sync_strategy_registry_from_disk(load_entries=True)
         if self.strategy_data_all_actives:
             self._refresh_object_tree_items()
@@ -1357,7 +1438,7 @@ class TradingBotGUI:
         self._render_strategy_readiness_overlay()
 
     def _sync_strategy_status_ui(self):
-        # Para peques: esta funcion sirve para sincronizar en pantalla el estado de estrategias.
+        # esta funcion sirve para sincronizar en pantalla el estado de estrategias.
         payload = json.dumps({
             "running": bool(self.bot_running),
             "active_count": len([e for e in self.strategy_registry.values() if e.get("enabled")]),
@@ -1372,9 +1453,9 @@ class TradingBotGUI:
         ''')
 
     def _apply_strategy_processing_with_module(self, df: pd.DataFrame, module, strategy_key: str = "") -> pd.DataFrame:
-        # Para peques: esta funcion sirve para aplicar el procesado de una estrategia con su modulo.
-        module = module or strategy_baseline
-        label = strategy_key or self.current_strategy_key or "baseline"
+        # esta funcion sirve para aplicar el procesado de una estrategia con su modulo.
+        module = module or default_strategy_module
+        label = strategy_key or self.current_strategy_key or "ema_rsi_trend"
         try:
             if hasattr(module, "prepare_dataframe"):
                 result = module.prepare_dataframe(df)
@@ -1393,7 +1474,7 @@ class TradingBotGUI:
         return df
 
     def _apply_strategy_processing_for_entry(self, entry: dict, df: pd.DataFrame) -> pd.DataFrame:
-        # Para peques: esta funcion sirve para aplicar el procesado de una estrategia del registro.
+        # esta funcion sirve para aplicar el procesado de una estrategia del registro.
         if not isinstance(entry, dict):
             return self._apply_strategy_processing_with_module(df, self.strategy_module, self.current_strategy_key or "")
         module = entry.get("module_obj")
@@ -1402,44 +1483,121 @@ class TradingBotGUI:
         return self._apply_strategy_processing_with_module(df, module, entry.get("key", ""))
 
     def _apply_strategy_processing(self, df: pd.DataFrame) -> pd.DataFrame:
-        # Para peques: esta funcion sirve para aplicar estrategia procesado.
+        # esta funcion sirve para aplicar estrategia procesado.
         entry = self._get_selected_strategy_entry()
         return self._apply_strategy_processing_for_entry(entry, df)
 
-    def _get_strategy_signal_with_module(self, df: pd.DataFrame, module, strategy_key: str = "", verbose: bool = False) -> str:
-        # Para peques: esta funcion sirve para obtener estrategia senal con modulo.
-        module = module or strategy_baseline
-        label = strategy_key or self.current_strategy_key or "baseline"
+    def _normalize_signal_value(self, signal) -> str:
+        # esta funcion sirve para normalizar valor de señal.
+        value = str(signal or "").strip().lower()
+        return value if value in {"buy", "sell", "none"} else "none"
+
+    def _normalize_signal_payload(self, payload) -> dict:
+        # esta funcion sirve para normalizar payload de señal.
+        signal_raw = payload
+        reason_raw = ""
+
+        if isinstance(payload, dict):
+            signal_raw = (
+                payload.get("signal")
+                or payload.get("side")
+                or payload.get("action")
+                or payload.get("decision")
+                or "none"
+            )
+            reason_raw = (
+                payload.get("reason")
+                or payload.get("motivo")
+                or payload.get("message")
+                or payload.get("detail")
+                or payload.get("why")
+                or ""
+            )
+        elif isinstance(payload, (tuple, list)):
+            if len(payload) > 0:
+                signal_raw = payload[0]
+            if len(payload) > 1:
+                reason_raw = payload[1]
+
+        reason = str(reason_raw or "").strip()
+        if len(reason) > 160:
+            reason = reason[:157].rstrip() + "..."
+
+        return {
+            "signal": self._normalize_signal_value(signal_raw),
+            "reason": reason,
+        }
+
+    def _get_strategy_signal_payload_with_module(
+        self,
+        df: pd.DataFrame,
+        module,
+        strategy_key: str = "",
+        verbose: bool = False
+    ) -> dict:
+        # esta funcion sirve para obtener payload de señal con modulo.
+        module = module or default_strategy_module
+        label = strategy_key or self.current_strategy_key or "ema_rsi_trend"
         if getattr(config, "TEST_MODE", False):
             if hasattr(module, "get_test_signal"):
-                return module.get_test_signal()
-            return strategy_baseline.get_test_signal()
+                return self._normalize_signal_payload(
+                    {"signal": module.get_test_signal(), "reason": "test_mode"}
+                )
+            return self._normalize_signal_payload(
+                {"signal": default_strategy_module.get_test_signal(), "reason": "test_mode"}
+            )
 
-        if hasattr(module, "get_last_signal"):
+        payload = None
+        if hasattr(module, "get_last_signal_payload"):
             try:
-                return module.get_last_signal(df, verbose=verbose)
+                payload = module.get_last_signal_payload(df, verbose=verbose)
             except TypeError:
-                return module.get_last_signal(df)
+                payload = module.get_last_signal_payload(df)
+            except Exception as e:
+                self.log_message(f"Error al obtener payload de señal ({label}): {e}")
+
+        if payload is None and hasattr(module, "get_last_signal"):
+            try:
+                payload = module.get_last_signal(df, verbose=verbose)
+            except TypeError:
+                payload = module.get_last_signal(df)
             except Exception as e:
                 self.log_message(f"Error al obtener señal ({label}): {e}")
-        return "none"
 
-    def _get_strategy_signal_for_entry(self, entry: dict, df: pd.DataFrame, verbose: bool = False) -> str:
-        # Para peques: esta funcion sirve para obtener estrategia senal para entrada.
+        return self._normalize_signal_payload(payload)
+
+    def _get_strategy_signal_with_module(self, df: pd.DataFrame, module, strategy_key: str = "", verbose: bool = False) -> str:
+        # esta funcion sirve para obtener estrategia senal con modulo.
+        payload = self._get_strategy_signal_payload_with_module(
+            df, module, strategy_key=strategy_key, verbose=verbose
+        )
+        return payload.get("signal", "none")
+
+    def _get_strategy_signal_payload_for_entry(self, entry: dict, df: pd.DataFrame, verbose: bool = False) -> dict:
+        # esta funcion sirve para obtener payload de señal para entrada.
         if not isinstance(entry, dict):
-            return self._get_strategy_signal_with_module(df, self.strategy_module, self.current_strategy_key or "", verbose=verbose)
+            return self._get_strategy_signal_payload_with_module(
+                df, self.strategy_module, self.current_strategy_key or "", verbose=verbose
+            )
         module = entry.get("module_obj")
         if module is None:
-            return "none"
-        return self._get_strategy_signal_with_module(df, module, entry.get("key", ""), verbose=verbose)
+            return {"signal": "none", "reason": ""}
+        return self._get_strategy_signal_payload_with_module(
+            df, module, entry.get("key", ""), verbose=verbose
+        )
+
+    def _get_strategy_signal_for_entry(self, entry: dict, df: pd.DataFrame, verbose: bool = False) -> str:
+        # esta funcion sirve para obtener estrategia senal para entrada.
+        payload = self._get_strategy_signal_payload_for_entry(entry, df, verbose=verbose)
+        return payload.get("signal", "none")
 
     def _get_strategy_signal(self, df: pd.DataFrame, verbose: bool = False) -> str:
-        # Para peques: esta funcion sirve para obtener estrategia senal.
+        # esta funcion sirve para obtener estrategia senal.
         entry = self._get_selected_strategy_entry()
         return self._get_strategy_signal_for_entry(entry, df, verbose=verbose)
         
     def setup_topbar(self):
-        # Para peques: esta funcion sirve para preparar barra superior.
+        # esta funcion sirve para preparar barra superior.
         """Configura la barra superior con controles."""
         # Cotizaciones rápidas (estilo TradingView)
         self.chart.topbar.textbox('sell_quote', 'SELL --', align='left')
@@ -1463,7 +1621,7 @@ class TradingBotGUI:
         self._ensure_action_tooltip()
 
     def _inject_custom_styles(self):
-        # Para peques: esta funcion sirve para inyectar estilos personalizados.
+        # esta funcion sirve para inyectar estilos personalizados.
         """Inyecta estilos CSS para emular la estética TradingView."""
         self.chart.run_script('''
             if (!document.getElementById("trading-ui-style")) {
@@ -2570,7 +2728,7 @@ class TradingBotGUI:
         ''')
 
     def _style_quote_widgets(self):
-        # Para peques: esta funcion sirve para aplicar estilo a los widgets de cotizacion.
+        # esta funcion sirve para aplicar estilo a los widgets de cotizacion.
         """Aplica clases a las cajas de cotización."""
         try:
             sell_id = self.chart.topbar['sell_quote'].id
@@ -2588,7 +2746,7 @@ class TradingBotGUI:
         ''')
 
     def _style_balance_widget(self):
-        # Para peques: esta funcion sirve para aplicar estilo al widget de balance.
+        # esta funcion sirve para aplicar estilo al widget de balance.
         """Posiciona el balance como un indicador visible en la topbar."""
         try:
             balance_id = self.chart.topbar['balance'].id
@@ -2609,7 +2767,7 @@ class TradingBotGUI:
         self._set_balance_widget("---", None)
 
     def _set_balance_widget(self, balance_text: str, currency=None):
-        # Para peques: esta funcion sirve para actualizar el widget de balance.
+        # esta funcion sirve para actualizar el widget de balance.
         widget = self.chart.topbar.get('balance')
         if not widget:
             return
@@ -2628,7 +2786,7 @@ class TradingBotGUI:
         ''')
 
     def _bind_quote_actions(self):
-        # Para peques: esta funcion sirve para conectar acciones de cotizacion.
+        # esta funcion sirve para conectar acciones de cotizacion.
         """Permite abrir operaciones desde los botones BUY/SELL."""
         self.quick_trade_handler = 'quick_trade_evt'
         self.chart.win.handlers[self.quick_trade_handler] = self.on_quick_trade
@@ -2645,7 +2803,7 @@ class TradingBotGUI:
         ''')
 
     def on_quick_trade(self, side):
-        # Para peques: esta funcion sirve para reaccionar a trade rapido.
+        # esta funcion sirve para reaccionar a trade rapido.
         side = (side or "").lower()
         if side not in ("buy", "sell"):
             return
@@ -2656,6 +2814,8 @@ class TradingBotGUI:
                 return
             selected_entry = self._get_selected_strategy_entry()
             timeframe_value = self._strategy_timeframe_value(selected_entry, fallback=config.TIMEFRAME)
+            strategy_key = selected_entry.get("key", "") if isinstance(selected_entry, dict) else ""
+            strategy_label = selected_entry.get("label", "") if isinstance(selected_entry, dict) else ""
             action_info = trading.apply_signal(
                 config.SYMBOL,
                 side,
@@ -2663,7 +2823,10 @@ class TradingBotGUI:
                 config.SL_POINTS,
                 config.TP_POINTS,
                 self._selected_strategy_magic(),
-                timeframe_value=timeframe_value
+                timeframe_value=timeframe_value,
+                strategy_key=strategy_key,
+                strategy_label=strategy_label,
+                signal_reason="trade_manual_rapido"
             )
             if action_info:
                 self.update_last_action_ui(action_info)
@@ -2671,7 +2834,7 @@ class TradingBotGUI:
             self.log_message(f"Error al ejecutar {side.upper()}: {e}")
 
     def _hide_non_visual_widgets(self):
-        # Para peques: esta funcion sirve para ocultar widgets no visuales.
+        # esta funcion sirve para ocultar widgets no visuales.
         """Oculta widgets de control para no alterar el layout visual."""
         keys = ['status', 'action_icon', 'action_text', 'start', 'stop', 'refresh']
         for key in keys:
@@ -2688,7 +2851,7 @@ class TradingBotGUI:
             ''')
 
     def _set_quote_box(self, widget_key: str, label: str, price_text: str):
-        # Para peques: esta funcion sirve para actualizar la caja de cotizacion.
+        # esta funcion sirve para actualizar la caja de cotizacion.
         """Actualiza el HTML de una caja de cotización."""
         widget = self.chart.topbar.get(widget_key)
         if not widget:
@@ -2703,7 +2866,7 @@ class TradingBotGUI:
         self.chart.run_script(f"{widget_id}.innerHTML = {json.dumps(html)};")
 
     def update_quotes(self):
-        # Para peques: esta funcion sirve para actualizar cotizaciones.
+        # esta funcion sirve para actualizar cotizaciones.
         """Actualiza las cotizaciones BUY/SELL y el spread."""
         try:
             tick = mt5.symbol_info_tick(config.SYMBOL)
@@ -2731,7 +2894,7 @@ class TradingBotGUI:
             self.log_message(f"Error al actualizar cotizaciones: {e}")
 
     def start_quote_updater(self):
-        # Para peques: esta funcion sirve para iniciar cotizacion actualizador.
+        # esta funcion sirve para iniciar cotizacion actualizador.
         """Inicia un hilo para refrescar cotizaciones periódicamente."""
         if self.quote_thread and self.quote_thread.is_alive():
             return
@@ -2740,12 +2903,12 @@ class TradingBotGUI:
         self.quote_thread.start()
 
     def stop_quote_updater(self):
-        # Para peques: esta funcion sirve para detener cotizacion actualizador.
+        # esta funcion sirve para detener cotizacion actualizador.
         """Detiene el hilo de cotizaciones."""
         self.quote_stop_event.set()
 
     def start_callback_pump(self):
-        # Para peques: esta funcion sirve para iniciar retorno bomba.
+        # esta funcion sirve para iniciar retorno bomba.
         """Inicia el loop que procesa callbacks JS (botones, selectores, etc.)."""
         if self.callback_thread and self.callback_thread.is_alive():
             return
@@ -2754,19 +2917,26 @@ class TradingBotGUI:
         self.callback_thread.start()
 
     def stop_callback_pump(self):
-        # Para peques: esta funcion sirve para detener retorno bomba.
+        # esta funcion sirve para detener retorno bomba.
         """Detiene el loop de callbacks JS."""
         self.callback_stop_event.set()
 
     def _callback_loop(self):
-        # Para peques: esta funcion sirve para ciclo de retorno.
+        # esta funcion sirve para ciclo de retorno.
+        last_queue_error_ts = 0.0
         while not self.callback_stop_event.is_set():
             try:
                 response = Chart.WV.emit_queue.get(timeout=0.1)
             except queue.Empty:
                 continue
-            except Exception:
-                break
+            except Exception as e:
+                now_ts = time.time()
+                if (now_ts - last_queue_error_ts) >= 5:
+                    self.log_message(f"Error en cola de callbacks: {e}")
+                    last_queue_error_ts = now_ts
+                if self.callback_stop_event.wait(timeout=0.2):
+                    break
+                continue
 
             if response == 'exit':
                 try:
@@ -2786,7 +2956,7 @@ class TradingBotGUI:
                 self.log_message(f"Error en callback: {e}")
 
     def _quote_loop(self):
-        # Para peques: esta funcion sirve para ciclo de cotizaciones.
+        # esta funcion sirve para ciclo de cotizaciones.
         while not self.quote_stop_event.is_set():
             self.update_quotes()
             self.update_bottom_clock()
@@ -2794,7 +2964,7 @@ class TradingBotGUI:
                 break
 
     def setup_side_panel(self):
-        # Para peques: esta funcion sirve para preparar panel lateral.
+        # esta funcion sirve para preparar panel lateral.
         """Crea el panel lateral con noticias, sugerencias y panel clásico."""
         self.side_panel_handler = 'side_panel_evt'
         self.chart.win.handlers[self.side_panel_handler] = self.on_side_panel_event
@@ -2815,7 +2985,7 @@ class TradingBotGUI:
         self._render_strategy_panel()
 
     def _build_side_panel(self, items, feedback_target: str, feedback_list_url: str):
-        # Para peques: esta funcion sirve para construir panel lateral.
+        # esta funcion sirve para construir panel lateral.
         icons = self._get_side_panel_icons()
 
         payload = json.dumps({
@@ -3605,10 +3775,15 @@ class TradingBotGUI:
                     enableBtn.innerText = strategy.enabled ? "Activa" : "Inactiva";
                     enableBtn.addEventListener("click", (e) => {{
                         e.stopPropagation();
+                        const handler = (data && data.handler) ? data.handler : "";
+                        const strategyKey = encodeURIComponent(String(strategy.key || ""));
+                        if (!handler || !strategyKey) {{
+                            return;
+                        }}
                         const strategyName = strategy.label || strategy.key || "estrategia";
                         const actionText = strategy.enabled ? "desactivar" : "activar";
                         const runToggle = () => {{
-                            window.callbackFunction(data.handler + "_~_strategy_enable_toggle;;;" + strategy.key);
+                            window.callbackFunction(handler + "_~_strategy_enable_toggle;;;" + strategyKey);
                         }};
                         if (typeof window.tvShowConfirm === "function") {{
                             window.tvShowConfirm(
@@ -3642,7 +3817,12 @@ class TradingBotGUI:
                     row.appendChild(right);
 
                     row.addEventListener("click", () => {{
-                        window.callbackFunction(data.handler + "_~_strategy_select;;;" + strategy.key);
+                        const handler = (data && data.handler) ? data.handler : "";
+                        const strategyKey = encodeURIComponent(String(strategy.key || ""));
+                        if (!handler || !strategyKey) {{
+                            return;
+                        }}
+                        window.callbackFunction(handler + "_~_strategy_select;;;" + strategyKey);
                     }});
 
                     list.appendChild(row);
@@ -3872,10 +4052,14 @@ class TradingBotGUI:
                     item.appendChild(main);
                     item.appendChild(meta);
 
-                    if (trade.comment) {{
+                    const tradeExtra = [];
+                    if (trade.strategy) tradeExtra.push("Estrategia: " + trade.strategy);
+                    if (trade.reason) tradeExtra.push("Motivo: " + trade.reason);
+                    if (trade.comment) tradeExtra.push("MT5: " + trade.comment);
+                    if (tradeExtra.length) {{
                         const comment = document.createElement("div");
                         comment.className = "tv-trade-comment";
-                        comment.innerText = trade.comment;
+                        comment.innerText = tradeExtra.join(" | ");
                         item.appendChild(comment);
                     }}
 
@@ -4032,7 +4216,7 @@ class TradingBotGUI:
 
         ''')
     def on_side_panel_event(self, action, *args):
-        # Para peques: esta funcion sirve para reaccionar a panel lateral evento.
+        # esta funcion sirve para reaccionar a panel lateral evento.
         action = (action or "").strip()
         if action == "feedback_send":
             subject = unquote(args[0]) if len(args) > 0 else ""
@@ -4053,10 +4237,11 @@ class TradingBotGUI:
             self._set_strategy_data_all_actives()
             return
         if action == "strategy_select" and args:
-            self._set_strategy_by_key(args[0])
+            key = unquote(args[0]) if len(args) > 0 else ""
+            self._set_strategy_by_key(key)
             return
         if action == "strategy_enable_toggle" and args:
-            key = args[0]
+            key = unquote(args[0]) if len(args) > 0 else ""
             entry = self._get_strategy_entry(key)
             if entry:
                 self._set_strategy_enabled(key, not bool(entry.get("enabled")), sync_ui=True)
@@ -4076,7 +4261,7 @@ class TradingBotGUI:
             return
 
     def _handle_feedback_send(self, subject: str, message: str):
-        # Para peques: esta funcion sirve para gestionar envio de comentarios.
+        # esta funcion sirve para gestionar envio de comentarios.
         subject = (subject or "").strip() or "Sugerencia Trading Agent"
         message = (message or "").strip()
         if not message:
@@ -4113,7 +4298,7 @@ class TradingBotGUI:
             self._set_feedback_status("No se pudo guardar localmente.", "error")
 
     def _save_feedback_local(self, payload: dict) -> bool:
-        # Para peques: esta funcion sirve para guardar comentarios local.
+        # esta funcion sirve para guardar comentarios local.
         save_dir = getattr(config, "FEEDBACK_SAVE_DIR", "feedback") or "feedback"
         try:
             os.makedirs(save_dir, exist_ok=True)
@@ -4127,7 +4312,7 @@ class TradingBotGUI:
             return False
 
     def _post_feedback_webhook(self, url: str, payload: dict):
-        # Para peques: esta funcion sirve para publicar comentarios webhook.
+        # esta funcion sirve para publicar comentarios webhook.
         try:
             data = json.dumps(payload).encode("utf-8")
             request = urllib.request.Request(
@@ -4145,7 +4330,7 @@ class TradingBotGUI:
             return False, str(e)
 
     def _get_feedback_list_url(self) -> str:
-        # Para peques: esta funcion sirve para obtener la URL de la lista de comentarios.
+        # esta funcion sirve para obtener la URL de la lista de comentarios.
         list_url = (getattr(config, "FEEDBACK_LIST_URL", "") or "").strip()
         if list_url:
             return list_url
@@ -4165,7 +4350,7 @@ class TradingBotGUI:
             return ""
 
     def _handle_feedback_list(self):
-        # Para peques: esta funcion sirve para gestionar la lista de comentarios.
+        # esta funcion sirve para gestionar la lista de comentarios.
         list_url = self._get_feedback_list_url()
         if not list_url:
             self._set_feedback_list([], "Servidor no configurado.", "error")
@@ -4202,7 +4387,7 @@ class TradingBotGUI:
             self.log_message(f"Error cargando feedback: {e}")
 
     def _set_feedback_list(self, items, status_text: str = "", kind: str = ""):
-        # Para peques: esta funcion sirve para actualizar la lista de comentarios.
+        # esta funcion sirve para actualizar la lista de comentarios.
         try:
             items_js = json.dumps(items or [])
         except Exception:
@@ -4278,7 +4463,7 @@ class TradingBotGUI:
         ''')
 
     def _set_feedback_status(self, text: str, kind: str = ""):
-        # Para peques: esta funcion sirve para actualizar comentarios estado.
+        # esta funcion sirve para actualizar comentarios estado.
         text_js = json.dumps(text or "")
         kind_js = json.dumps(kind or "")
         clear_inputs = "true" if kind == "success" else "false"
@@ -4302,7 +4487,7 @@ class TradingBotGUI:
         ''')
 
     def _toggle_strategy_run(self):
-        # Para peques: este boton enciende o apaga el motor que ejecuta las estrategias.
+        # este boton enciende o apaga el motor que ejecuta las estrategias.
         """Inicia o detiene el motor de estrategias desde el panel."""
         thread_alive = self.bot_thread is not None and self.bot_thread.is_alive()
         if self.bot_running and thread_alive:
@@ -4314,7 +4499,7 @@ class TradingBotGUI:
         self.start_bot()
 
     def toggle_indicator(self, key: str):
-        # Para peques: esta funcion sirve para activar o desactivar indicador.
+        # esta funcion sirve para activar o desactivar indicador.
         visible = not self.indicator_state.get(key, True)
         self.indicator_state[key] = visible
         self._apply_indicator_visibility(key, visible)
@@ -4326,7 +4511,7 @@ class TradingBotGUI:
                 pass
 
     def _apply_indicator_visibility(self, key: str, visible: bool):
-        # Para peques: esta funcion sirve para aplicar indicador visibilidad.
+        # esta funcion sirve para aplicar indicador visibilidad.
         series_list = self.indicator_series.get(key, [])
         for series in series_list:
             if series is None:
@@ -4337,7 +4522,7 @@ class TradingBotGUI:
                 series.hide_data()
 
     def _sync_indicator_ui(self, key: str, visible: bool):
-        # Para peques: esta funcion sirve para sincronizar indicador interfaz.
+        # esta funcion sirve para sincronizar indicador interfaz.
         visible_flag = "1" if visible else "0"
         hidden_class = "" if visible else "hidden"
         visible_js = str(visible).lower()
@@ -4366,7 +4551,7 @@ class TradingBotGUI:
         ''')
 
     def setup_bottom_bar(self):
-        # Para peques: esta funcion sirve para preparar barra inferior.
+        # esta funcion sirve para preparar barra inferior.
         """Crea la barra inferior con periodos y estado de mercado."""
         self.bottom_bar_handler = 'bottom_bar_evt'
         self.chart.win.handlers[self.bottom_bar_handler] = self.on_bottom_bar_event
@@ -4431,7 +4616,7 @@ class TradingBotGUI:
         self.set_bottom_period_active(self.view_period)
 
     def set_bottom_period_active(self, period: str):
-        # Para peques: esta funcion sirve para actualizar barra inferior periodo activo.
+        # esta funcion sirve para actualizar barra inferior periodo activo.
         self.chart.run_script(f'''
             ;(function() {{
                 document.querySelectorAll(".tv-period-btn").forEach((btn) => {{
@@ -4441,14 +4626,14 @@ class TradingBotGUI:
         ''')
 
     def on_bottom_bar_event(self, period):
-        # Para peques: esta funcion sirve para reaccionar a barra inferior evento.
+        # esta funcion sirve para reaccionar a barra inferior evento.
         if period:
             self.view_period = period
             self.set_bottom_period_active(period)
             self.refresh_data()
 
     def update_bottom_clock(self):
-        # Para peques: esta funcion sirve para actualizar barra inferior reloj.
+        # esta funcion sirve para actualizar barra inferior reloj.
         """Actualiza reloj y sesión en la barra inferior."""
         try:
             now = datetime.now()
@@ -4475,7 +4660,7 @@ class TradingBotGUI:
             pass
     
     def log_message(self, message):
-        # Para peques: esta funcion sirve para escribir en el log mensaje.
+        # esta funcion sirve para escribir en el log mensaje.
         """Registra un mensaje."""
         timestamp = datetime.now().strftime("%H:%M:%S")
         try:
@@ -4484,7 +4669,7 @@ class TradingBotGUI:
             pass
     
     def init_mt5(self):
-        # Para peques: esta funcion sirve para iniciar mt5.
+        # esta funcion sirve para iniciar mt5.
         """Inicializa la conexión con MT5."""
         try:
             if config.TIMEFRAME is None:
@@ -4516,7 +4701,7 @@ class TradingBotGUI:
             return False
 
     def update_balance(self):
-        # Para peques: esta funcion sirve para actualizar balance.
+        # esta funcion sirve para actualizar balance.
         """Actualiza el balance en la barra superior."""
         try:
             info = mt5.account_info()
@@ -4538,7 +4723,7 @@ class TradingBotGUI:
                 pass
 
     def _collect_selected_position_state(self) -> dict:
-        # Para peques: esta funcion sirve para resumir posiciones long/short de la estrategia seleccionada.
+        # esta funcion sirve para resumir posiciones long/short de la estrategia seleccionada.
         state = {
             "long_active": False,
             "short_active": False,
@@ -4576,7 +4761,7 @@ class TradingBotGUI:
         return state
 
     def _sync_position_state_ui(self, state: dict = None):
-        # Para peques: esta funcion sirve para actualizar en pantalla el estado de long/short.
+        # esta funcion sirve para actualizar en pantalla el estado de long/short.
         if state is None:
             state = self.position_state
         if not isinstance(state, dict):
@@ -4592,7 +4777,7 @@ class TradingBotGUI:
         ''')
 
     def _timeframe_to_minutes(self, timeframe_value) -> int:
-        # Para peques: esta funcion sirve para pasar el marco de tiempo a minutos.
+        # esta funcion sirve para pasar el marco de tiempo a minutos.
         timeframe_minutes = {
             mt5.TIMEFRAME_M1: 1,
             mt5.TIMEFRAME_M5: 5,
@@ -4605,19 +4790,19 @@ class TradingBotGUI:
         return int(timeframe_minutes.get(timeframe_value, 1))
 
     def get_timeframe_minutes(self):
-        # Para peques: esta funcion sirve para obtener marco de tiempo minutos.
+        # esta funcion sirve para obtener marco de tiempo minutos.
         """Obtiene los minutos del timeframe actual."""
         return self._timeframe_to_minutes(config.TIMEFRAME)
 
     def _selected_strategy_magic(self) -> int:
-        # Para peques: esta funcion sirve para numero magico de la estrategia seleccionada.
+        # esta funcion sirve para numero magico de la estrategia seleccionada.
         entry = self._get_selected_strategy_entry()
         if entry and isinstance(entry.get("magic_number"), int) and entry.get("magic_number") > 0:
             return int(entry.get("magic_number"))
         return int(getattr(config, "MAGIC_NUMBER", 0) or 0)
 
     def _get_marker_strategy_scope(self, strategy_entry=None):
-        # Para peques: esta funcion sirve para decidir que estrategias aparecen en marcadores.
+        # esta funcion sirve para decidir que estrategias aparecen en marcadores.
         tracked_magics = set()
         magic_labels = {}
 
@@ -4653,7 +4838,7 @@ class TradingBotGUI:
         return tracked_magics, magic_labels
 
     def _resolve_deal_strategy_label(self, deal, magic_labels=None) -> str:
-        # Para peques: esta funcion sirve para sacar el nombre de estrategia de un deal.
+        # esta funcion sirve para sacar el nombre de estrategia de un deal.
         if magic_labels is None:
             magic_labels = {}
         try:
@@ -4663,12 +4848,47 @@ class TradingBotGUI:
 
         if deal_magic in magic_labels:
             return magic_labels[deal_magic]
+        try:
+            comment_meta = trading.decode_trade_comment(getattr(deal, "comment", ""))
+            if comment_meta.get("is_bot_comment") and comment_meta.get("strategy"):
+                return comment_meta.get("strategy")
+        except Exception:
+            pass
         if deal_magic > 0:
             return f"Magic {deal_magic}"
         return "Sin estrategia"
 
+    def _resolve_deal_reason_label(self, deal) -> str:
+        # esta funcion sirve para obtener motivo de señal desde comentario de deal.
+        comment = str(getattr(deal, "comment", "") or "").strip()
+        if not comment:
+            return ""
+        try:
+            parsed = trading.decode_trade_comment(comment)
+            if parsed.get("is_bot_comment") and parsed.get("reason"):
+                return parsed.get("reason")
+        except Exception:
+            pass
+        if comment.lower() in {"bot trading", "cierre automático", "cierre automatico"}:
+            return ""
+        return comment
+
+    def _resolve_group_reason_label(self, deals) -> str:
+        # esta funcion sirve para escoger el motivo más relevante para un grupo de deals.
+        if not deals:
+            return ""
+        try:
+            ordered = sorted(deals, key=lambda d: getattr(d, "time", 0), reverse=True)
+        except Exception:
+            ordered = list(deals)
+        for deal in ordered:
+            reason = self._resolve_deal_reason_label(deal)
+            if reason:
+                return reason
+        return ""
+
     def _strategy_timeframe_value(self, entry: dict, fallback=None):
-        # Para peques: esta funcion sirve para valor del marco de tiempo de la estrategia.
+        # esta funcion sirve para valor del marco de tiempo de la estrategia.
         if isinstance(entry, dict):
             tf_value = entry.get("timeframe_value")
             if isinstance(tf_value, int):
@@ -4678,7 +4898,7 @@ class TradingBotGUI:
         return config.TIMEFRAME
 
     def _build_market_dataframe(self, timeframe_value, bars_needed):
-        # Para peques: esta funcion sirve para construir mercado tabla de datos.
+        # esta funcion sirve para construir mercado tabla de datos.
         df = data_feed.get_rates_df(config.SYMBOL, timeframe_value, bars_needed)
         df = data_feed.add_source_columns(df, config.SOURCE_MODE)
         df = data_feed.add_baseline_bands(
@@ -4701,7 +4921,7 @@ class TradingBotGUI:
         return df
     
     def get_period_bars(self, period_str, timeframe_minutes):
-        # Para peques: esta funcion sirve para obtener periodo velas.
+        # esta funcion sirve para obtener periodo velas.
         """Calcula cuántas velas obtener según el período."""
         minutes_per_day = 24 * 60
         minutes_per_month = 30 * minutes_per_day
@@ -4729,44 +4949,70 @@ class TradingBotGUI:
         return max(100, min(bars, 10000))
     
     def refresh_data(self, chart=None):
-        # Para peques: esta funcion sirve para refrescar datos.
+        # esta funcion sirve para refrescar datos.
         """Actualiza los datos del gráfico."""
+        expected_strategy_key = (self.current_strategy_key or "").strip()
+        expected_selection_seq = int(getattr(self, "_strategy_selection_seq", 0) or 0)
+
         def update_thread():
-            # Para peques: esta funcion sirve para actualizar hilo.
+            # esta funcion sirve para actualizar hilo.
             try:
-                selected_entry = self._get_selected_strategy_entry()
-                timeframe_value = self._strategy_timeframe_value(selected_entry, fallback=config.TIMEFRAME)
-                if timeframe_value is None:
-                    timeframe_value = mt5.TIMEFRAME_M1
-
-                timeframe_minutes = self._timeframe_to_minutes(timeframe_value)
-                bars_needed = self.get_period_bars(self.view_period, timeframe_minutes)
-
-                df = self._build_market_dataframe(timeframe_value, bars_needed)
-                df = self._apply_strategy_processing_for_entry(selected_entry, df)
-                
-                if len(df) < 2:
-                    return
-
-                if isinstance(selected_entry, dict):
-                    selected_entry["last_df"] = df
-
-                self.price_data = df
-                self.update_chart(df, fit_view=True, strategy_entry=selected_entry)
-                self.update_equity_chart()
-                self.update_tci_chart(df)
-                self.update_balance()
-                self.update_quotes()
-                
-                self.log_message(f"Datos actualizados: {len(df)} velas")
-                
+                self._refresh_data_once(
+                    fit_view=True,
+                    enforce_selection=True,
+                    expected_strategy_key=expected_strategy_key,
+                    expected_selection_seq=expected_selection_seq,
+                    log_update=True
+                )
             except Exception as e:
                 self.log_message(f"Error al actualizar datos: {e}")
-        
+
         threading.Thread(target=update_thread, daemon=True).start()
+
+    def _refresh_data_once(
+        self,
+        fit_view: bool = True,
+        enforce_selection: bool = False,
+        expected_strategy_key: str = "",
+        expected_selection_seq: int = 0,
+        log_update: bool = True
+    ) -> bool:
+        # esta funcion sirve para cargar una tanda completa de datos.
+        selected_entry = self._get_selected_strategy_entry()
+        timeframe_value = self._strategy_timeframe_value(selected_entry, fallback=config.TIMEFRAME)
+        if timeframe_value is None:
+            timeframe_value = mt5.TIMEFRAME_M1
+
+        timeframe_minutes = self._timeframe_to_minutes(timeframe_value)
+        bars_needed = self.get_period_bars(self.view_period, timeframe_minutes)
+        df = self._build_market_dataframe(timeframe_value, bars_needed)
+        df = self._apply_strategy_processing_for_entry(selected_entry, df)
+
+        if len(df) < 2:
+            return False
+
+        if isinstance(selected_entry, dict):
+            selected_entry["last_df"] = df
+
+        if enforce_selection:
+            current_key = (self.current_strategy_key or "").strip()
+            current_seq = int(getattr(self, "_strategy_selection_seq", 0) or 0)
+            if current_seq != expected_selection_seq or current_key != expected_strategy_key:
+                return False
+
+        self.price_data = df
+        self.update_chart(df, fit_view=fit_view, strategy_entry=selected_entry)
+        self.update_equity_chart()
+        self.update_tci_chart(df)
+        self.update_balance()
+        self.update_quotes()
+
+        if log_update:
+            self.log_message(f"Datos actualizados: {len(df)} velas")
+        return True
     
     def update_chart(self, df, fit_view: bool = False, strategy_entry=None):
-        # Para peques: esta funcion sirve para actualizar grafico.
+        # esta funcion sirve para actualizar grafico.
         """Actualiza el gráfico de velas."""
         try:
             # Preparar datos para Lightweight Charts
@@ -4902,6 +5148,7 @@ class TradingBotGUI:
                 deals = mt5.history_deals_get(start_time, end_time)
 
                 selected_magic = self._selected_strategy_magic()
+                _, magic_labels = self._get_marker_strategy_scope(strategy_entry=strategy_entry)
 
                 markers = []
                 action_markers = []
@@ -5037,8 +5284,16 @@ class TradingBotGUI:
                             if isinstance(first_price, (int, float)):
                                 marker_price = float(first_price)
 
+                        strategy_label = self._resolve_deal_strategy_label(selected_deal, magic_labels=magic_labels)
+                        signal_reason = self._resolve_group_reason_label(selected_deals)
+
                         if isinstance(marker_price, (int, float)):
-                            tooltip_text = self._format_deal_group_tooltip(selected_deals, direction)
+                            tooltip_text = self._format_deal_group_tooltip(
+                                selected_deals,
+                                direction,
+                                strategy_label=strategy_label,
+                                signal_reason=signal_reason
+                            )
                             action_markers.append({
                                 "time": bucket_time,
                                 "price": float(marker_price),
@@ -5072,7 +5327,7 @@ class TradingBotGUI:
             traceback.print_exc()
 
     def update_last_action_ui(self, action_info):
-        # Para peques: esta funcion sirve para actualizar ultima accion interfaz.
+        # esta funcion sirve para actualizar ultima accion interfaz.
         """Actualiza el indicador de última acción en la topbar."""
         if not action_info:
             return
@@ -5090,7 +5345,7 @@ class TradingBotGUI:
         # El tooltip ahora se gestiona desde los marcadores del gráfico
 
     def _build_action_summary(self, action_info):
-        # Para peques: esta funcion sirve para construir un resumen de accion.
+        # esta funcion sirve para construir un resumen de accion.
         """Genera icono y resumen de la última acción."""
         actions = action_info.get("actions", []) if isinstance(action_info, dict) else []
         if not actions:
@@ -5126,8 +5381,8 @@ class TradingBotGUI:
 
         return "✅", self.success_color, "Acción ejecutada"
 
-    def _format_deal_tooltip(self, deal, direction):
-        # Para peques: esta funcion sirve para dar formato a operacion cartel.
+    def _format_deal_tooltip(self, deal, direction, strategy_label: str = "", signal_reason: str = ""):
+        # esta funcion sirve para dar formato a operacion cartel.
         """Construye el tooltip para una operación (deal)."""
         lines = []
         try:
@@ -5142,6 +5397,10 @@ class TradingBotGUI:
 
         if direction:
             lines.append(f"Señal: {direction}")
+        if strategy_label:
+            lines.append(f"Estrategia: {strategy_label}")
+        if signal_reason:
+            lines.append(f"Motivo: {signal_reason}")
 
         lines.append("")
         lines.append("Detalles:")
@@ -5168,12 +5427,24 @@ class TradingBotGUI:
 
         return "\n".join(lines).strip()
 
-    def _format_deal_group_tooltip(self, deals, direction, max_items: int = 8):
-        # Para peques: esta funcion sirve para dar formato a operacion grupo cartel.
+    def _format_deal_group_tooltip(
+        self,
+        deals,
+        direction,
+        strategy_label: str = "",
+        signal_reason: str = "",
+        max_items: int = 8
+    ):
+        # esta funcion sirve para dar formato a operacion grupo cartel.
         """Construye el tooltip para un grupo de operaciones en la misma vela."""
         if not deals:
             return ""
-        lines = [f"Señal: {direction}", f"Operaciones: {len(deals)}", ""]
+        lines = [f"Señal: {direction}"]
+        if strategy_label:
+            lines.append(f"Estrategia: {strategy_label}")
+        if signal_reason:
+            lines.append(f"Motivo: {signal_reason}")
+        lines.extend([f"Operaciones: {len(deals)}", ""])
         try:
             ordered = sorted(deals, key=lambda d: getattr(d, "time", 0))
         except Exception:
@@ -5230,7 +5501,7 @@ class TradingBotGUI:
         return "\n".join(lines).strip()
 
     def _ensure_action_tooltip(self):
-        # Para peques: esta funcion sirve para asegurar accion cartel.
+        # esta funcion sirve para asegurar accion cartel.
         """Crea el tooltip HTML y conecta el hover sobre los marcadores."""
         if self._action_tooltip_ready:
             return
@@ -5321,14 +5592,14 @@ class TradingBotGUI:
         self._action_tooltip_ready = True
 
     def _set_action_markers(self, markers):
-        # Para peques: esta funcion sirve para actualizar accion marcadores.
+        # esta funcion sirve para actualizar accion marcadores.
         """Actualiza la lista de marcadores para el tooltip."""
         self._ensure_action_tooltip()
         markers_js = json.dumps(markers or [])
         self.chart.run_script(f'window.actionMarkers = {markers_js}')
 
     def _get_symbol_digits(self) -> int:
-        # Para peques: esta funcion sirve para obtener simbolo decimales.
+        # esta funcion sirve para obtener simbolo decimales.
         """Devuelve los dígitos de precio del símbolo actual."""
         try:
             info = mt5.symbol_info(config.SYMBOL)
@@ -5338,11 +5609,13 @@ class TradingBotGUI:
             pass
         return 2
 
-    def _format_deals_for_data_window(self, deals, limit: int = 40):
-        # Para peques: esta funcion sirve para dar formato a operaciones para ventana de datos.
+    def _format_deals_for_data_window(self, deals, limit: int = 40, magic_labels=None):
+        # esta funcion sirve para dar formato a operaciones para ventana de datos.
         """Convierte deals de MT5 en una lista amigable para el Data Window."""
         if not deals:
             return []
+        if magic_labels is None:
+            magic_labels = {}
         trades = []
         try:
             ordered = sorted(deals, key=lambda d: getattr(d, "time", 0), reverse=True)
@@ -5377,6 +5650,15 @@ class TradingBotGUI:
                 profit = getattr(deal, "profit", None)
                 ticket = getattr(deal, "position_id", None) or getattr(deal, "ticket", None)
                 comment = getattr(deal, "comment", None)
+                comment_text = str(comment) if comment else ""
+                try:
+                    parsed_comment = trading.decode_trade_comment(comment_text)
+                except Exception:
+                    parsed_comment = {}
+                if parsed_comment.get("is_bot_comment"):
+                    comment_text = ""
+                strategy_label = self._resolve_deal_strategy_label(deal, magic_labels=magic_labels)
+                signal_reason = self._resolve_deal_reason_label(deal)
 
                 trade = {
                     "time": int(deal_time),
@@ -5386,7 +5668,9 @@ class TradingBotGUI:
                     "volume": float(volume) if isinstance(volume, (int, float)) else None,
                     "profit": float(profit) if isinstance(profit, (int, float)) else None,
                     "ticket": str(ticket) if ticket is not None else "",
-                    "comment": str(comment) if comment else "",
+                    "comment": comment_text,
+                    "strategy": strategy_label,
+                    "reason": signal_reason,
                 }
                 trades.append(trade)
             except Exception:
@@ -5397,7 +5681,7 @@ class TradingBotGUI:
         return trades
 
     def _normalize_data_window_fields(self, fields):
-        # Para peques: esta funcion sirve para ordenar ventana de datos campos.
+        # esta funcion sirve para ordenar ventana de datos campos.
         normalized = []
         if not isinstance(fields, (list, tuple)):
             return normalized
@@ -5439,7 +5723,7 @@ class TradingBotGUI:
         return normalized
 
     def _get_strategy_data_window_fields(self, module):
-        # Para peques: esta funcion sirve para obtener estrategia ventana de datos campos.
+        # esta funcion sirve para obtener estrategia ventana de datos campos.
         if module is None:
             return []
         candidates = ("DATA_WINDOW_FIELDS", "DATA_FIELDS", "INTERFACE_FIELDS")
@@ -5456,7 +5740,7 @@ class TradingBotGUI:
         return []
 
     def _build_data_window_payload(self, df: pd.DataFrame, strategy_entry=None):
-        # Para peques: esta funcion sirve para construir ventana de datos paquete de datos.
+        # esta funcion sirve para construir ventana de datos paquete de datos.
         """Construye el payload con datos para el Data Window."""
         if df is None or len(df) == 0:
             return None
@@ -5524,7 +5808,7 @@ class TradingBotGUI:
         seen_fields = set()
 
         def add_field(key, label, fmt, section, group=None):
-            # Para peques: esta funcion sirve para agregar un campo.
+            # esta funcion sirve para agregar un campo.
             if key not in data_df.columns:
                 return
             if key in seen_fields:
@@ -5559,7 +5843,11 @@ class TradingBotGUI:
         data_df = data_df.astype(object).where(pd.notnull(data_df), None)
         records = data_df.to_dict(orient="records")
         latest_time = time_values[-1] if time_values else None
-        trades = self._format_deals_for_data_window(getattr(self, "_latest_deals_cache", None))
+        _, magic_labels = self._get_marker_strategy_scope(strategy_entry=strategy_entry)
+        trades = self._format_deals_for_data_window(
+            getattr(self, "_latest_deals_cache", None),
+            magic_labels=magic_labels
+        )
 
         return {
             "meta": {
@@ -5576,7 +5864,7 @@ class TradingBotGUI:
         }
 
     def _update_data_window(self, df: pd.DataFrame, strategy_entry=None):
-        # Para peques: esta funcion sirve para actualizar ventana de datos.
+        # esta funcion sirve para actualizar ventana de datos.
         """Envía los datos del Data Window al frontend."""
         payload = self._build_data_window_payload(df, strategy_entry=strategy_entry)
         if not payload:
@@ -5591,7 +5879,7 @@ class TradingBotGUI:
         ''')
     
     def update_equity_chart(self):
-        # Para peques: esta funcion sirve para actualizar equidad grafico.
+        # esta funcion sirve para actualizar equidad grafico.
         """Actualiza el gráfico de equity."""
         try:
             if self.equity_chart is None or self.equity_line is None:
@@ -5648,7 +5936,7 @@ class TradingBotGUI:
             traceback.print_exc()
 
     def _ensure_tci_visual_guard(self):
-        # Para peques: esta funcion sirve para mantener estable la escala del subchart TuTCI.
+        # esta funcion sirve para mantener estable la escala del subchart TuTCI.
         """Evita que el panel TuTCI quede fuera de escala tras zoom/pan."""
         try:
             guard_key = f"tciAutoScaleGuard_{self.tci_chart.id}"
@@ -5689,8 +5977,22 @@ class TradingBotGUI:
         except Exception:
             pass
 
+    def _set_tci_sync_line(self, df: pd.DataFrame):
+        # esta funcion sirve para mantener timestamps sincronizados en el subchart TuTCI.
+        if self.tci_sync_line is None:
+            return
+        if not isinstance(df, pd.DataFrame) or "time" not in df.columns:
+            self.tci_sync_line.set(pd.DataFrame())
+            return
+        sync_df = df[["time"]].dropna().copy()
+        if sync_df.empty:
+            self.tci_sync_line.set(pd.DataFrame())
+            return
+        sync_df["TuTCI Sync"] = 0.0
+        self.tci_sync_line.set(sync_df)
+
     def update_tci_chart(self, df: pd.DataFrame):
-        # Para peques: esta funcion sirve para actualizar tci grafico.
+        # esta funcion sirve para actualizar tci grafico.
         """Actualiza el subchart TuTCI."""
         try:
             self._ensure_tci_visual_guard()
@@ -5698,22 +6000,17 @@ class TradingBotGUI:
                 self.tci_hist.set(pd.DataFrame())
                 self.tci_fill.set(pd.DataFrame())
                 self.tci_signal.set(pd.DataFrame())
-                if self.tci_sync_line is not None:
-                    self.tci_sync_line.set(pd.DataFrame())
+                self._set_tci_sync_line(df)
                 return
 
             if 'tci_hist' not in df.columns or 'tci_signal' not in df.columns:
                 self.tci_hist.set(pd.DataFrame())
                 self.tci_fill.set(pd.DataFrame())
                 self.tci_signal.set(pd.DataFrame())
-                if self.tci_sync_line is not None:
-                    self.tci_sync_line.set(pd.DataFrame())
+                self._set_tci_sync_line(df)
                 return
 
-            if self.tci_sync_line is not None:
-                sync_df = df[['time']].copy()
-                sync_df['TuTCI Sync'] = 0.0
-                self.tci_sync_line.set(sync_df)
+            self._set_tci_sync_line(df)
 
             tci_view = df[['time', 'tci_hist', 'tci_signal']].copy()
             tci_view[['tci_hist', 'tci_signal']] = tci_view[['tci_hist', 'tci_signal']].shift(1)
@@ -5764,7 +6061,7 @@ class TradingBotGUI:
             self.log_message(f"Error al actualizar TuTCI: {e}")
 
     def get_enabled_symbols(self, pattern=None, limit=200):
-        # Para peques: esta funcion sirve para obtener simbolos activos.
+        # esta funcion sirve para obtener simbolos activos.
         """
         Devuelve lista de símbolos con trading habilitado.
         Opcionalmente filtra por patrón MT5 (ej: 'US*').
@@ -5783,7 +6080,7 @@ class TradingBotGUI:
             return [config.SYMBOL]
 
     def on_timeframe_change(self, chart):
-        # Para peques: esta funcion sirve para reaccionar a marco de tiempo cambio.
+        # esta funcion sirve para reaccionar a marco de tiempo cambio.
         """Maneja el cambio de timeframe."""
         try:
             timeframe_widget = chart.topbar.get('timeframe') if chart else None
@@ -5814,7 +6111,7 @@ class TradingBotGUI:
             self.log_message(f"Error al cambiar timeframe: {e}")
     
     def on_period_change(self, chart):
-        # Para peques: esta funcion sirve para reaccionar a periodo cambio.
+        # esta funcion sirve para reaccionar a periodo cambio.
         """Maneja el cambio de período."""
         try:
             period_widget = chart.topbar.get('period') if chart else None
@@ -5829,7 +6126,7 @@ class TradingBotGUI:
             self.log_message(f"Error al cambiar periodo: {e}")
 
     def on_symbol_change(self, chart):
-        # Para peques: esta funcion sirve para reaccionar a simbolo cambio.
+        # esta funcion sirve para reaccionar a simbolo cambio.
         """Cambia el símbolo a operar desde la lista."""
         try:
             selector = chart.topbar.get('symbol_select') if chart else None
@@ -5858,7 +6155,7 @@ class TradingBotGUI:
             self.log_message(f"Error al cambiar símbolo: {e}")
 
     def reload_symbols(self, chart=None):
-        # Para peques: esta funcion sirve para recargar simbolos.
+        # esta funcion sirve para recargar simbolos.
         """Recarga la lista de símbolos habilitados y actualiza el switcher."""
         symbols_enabled = self.get_enabled_symbols()
         if config.SYMBOL not in symbols_enabled:
@@ -5867,7 +6164,7 @@ class TradingBotGUI:
         self.log_message(f"Lista de símbolos recargada ({len(symbols_enabled)} habilitados)")
 
     def on_filling_change(self, chart):
-        # Para peques: esta funcion sirve para reaccionar a llenado cambio.
+        # esta funcion sirve para reaccionar a llenado cambio.
         """Actualiza el modo de llenado desde la interfaz."""
         try:
             mode = chart.topbar['filling_mode'].value
@@ -5878,7 +6175,7 @@ class TradingBotGUI:
         self.log_message(f"Filling mode configurado: {mode}")
 
     def start_bot(self, chart=None):
-        # Para peques: esta funcion sirve para iniciar bot.
+        # esta funcion sirve para iniciar bot.
         """Inicia el bot."""
         if self.bot_running:
             return
@@ -5907,7 +6204,7 @@ class TradingBotGUI:
             self._sync_strategy_status_ui()
     
     def stop_bot(self, chart=None):
-        # Para peques: esta funcion sirve para detener bot.
+        # esta funcion sirve para detener bot.
         """Detiene el bot."""
         if not self.bot_running:
             return
@@ -5922,7 +6219,7 @@ class TradingBotGUI:
         self._sync_strategy_status_ui()
     
     def bot_loop(self):
-        # Para peques: esta funcion sirve para ciclo del bot.
+        # esta funcion sirve para ciclo del bot.
         """Bucle principal del bot."""
         try:
             while self.bot_running and not self.stop_event.is_set():
@@ -5941,16 +6238,21 @@ class TradingBotGUI:
                         market_open, market_status = trading.is_market_open(config.SYMBOL)
 
                     market_cache = {}
-                    selected_entry = self._get_selected_strategy_entry()
 
                     for entry in enabled_entries:
                         timeframe_value = self._strategy_timeframe_value(entry, fallback=config.TIMEFRAME)
                         if timeframe_value is None:
                             timeframe_value = mt5.TIMEFRAME_M1
 
+                        timeframe_minutes = self._timeframe_to_minutes(timeframe_value)
+                        bars_needed = max(
+                            int(getattr(config, "BARS_HISTORY", 500) or 500),
+                            self.get_period_bars(self.view_period, timeframe_minutes)
+                        )
+
                         if timeframe_value not in market_cache:
                             market_cache[timeframe_value] = self._build_market_dataframe(
-                                timeframe_value, config.BARS_HISTORY
+                                timeframe_value, bars_needed
                             )
 
                         base_df = market_cache.get(timeframe_value)
@@ -5965,11 +6267,17 @@ class TradingBotGUI:
                         entry["last_market_status"] = market_status
                         entry["last_error"] = ""
 
-                        signal = self._get_strategy_signal_for_entry(entry, strategy_df, verbose=False)
+                        signal_payload = self._get_strategy_signal_payload_for_entry(
+                            entry, strategy_df, verbose=False
+                        )
+                        signal = signal_payload.get("signal", "none")
+                        signal_reason = str(signal_payload.get("reason") or "").strip()
                         entry["last_signal"] = signal
+                        entry["last_signal_reason"] = signal_reason
 
                         if signal != "none" and market_open:
-                            self.log_message(f"[{entry['label']}] Senal detectada: {signal.upper()}")
+                            reason_txt = f" | motivo: {signal_reason}" if signal_reason else ""
+                            self.log_message(f"[{entry['label']}] Senal detectada: {signal.upper()}{reason_txt}")
                             action_info = trading.apply_signal(
                                 config.SYMBOL,
                                 signal,
@@ -5977,14 +6285,21 @@ class TradingBotGUI:
                                 config.SL_POINTS,
                                 config.TP_POINTS,
                                 int(entry.get("magic_number") or config.MAGIC_NUMBER),
-                                timeframe_value=timeframe_value
+                                timeframe_value=timeframe_value,
+                                strategy_key=entry.get("key", ""),
+                                strategy_label=entry.get("label", ""),
+                                signal_reason=signal_reason
                             )
                             if action_info:
                                 action_info["strategy"] = entry.get("key", "")
+                                action_info["strategy_label"] = entry.get("label", "")
+                                if signal_reason and not action_info.get("signal_reason"):
+                                    action_info["signal_reason"] = signal_reason
                                 self.update_last_action_ui(action_info)
                         elif signal != "none":
                             self.log_message(f"[{entry['label']}] Skip: mercado cerrado ({market_status})")
 
+                    selected_entry = self._get_selected_strategy_entry()
                     display_df = None
                     if isinstance(selected_entry, dict):
                         display_df = selected_entry.get("last_df")
@@ -5993,9 +6308,16 @@ class TradingBotGUI:
                         timeframe_value = self._strategy_timeframe_value(selected_entry, fallback=config.TIMEFRAME)
                         if timeframe_value is None:
                             timeframe_value = mt5.TIMEFRAME_M1
+
+                        timeframe_minutes = self._timeframe_to_minutes(timeframe_value)
+                        bars_needed = max(
+                            int(getattr(config, "BARS_HISTORY", 500) or 500),
+                            self.get_period_bars(self.view_period, timeframe_minutes)
+                        )
+
                         if timeframe_value not in market_cache:
                             market_cache[timeframe_value] = self._build_market_dataframe(
-                                timeframe_value, config.BARS_HISTORY
+                                timeframe_value, bars_needed
                             )
                         base_df = market_cache.get(timeframe_value)
                         if base_df is not None and len(base_df) > 1:
@@ -6029,11 +6351,16 @@ class TradingBotGUI:
             self._sync_strategy_status_ui()
     
     def run(self):
-        # Para peques: esta funcion sirve para ejecutar el proceso completo.
+        # esta funcion sirve para ejecutar el proceso completo.
         """Ejecuta la aplicación."""
         # Inicializar MT5
         if not self.init_mt5():
             self.log_message("No se pudo inicializar MT5. Ejecutando sin datos.")
+
+        try:
+            self._refresh_data_once(fit_view=True, log_update=False)
+        except Exception as e:
+            self.log_message(f"No se pudo precargar datos iniciales: {e}")
 
         # Iniciar actualizaciones y cargar datos una vez visible el gráfico
         self.start_quote_updater()
@@ -6056,7 +6383,7 @@ class TradingBotGUI:
 
 
 def main():
-    # Para peques: esta funcion sirve para arrancar todo el programa.
+    # esta funcion sirve para arrancar todo el programa.
     """Función principal."""
     app = TradingBotGUI()
     app.run()
@@ -6064,3 +6391,4 @@ def main():
 
 if __name__ == "__main__":
     main()
+
