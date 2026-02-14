@@ -32,6 +32,88 @@ def get_rates_df(symbol: str, timeframe, bars: int) -> pd.DataFrame:
     return df
 
 
+def get_rates_df_from_csv(
+    path: str,
+    column_map: dict,
+    timezone: str,
+    start_date=None,
+    end_date=None
+) -> pd.DataFrame:
+    # Para peques: lee un CSV OHLCV y lo deja con el mismo formato interno que MT5.
+    """
+    Carga velas históricas desde CSV y normaliza el esquema para el bot/backtest.
+
+    Args:
+        path: Ruta al archivo CSV.
+        column_map: Mapeo canonico->columna CSV.
+            Requeridas: datetime, open, high, low, close, volume.
+        timezone: Zona horaria esperada para datetime (ej: "UTC").
+        start_date: Fecha inicio opcional (inclusive).
+        end_date: Fecha fin opcional (inclusive).
+
+    Returns:
+        pd.DataFrame: Columnas normalizadas: time, open, high, low, close, tick_volume.
+    """
+    required = ("datetime", "open", "high", "low", "close", "volume")
+    column_map = column_map or {}
+
+    raw_df = pd.read_csv(path)
+    if raw_df is None or raw_df.empty:
+        raise Exception(f"CSV sin datos: {path}")
+
+    missing_csv_cols = []
+    rename_map = {}
+    for canonical in required:
+        source_col = column_map.get(canonical, canonical)
+        if source_col not in raw_df.columns:
+            missing_csv_cols.append(source_col)
+            continue
+        rename_map[source_col] = canonical
+
+    if missing_csv_cols:
+        raise Exception(
+            "Faltan columnas requeridas en CSV: " + ", ".join(sorted(set(missing_csv_cols)))
+        )
+
+    df = raw_df[list(rename_map.keys())].rename(columns=rename_map).copy()
+
+    # Parseo robusto de tiempo y normalizacion a UTC.
+    df["time"] = pd.to_datetime(df["datetime"], errors="coerce")
+    tz_name = (timezone or "UTC").strip() or "UTC"
+    try:
+        if df["time"].dt.tz is None:
+            df["time"] = df["time"].dt.tz_localize(tz_name)
+        else:
+            df["time"] = df["time"].dt.tz_convert(tz_name)
+    except Exception as e:
+        raise Exception(f"No se pudo aplicar timezone '{tz_name}' al CSV: {e}")
+    df["time"] = df["time"].dt.tz_convert("UTC")
+
+    for col in ("open", "high", "low", "close", "volume"):
+        df[col] = pd.to_numeric(df[col], errors="coerce")
+
+    # Regla: limpiar filas incompletas de OHLC; volume puede faltar y se rellena con 0.
+    df = df.dropna(subset=["time", "open", "high", "low", "close"])
+    df["volume"] = df["volume"].fillna(0.0)
+
+    # Orden cronologico y deduplicado por timestamp (conservar ultima fila).
+    df = df.sort_values("time")
+    df = df.drop_duplicates(subset=["time"], keep="last")
+
+    if start_date is not None:
+        start_ts = pd.to_datetime(start_date, utc=True)
+        df = df[df["time"] >= start_ts]
+    if end_date is not None:
+        end_ts = pd.to_datetime(end_date, utc=True)
+        df = df[df["time"] <= end_ts]
+
+    if df.empty:
+        raise Exception("No hay datos tras aplicar limpieza/filtros al CSV")
+
+    df["tick_volume"] = df["volume"]
+    return df[["time", "open", "high", "low", "close", "tick_volume"]].reset_index(drop=True)
+
+
 def add_source_columns(df: pd.DataFrame, source_mode: str) -> pd.DataFrame:
     # Para peques: creamos "precios resumidos" (OHLC4, HLC3...) para que la estrategia elija uno.
     """

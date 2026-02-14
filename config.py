@@ -51,6 +51,32 @@ ENABLE_SIGNALS = True
 # Intervalo de ejecución del bot (segundos)
 SLEEP_SECONDS = 10
 
+# Configuración de backtesting (origen de datos y especificación del símbolo)
+# BACKTEST_DATA_SOURCE: "csv" | "mt5"
+BACKTEST_DATA_SOURCE = "csv"
+BACKTEST_CSV_PATH = "data/backtest_ohlcv.csv"
+BACKTEST_CSV_TIME_COL = "datetime"
+BACKTEST_CSV_TIMEZONE = "UTC"
+BACKTEST_CSV_COLUMN_MAP = {
+    "datetime": "datetime",
+    "open": "open",
+    "high": "high",
+    "low": "low",
+    "close": "close",
+    "volume": "volume",
+}
+
+# BACKTEST_SYMBOL_SPEC_SOURCE: "config" | "mt5"
+BACKTEST_SYMBOL_SPEC_SOURCE = "config"
+BACKTEST_POINT = 0.01
+BACKTEST_CONTRACT_SIZE = 1.0
+BACKTEST_TICK_VALUE = 1.0
+
+# Rango opcional para backtesting (formato sugerido: "YYYY-MM-DD HH:MM:SS")
+# Si está vacío, run_backtest.py usará su rango por defecto según el origen.
+BACKTEST_START_DATE = ""
+BACKTEST_END_DATE = ""
+
 # Feedback / sugerencias
 # Si FEEDBACK_WEBHOOK_URL tiene un valor, se enviará un POST con JSON.
 # Si no, se guardará en un archivo local en FEEDBACK_SAVE_DIR.
@@ -88,4 +114,15 @@ def print_config():
     print(f"TCI_SIGNAL: {TCI_SIGNAL}")
     print(f"ENABLE_SIGNALS: {ENABLE_SIGNALS}")
     print(f"SLEEP_SECONDS: {SLEEP_SECONDS}")
+    print(f"BACKTEST_DATA_SOURCE: {BACKTEST_DATA_SOURCE}")
+    print(f"BACKTEST_CSV_PATH: {BACKTEST_CSV_PATH}")
+    print(f"BACKTEST_CSV_TIME_COL: {BACKTEST_CSV_TIME_COL}")
+    print(f"BACKTEST_CSV_TIMEZONE: {BACKTEST_CSV_TIMEZONE}")
+    print(f"BACKTEST_CSV_COLUMN_MAP: {BACKTEST_CSV_COLUMN_MAP}")
+    print(f"BACKTEST_SYMBOL_SPEC_SOURCE: {BACKTEST_SYMBOL_SPEC_SOURCE}")
+    print(f"BACKTEST_POINT: {BACKTEST_POINT}")
+    print(f"BACKTEST_CONTRACT_SIZE: {BACKTEST_CONTRACT_SIZE}")
+    print(f"BACKTEST_TICK_VALUE: {BACKTEST_TICK_VALUE}")
+    print(f"BACKTEST_START_DATE: {BACKTEST_START_DATE}")
+    print(f"BACKTEST_END_DATE: {BACKTEST_END_DATE}")
     print("=====================")
