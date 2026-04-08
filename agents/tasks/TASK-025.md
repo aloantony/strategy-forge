@@ -2,7 +2,7 @@
 
 - **ID**: TASK-025
 - **Priority**: P1
-- **Status**: in-progress
+- **Status**: done
 - **Assigned**: Felix
 - **Blocked by**: TASK-019, TASK-023, TASK-024
 - **Blocks**: nada

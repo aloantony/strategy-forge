@@ -20,7 +20,7 @@ _Para actualizar el estado de tu tarea, edita tanto este índice como tu task fi
 | [TASK-022](tasks/TASK-022.md) | done | Grace | TASK-020, TASK-021 | TASK-026 |
 | [TASK-023](tasks/TASK-023.md) | done | Felix | TASK-020 | TASK-025 |
 | [TASK-024](tasks/TASK-024.md) | done | Felix | TASK-021 | TASK-025 |
-| [TASK-025](tasks/TASK-025.md) | in-progress | Felix | TASK-019, TASK-023, TASK-024 | — |
+| [TASK-025](tasks/TASK-025.md) | done | Felix | TASK-019, TASK-023, TASK-024 | — |
 | [TASK-026](tasks/TASK-026.md) | done | Felix | TASK-022 | — |
 
 ---

@@ -874,8 +874,8 @@ def _emit_get_last_signal_payload(display_name: str, extra_fields: list = None) 
     """
     dn = display_name.replace('"', '\\"')
 
-    extra_lines = ""
     if extra_fields:
+        extra_field_lines = ""
         for field in extra_fields:
             key = field["key"]
             if field["type"] == "literal":
@@ -883,7 +883,24 @@ def _emit_get_last_signal_payload(display_name: str, extra_fields: list = None) 
             else:
                 col = field["value"]
                 val = f'df.iloc[-2]["{col}"]'
-            extra_lines += f',\n        "{key}": {val}'
+            extra_field_lines += f'            "{key}": {val},\n'
+
+        return (
+            f"def get_last_signal_payload(df: pd.DataFrame, verbose: bool = False) -> dict:\n"
+            f"    signal = get_last_signal(df, verbose=verbose)\n"
+            f"    reasons = {{\n"
+            f'        "buy":  "{dn}: buy condition met",\n'
+            f'        "sell": "{dn}: sell condition met",\n'
+            f'        "none": "{dn}: no signal",\n'
+            f"    }}\n"
+            f'    if signal == "buy":\n'
+            f"        return {{\n"
+            f'            "signal": signal,\n'
+            f'            "reason": reasons[signal],\n'
+            f"{extra_field_lines}"
+            f"        }}\n"
+            f'    return {{"signal": signal, "reason": reasons[signal]}}'
+        )
 
     return (
         f"def get_last_signal_payload(df: pd.DataFrame, verbose: bool = False) -> dict:\n"
@@ -893,7 +910,7 @@ def _emit_get_last_signal_payload(display_name: str, extra_fields: list = None) 
         f'        "sell": "{dn}: sell condition met",\n'
         f'        "none": "{dn}: no signal",\n'
         f"    }}\n"
-        f'    return {{"signal": signal, "reason": reasons[signal]{extra_lines}}}'
+        f'    return {{"signal": signal, "reason": reasons[signal]}}'
     )
 
 

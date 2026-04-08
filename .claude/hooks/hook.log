@@ -284,3 +284,10 @@
 2026-04-08T21:33:38Z hook fired | file=C:\RealProjects\TradingAgent\trading-agent\agents\specs\TASK-022-pyramiding-gui-spec.md | pid=914
 2026-04-08T21:34:00Z hook fired | file=C:\RealProjects\TradingAgent\trading-agent\strategies\builder.py | pid=922
 2026-04-08T21:34:09Z hook fired | file=C:\RealProjects\TradingAgent\trading-agent\strategies\builder.py | pid=930
+2026-04-08T21:38:20Z hook fired | file=C:\RealProjects\TradingAgent\trading-agent\strategies\strategy_primera_estrategia.py | pid=942
+2026-04-08T21:41:30Z hook fired | file=C:\RealProjects\TradingAgent\trading-agent\strategies\strategy_primera_estrategia.py | pid=972
+2026-04-08T21:45:35Z hook fired | file=C:\RealProjects\TradingAgent\trading-agent\agents\tasks\TASK-025.md | pid=1020
+2026-04-08T21:45:44Z hook fired | file=C:\RealProjects\TradingAgent\trading-agent\agents\tasks.md | pid=1028
+2026-04-08T21:45:44Z dispatching...
+[dispatch] No new tasks to launch.
+2026-04-08T21:46:50Z hook fired | file=C:\RealProjects\TradingAgent\trading-agent\strategies\builder.py | pid=1039

@@ -1,0 +1,90 @@
+{
+  "schema_version": 1,
+  "name": "primera_estrategia",
+  "display_name": "Primera Estrategia",
+  "description": "ADX+DI crossover strategy with pyramiding and dynamic sizing.",
+  "timeframe": "H1",
+  "magic_number": 42501,
+  "indicators": [
+    {
+      "id": "ATR",
+      "pre_computed": false,
+      "params": {
+        "period": 14
+      },
+      "columns": [
+        "atr_14",
+        "atr_pct_14"
+      ]
+    },
+    {
+      "id": "ADX_DI",
+      "pre_computed": false,
+      "params": {
+        "period": 14
+      },
+      "columns": [
+        "adx_14",
+        "plus_di_14",
+        "minus_di_14",
+        "plus_di_cross_14",
+        "minus_di_cross_14"
+      ]
+    },
+    {
+      "id": "VOLUME_RATIO",
+      "pre_computed": false,
+      "params": {
+        "lookback": 20
+      },
+      "columns": [
+        "volume_ratio_20"
+      ]
+    }
+  ],
+  "buy_condition": {
+    "type": "AND",
+    "children": [
+      {
+        "type": "condition",
+        "left": "adx_14",
+        "op": ">",
+        "right": 25
+      },
+      {
+        "type": "condition",
+        "left": "plus_di_cross_14",
+        "op": ">",
+        "right": 0
+      }
+    ]
+  },
+  "sell_condition": {
+    "type": "condition",
+    "left": "adx_14",
+    "op": "<",
+    "right": 0
+  },
+  "payload_extra_fields": [
+    {
+      "key": "pyramiding",
+      "type": "literal",
+      "value": true
+    },
+    {
+      "key": "atr_value",
+      "type": "column",
+      "value": "atr_14"
+    },
+    {
+      "key": "dynamic_sizing",
+      "type": "literal",
+      "value": true
+    },
+    {
+      "key": "volume_ratio",
+      "type": "column",
+      "value": "volume_ratio_20"
+    }
+  ]
+}
