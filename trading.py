@@ -6,7 +6,6 @@ import MetaTrader5 as mt5
 from datetime import datetime, timedelta
 import math
 import re
-import time
 import config
 
 _FILLING_NAME = {
@@ -14,9 +13,6 @@ _FILLING_NAME = {
     getattr(mt5, "ORDER_FILLING_IOC", 1): "IOC",
     getattr(mt5, "ORDER_FILLING_RETURN", 2): "RETURN",
 }
-
-# Recordamos la ultima accion por simbolo para no operar demasiadas veces seguidas.
-_last_action_ts = {}
 
 # Prefijo para comentarios de órdenes creadas por el bot.
 _TRADE_COMMENT_PREFIX = "TA"
@@ -144,35 +140,6 @@ def decode_trade_comment(comment: str) -> dict:
 
     return result
 
-
-def _get_timeframe_seconds(timeframe_value=None) -> int:
-    # convierte M1, M5, H1... en segundos para medir esperas.
-    """Devuelve el intervalo minimo entre ejecuciones segun el timeframe."""
-    timeframe_seconds = {
-        mt5.TIMEFRAME_M1: 60,
-        mt5.TIMEFRAME_M5: 5 * 60,
-        mt5.TIMEFRAME_M15: 15 * 60,
-        mt5.TIMEFRAME_M30: 30 * 60,
-        mt5.TIMEFRAME_H1: 60 * 60,
-        mt5.TIMEFRAME_H4: 4 * 60 * 60,
-        mt5.TIMEFRAME_D1: 24 * 60 * 60
-    }
-    tf = timeframe_value if timeframe_value is not None else config.TIMEFRAME
-    return int(timeframe_seconds.get(tf, 60))
-
-
-def _should_throttle(symbol: str, magic_number: int, now_ts: float, min_interval: int = None):
-    # revisa si aun toca esperar antes de permitir otra operacion.
-    key = (symbol, magic_number)
-    last_ts = _last_action_ts.get(key)
-    if last_ts is None:
-        return False, 0
-    if min_interval is None:
-        min_interval = _get_timeframe_seconds()
-    elapsed = now_ts - last_ts
-    if elapsed < min_interval:
-        return True, int(min_interval - elapsed)
-    return False, 0
 
 
 def get_allowed_filling_modes(symbol_info):
@@ -504,7 +471,33 @@ def get_position_info(symbol: str, magic_number: int) -> dict:
     return None
 
 
-def close_position(symbol: str, magic_number: int, order_comment: str = ""):
+def get_all_positions(symbol: str, magic_number: int) -> list:
+    # devuelve todas las posiciones abiertas del bot para ese simbolo, ordenadas por tiempo de apertura ascendente.
+    raw_positions = mt5.positions_get(symbol=symbol)
+    if raw_positions is None or len(raw_positions) == 0:
+        return []
+
+    result = []
+    for position in raw_positions:
+        if position.magic != magic_number:
+            continue
+        result.append({
+            "ticket":        position.ticket,
+            "type":          "BUY" if position.type == mt5.ORDER_TYPE_BUY else "SELL",
+            "volume":        position.volume,
+            "price_open":    position.price_open,
+            "price_current": position.price_current,
+            "profit":        position.profit,
+            "sl":            position.sl,
+            "tp":            position.tp,
+            "time_open":     position.time,
+        })
+
+    result.sort(key=lambda p: p["time_open"])
+    return result
+
+
+def _close_position(symbol: str, magic_number: int, order_comment: str = ""):
     # cierra la posicion abierta del bot para ese simbolo.
     """
     Cierra la posición abierta del símbolo con el magic number especificado.
@@ -521,7 +514,6 @@ def close_position(symbol: str, magic_number: int, order_comment: str = ""):
     
     symbol_info = mt5.symbol_info(symbol)
     if symbol_info is None:
-        print(f"   [ERROR] No se pudo obtener información del símbolo {symbol}")
         for position in positions:
             if position.magic == magic_number:
                 results.append({
@@ -537,7 +529,6 @@ def close_position(symbol: str, magic_number: int, order_comment: str = ""):
         return results
 
     allowed_modes = get_allowed_filling_modes(symbol_info)
-    print(f"   [FILL] {describe_fillings(symbol_info, allowed_modes)}")
     filling_mode = choose_filling_mode(symbol_info, allowed_modes)
 
     request_comment = (order_comment or "").strip() or _DEFAULT_CLOSE_COMMENT
@@ -580,32 +571,19 @@ def close_position(symbol: str, magic_number: int, order_comment: str = ""):
             }
             results.append(result_info)
 
-            if not success:
-                if result is None:
-                    print(
-                        f"   [ERROR] Error al cerrar posicion: order_send devolvio None | "
-                        f"last_error={last_error} | comment={used_comment}"
-                    )
-                else:
-                    print(f"   [ERROR] Error al cerrar posicion: {result.retcode} - {result.comment}")
-                if _is_unsupported_filling(result) and len(tried_modes) > 1:
-                    print(f"   [INFO] Modos intentados: {tried_modes}")
-            else:
-                print(f"   [OK] Posicion cerrada exitosamente (filling {used_mode}):")
-                print(f"      Ticket: {position.ticket}")
-                print(f"      Profit final: {position.profit:.2f}")
-
     return results
 
 
-def send_order(
+def _send_order(
     symbol: str,
     direction: int,
     lot: float,
     sl_points: float,
     tp_points: float,
     magic_number: int,
-    order_comment: str = ""
+    order_comment: str = "",
+    sl_price: float = 0.0,
+    tp_price: float = 0.0,
 ):
     # abre una operacion nueva (compra o venta) con SL/TP.
     """
@@ -621,7 +599,6 @@ def send_order(
     """
     symbol_info = mt5.symbol_info(symbol)
     if symbol_info is None:
-        print(f"Error: No se pudo obtener información del símbolo {symbol}")
         return {
             "kind": "open",
             "symbol": symbol,
@@ -641,17 +618,36 @@ def send_order(
     if direction == 1:  # BUY
         # En compra se entra al ASK.
         price = ask
-        sl = price - (sl_points * point) if sl_points > 0 else 0
-        tp = price + (tp_points * point) if tp_points > 0 else 0
+        if sl_price > 0:
+            sl = sl_price
+        elif sl_points > 0:
+            sl = price - (sl_points * point)
+        else:
+            sl = 0
+        if tp_price > 0:
+            tp = tp_price
+        elif tp_points > 0:
+            tp = price + (tp_points * point)
+        else:
+            tp = 0
         order_type = mt5.ORDER_TYPE_BUY
     elif direction == -1:  # SELL
         # En venta se entra al BID.
         price = bid
-        sl = price + (sl_points * point) if sl_points > 0 else 0
-        tp = price - (tp_points * point) if tp_points > 0 else 0
+        if sl_price > 0:
+            sl = sl_price
+        elif sl_points > 0:
+            sl = price + (sl_points * point)
+        else:
+            sl = 0
+        if tp_price > 0:
+            tp = tp_price
+        elif tp_points > 0:
+            tp = price - (tp_points * point)
+        else:
+            tp = 0
         order_type = mt5.ORDER_TYPE_SELL
     else:
-        print(f"Error: Dirección inválida: {direction}")
         return {
             "kind": "open",
             "symbol": symbol,
@@ -662,10 +658,7 @@ def send_order(
 
     # Ajustamos parametros para que cumplan reglas del broker antes de enviar nada.
     lot, volume_note = normalize_volume(lot, symbol_info)
-    if volume_note:
-        print(f"   [WARN] {volume_note}")
     if lot <= 0:
-        print("   [ERROR] Volumen calculado no valido. Orden cancelada.")
         return {
             "kind": "open",
             "symbol": symbol,
@@ -676,11 +669,8 @@ def send_order(
         }
 
     sl, tp, stops_note = adjust_stops(direction, price, sl, tp, symbol_info, tick)
-    if stops_note:
-        print(f"   [WARN] {stops_note}")
 
     allowed_modes = get_allowed_filling_modes(symbol_info)
-    print(f"   [FILL] {describe_fillings(symbol_info, allowed_modes)}")
     filling_mode = choose_filling_mode(symbol_info, allowed_modes)
     request_comment = (order_comment or "").strip() or _DEFAULT_OPEN_COMMENT
 
@@ -723,24 +713,6 @@ def send_order(
         "volume_note": volume_note
     }
 
-    if not success:
-        if result is None:
-            print(
-                f"   [ERROR] Error al enviar orden: order_send devolvio None | "
-                f"last_error={last_error} | comment={used_comment}"
-            )
-        else:
-            print(f"   [ERROR] Error al enviar orden: {result.retcode} - {result.comment}")
-        if _is_unsupported_filling(result) and len(tried_modes) > 1:
-            print(f"   [INFO] Modos intentados: {tried_modes}")
-    else:
-        print(f"   [OK] Orden ejecutada exitosamente (filling {used_mode}):")
-        print(f"      Ticket: {result.order}")
-        print(f"      Precio: {price:.2f}")
-        print(f"      Volumen: {lot} lotes")
-        print(f"      SL: {sl:.2f}" if sl > 0 else "      SL: No establecido")
-        print(f"      TP: {tp:.2f}" if tp > 0 else "      TP: No establecido")
-
     return result_info
 
 
@@ -751,7 +723,6 @@ def apply_signal(
     sl_points: float,
     tp_points: float,
     magic_number: int,
-    timeframe_value: int = None,
     strategy_key: str = "",
     strategy_label: str = "",
     signal_reason: str = "",
@@ -767,47 +738,17 @@ def apply_signal(
         sl_points: Stop Loss en puntos.
         tp_points: Take Profit en puntos.
         magic_number: Magic number de las órdenes.
-        timeframe_value: Timeframe para cooldown por estrategia.
         strategy_key: Clave de estrategia que originó la señal.
         strategy_label: Etiqueta de estrategia que originó la señal.
         signal_reason: Motivo textual resumido de la señal.
     """
-    timestamp = datetime.now().strftime("%H:%M:%S")
-    
-    print("\n" + "!"*60)
-    print(f"[{timestamp}] >>> EJECUTANDO SENAL: {signal.upper()} <<<")
-    print("!"*60)
-    
     if signal == "none":
-        # "none" significa mirar y esperar, sin tocar posiciones.
-        print(f"   [SKIP] Senal 'none' - No se requiere accion")
         return None
 
-    now_ts = time.time()
-    min_interval = _get_timeframe_seconds(timeframe_value)
-    throttled, remaining = _should_throttle(symbol, magic_number, now_ts, min_interval=min_interval)
-    if throttled:
-        print(f"   [SKIP] Esperando cooldown ({remaining}s) para nueva ejecucion.")
-        return None
-    
-    # Miramos en que estado estamos antes de decidir (sin posicion, buy o sell).
     current_direction = get_open_position_direction(symbol, magic_number)
     position_info = get_position_info(symbol, magic_number)
-    
-    print(f"   [SYMBOL] Simbolo: {symbol}")
-    print(f"   [SIGNAL] Senal recibida: {signal.upper()}")
-    strategy_text = (strategy_label or strategy_key or "").strip()
-    if strategy_text:
-        print(f"   [STRATEGY] {strategy_text}")
     signal_reason = str(signal_reason or "").strip()
-    if signal_reason:
-        print(f"   [REASON] {signal_reason}")
-    print(f"   [POS] Posicion actual: {'BUY' if current_direction == 1 else 'SELL' if current_direction == -1 else 'NINGUNA'}")
-    print(f"   [LOT] Lote: {lot}")
-    print(f"   [SL] Stop Loss: {sl_points} puntos")
-    print(f"   [TP] Take Profit: {tp_points} puntos")
-    print()
-    
+
     actions = []
     open_comment = build_trade_comment(
         strategy_key=strategy_key, signal_reason=signal_reason, action_kind="open"
@@ -818,43 +759,28 @@ def apply_signal(
     
     if signal == "buy":
         if current_direction == 0:
-            # No hay posición, abrir largo
-            print(f"   >>> ACCION: Abriendo nueva posicion BUY...")
-            actions = [send_order(symbol, 1, lot, sl_points, tp_points, magic_number, order_comment=open_comment)]
+            actions = [_send_order(symbol, 1, lot, sl_points, tp_points, magic_number, order_comment=open_comment)]
         elif current_direction == -1:
-            # Hay corto, cerrar y abrir largo
-            print(f"   [CLOSE] Cerrando SELL (Ticket: {position_info['ticket']}, Profit: {position_info['profit']:.2f})")
-            print(f"   >>> ACCION: Abriendo nueva posicion BUY...")
             actions = []
-            actions.extend(close_position(symbol, magic_number, order_comment=close_comment) or [])
-            actions.append(send_order(symbol, 1, lot, sl_points, tp_points, magic_number, order_comment=open_comment))
+            actions.extend(_close_position(symbol, magic_number, order_comment=close_comment) or [])
+            actions.append(_send_order(symbol, 1, lot, sl_points, tp_points, magic_number, order_comment=open_comment))
         else:
-            print(f"   [SKIP] Ya existe posicion BUY (Ticket: {position_info['ticket']}). No se requiere accion.")
             actions = []
-    
+
     elif signal == "sell":
         if current_direction == 0:
-            # No hay posición, abrir corto
-            print(f"   >>> ACCION: Abriendo nueva posicion SELL...")
-            actions = [send_order(symbol, -1, lot, sl_points, tp_points, magic_number, order_comment=open_comment)]
+            actions = [_send_order(symbol, -1, lot, sl_points, tp_points, magic_number, order_comment=open_comment)]
         elif current_direction == 1:
-            # Hay largo, cerrar y abrir corto
-            print(f"   [CLOSE] Cerrando BUY (Ticket: {position_info['ticket']}, Profit: {position_info['profit']:.2f})")
-            print(f"   >>> ACCION: Abriendo nueva posicion SELL...")
             actions = []
-            actions.extend(close_position(symbol, magic_number, order_comment=close_comment) or [])
-            actions.append(send_order(symbol, -1, lot, sl_points, tp_points, magic_number, order_comment=open_comment))
+            actions.extend(_close_position(symbol, magic_number, order_comment=close_comment) or [])
+            actions.append(_send_order(symbol, -1, lot, sl_points, tp_points, magic_number, order_comment=open_comment))
         else:
-            print(f"   [SKIP] Ya existe posicion SELL (Ticket: {position_info['ticket']}). No se requiere accion.")
             actions = []
-    
-    print("!"*60 + "\n")
 
     actions = [a for a in actions if a] if isinstance(actions, list) else []
     if actions:
         if any(isinstance(a, dict) and a.get("success") is True for a in actions):
-            _last_action_ts[(symbol, magic_number)] = time.time()
-        return {
+            return {
             "timestamp": datetime.now(),
             "symbol": symbol,
             "signal": signal,
@@ -865,3 +791,182 @@ def apply_signal(
         }
 
     return None
+
+
+def calculate_dynamic_lot(
+    symbol: str,
+    atr_value: float,
+    volume_ratio: float,
+    balance: float = None,
+) -> float:
+    # calcula el lot dinamico basado en riesgo fijo fraccional. Retorna lot sin normalizar; el caller debe pasar por normalize_volume().
+    if atr_value <= 0 or volume_ratio <= 0:
+        return 0.0
+
+    if balance is None:
+        account = mt5.account_info()
+        if account is None:
+            return 0.0
+        balance = account.balance
+    if balance <= 0:
+        return 0.0
+
+    symbol_info = mt5.symbol_info(symbol)
+    if symbol_info is None:
+        return 0.0
+
+    tick_size = getattr(symbol_info, "trade_tick_size", 0.0) or 0.0
+    tick_value = getattr(symbol_info, "trade_tick_value", 0.0) or 0.0
+    if tick_size <= 0 or tick_value <= 0:
+        return 0.0
+
+    target_risk_pct = min(volume_ratio * 0.005, 0.01)
+    risk_money = target_risk_pct * balance
+    risk_per_lot = atr_value * (tick_value / tick_size)
+    if risk_per_lot <= 0:
+        return 0.0
+
+    return risk_money / risk_per_lot
+
+
+def check_aggregate_risk(
+    symbol: str,
+    new_lot: float,
+    atr_value: float,
+    balance: float,
+    open_positions: list,
+) -> tuple:
+    # verifica que el riesgo agregado (posiciones actuales + nueva entrada) no supere el 3% del balance.
+    AGGREGATE_RISK_LIMIT = 0.03
+
+    if balance <= 0:
+        return (False, 0.0)
+
+    symbol_info = mt5.symbol_info(symbol)
+    if symbol_info is None:
+        return (False, 0.0)
+
+    tick_size = getattr(symbol_info, "trade_tick_size", 0.0) or 0.0
+    tick_value = getattr(symbol_info, "trade_tick_value", 0.0) or 0.0
+    if tick_size <= 0 or tick_value <= 0:
+        return (False, 0.0)
+
+    value_per_price_unit_per_lot = tick_value / tick_size
+
+    existing_risk_money = 0.0
+    for pos in open_positions:
+        if pos["type"] != "BUY":
+            continue
+        sl = pos["sl"]
+        if sl <= 0:
+            continue
+        price_open = pos["price_open"]
+        distance = price_open - sl
+        if distance <= 0:
+            continue
+        existing_risk_money += pos["volume"] * distance * value_per_price_unit_per_lot
+
+    new_entry_risk = new_lot * atr_value * value_per_price_unit_per_lot
+    total_risk_money = existing_risk_money + new_entry_risk
+    aggregate_risk_pct = total_risk_money / balance
+
+    allowed = aggregate_risk_pct <= AGGREGATE_RISK_LIMIT
+    return (allowed, aggregate_risk_pct)
+
+
+def apply_pyramid_signal(
+    symbol: str,
+    magic_number: int,
+    atr_value: float,
+    lot: float,
+    strategy_key: str = "",
+    strategy_label: str = "",
+    signal_reason: str = "",
+    balance: float = None,
+):
+    # abre una entrada inicial o piramiada solo-largo, con SL/TP calculados desde el ATR.
+    if atr_value <= 0:
+        return None
+
+    if balance is None:
+        account = mt5.account_info()
+        if account is None:
+            return None
+        balance = account.balance
+    if balance <= 0:
+        return None
+
+    tick = mt5.symbol_info_tick(symbol)
+    if tick is None:
+        return None
+    ask = tick.ask
+    if ask <= 0:
+        return None
+
+    positions = get_all_positions(symbol, magic_number)
+
+    sl_price = ask - (1.0 * atr_value)
+    tp_price = ask + (2.0 * atr_value)
+
+    open_comment = build_trade_comment(
+        strategy_key=strategy_key,
+        signal_reason=signal_reason,
+        action_kind="open",
+    )
+
+    if len(positions) == 0:
+        allowed, aggregate_risk_pct = check_aggregate_risk(
+            symbol, lot, atr_value, balance, positions
+        )
+        if not allowed:
+            return None
+
+        result = _send_order(
+            symbol, 1, lot, 0, 0, magic_number,
+            order_comment=open_comment,
+            sl_price=sl_price,
+            tp_price=tp_price,
+        )
+        actions = [result] if result else []
+    else:
+        most_recent = positions[-1]
+
+        if most_recent["type"] != "BUY":
+            return None
+
+        last_entry_price = most_recent["price_open"]
+        pyramid_threshold = last_entry_price + (0.5 * atr_value)
+
+        if ask < pyramid_threshold:
+            return None
+
+        allowed, aggregate_risk_pct = check_aggregate_risk(
+            symbol, lot, atr_value, balance, positions
+        )
+        if not allowed:
+            return None
+
+        result = _send_order(
+            symbol, 1, lot, 0, 0, magic_number,
+            order_comment=open_comment,
+            sl_price=sl_price,
+            tp_price=tp_price,
+        )
+        actions = [result] if result else []
+
+    actions = [a for a in actions if a]
+    if not actions:
+        return None
+    if not any(isinstance(a, dict) and a.get("success") is True for a in actions):
+        return None
+
+    return {
+        "timestamp":      datetime.now(),
+        "symbol":         symbol,
+        "signal":         "buy",
+        "strategy":       strategy_key,
+        "strategy_label": strategy_label,
+        "signal_reason":  signal_reason,
+        "pyramid":        True,
+        "actions":        actions,
+    }

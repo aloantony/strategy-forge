@@ -6,11 +6,13 @@ Este archivo describe el template para crear estrategias compatibles con el bot.
 
 Guarda tu estrategia como un modulo Python dentro de `strategies/`.
 
-Ejemplos:
+Ejemplos de nombre válido:
 - `strategies/mi_estrategia.py`
-- `strategies/strategy_ema_rsi_trend.py`
-- `strategies/strategy_bollinger_rsi_reversion.py`
-- `strategies/strategy_donchian_breakout.py`
+- `strategies/strategy_ema_cross.py`
+
+## Aviso de seguridad
+
+Cada archivo `.py` en `strategies/` es cargado y ejecutado por el bot en tiempo real. **Solo agrega archivos que hayas escrito tú mismo o revisado cuidadosamente.** Nunca copies una estrategia de una fuente no confiable.
 
 ## Reglas basicas
 
@@ -52,9 +54,6 @@ Retorna:
 - `get_last_signal_payload(df, verbose=False) -> dict`
   - Permite devolver señal + motivo para UI/tooltip.
   - Ejemplo: `{"signal": "buy", "reason": "Cruce EMA alcista"}`.
-- `get_test_signal() -> str`
-  - Usado cuando `TEST_MODE=True`.
-
 La GUI llamara en este orden:
 1. `prepare_dataframe` (si existe)
 2. `compute_dir1_and_signals` o `compute_signals` (si existe)
@@ -119,11 +118,6 @@ def get_last_signal(df: pd.DataFrame, verbose: bool = False) -> str:
         return "sell"
 
     return "none"
-
-
-# Opcional
-# def get_test_signal() -> str:
-#     return "buy"
 ```
 
 ## Ejemplo M1 (EMA cross)
@@ -173,13 +167,12 @@ def get_last_signal(df, verbose=False):
 
 ## Como activar tu estrategia
 
-Opcion A (config):
-- Edita `config.py`:
-  - `STRATEGY_KEY = "mi_estrategia"`
-  - `STRATEGY_MODULE = "strategies.mi_estrategia"`
+Opcion A (config): edita `config.py`:
+```python
+ACTIVE_STRATEGIES = ["mi_estrategia"]
+```
 
-Opcion B (GUI):
-- En el panel de estrategias, carga el modulo o arrastra el archivo `.py`.
+Opcion B (GUI): en el panel **Estrategias**, activa la estrategia desde la lista. No se requiere reiniciar.
 
 ## Validacion
 

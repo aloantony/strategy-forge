@@ -12,9 +12,6 @@ SYMBOL = "#Germany40"  # DAX Spot Index CFD - FxPro (requiere prefijo #)
 # Timeframe
 TIMEFRAME = None  # Se establecerá como mt5.TIMEFRAME_M1 en main.py
 
-# Modo de pruebas: fuerza señales para validar ejecuciones
-TEST_MODE = False  # Si True, alterna BUY/SELL en cada iteración (desactivado para demo real)
-
 # Historial de velas
 BARS_HISTORY = 500
 
@@ -27,11 +24,7 @@ MAGIC_NUMBER = 123456
 # Configuración de estrategias
 STRATEGY_KEY = "ema_rsi_trend"
 STRATEGY_MODULE = ""  # Opcional. Si esta vacio, se resuelve por convencion: strategies.strategy_<STRATEGY_KEY>
-ACTIVE_STRATEGIES = [
-    "ema_rsi_trend",
-    "bollinger_rsi_reversion",
-    "donchian_breakout",
-]
+ACTIVE_STRATEGIES = []
 STRATEGY_DIR = "strategies"
 SOURCE_MODE = "OHLC4"  # "OHLC4" | "HLC3" | "HL2" | "CLOSE"
 MA_LENGTH = 20
@@ -60,44 +53,3 @@ STRATEGY_MAX_WORKERS = 8  # Hilos para análisis concurrente (0 = automático)
 STRATEGY_ANALYSIS_TIMEOUT_SECONDS = 15  # Timeout total del análisis por ciclo
 MAX_ORDERS_PER_ITERATION = 10  # Límite de órdenes enviadas por ciclo
 
-# Feedback / sugerencias
-# Si FEEDBACK_WEBHOOK_URL tiene un valor, se enviará un POST con JSON.
-# Si no, se guardará en un archivo local en FEEDBACK_SAVE_DIR.
-FEEDBACK_WEBHOOK_URL = "https://outside-adelheid-bralsolving-397f3acf.koyeb.app/feedback?key=98679247c1d14aea9d11cf16fd9482cf"
-FEEDBACK_SAVE_DIR = "feedback"
-FEEDBACK_TIMEOUT_SECONDS = 4
-FEEDBACK_LIST_URL = ""
-
-
-def print_config():
-    # esta funcion sirve para mostrar config.
-    """Imprime la configuración actual para depuración."""
-    print("=== CONFIGURACIÓN ===")
-    print(f"SYMBOL: {SYMBOL}")
-    print(f"BARS_HISTORY: {BARS_HISTORY}")
-    print(f"LOT: {LOT}")
-    print(f"SL_POINTS: {SL_POINTS}")
-    print(f"TP_POINTS: {TP_POINTS}")
-    print(f"MAGIC_NUMBER: {MAGIC_NUMBER}")
-    print(f"STRATEGY_KEY: {STRATEGY_KEY}")
-    print(f"STRATEGY_MODULE: {STRATEGY_MODULE}")
-    print(f"ACTIVE_STRATEGIES: {ACTIVE_STRATEGIES}")
-    print(f"STRATEGY_DIR: {STRATEGY_DIR}")
-    print(f"SOURCE_MODE: {SOURCE_MODE}")
-    print(f"MA_LENGTH: {MA_LENGTH}")
-    print(f"ATR_LENGTH: {ATR_LENGTH}")
-    print(f"ATR_MULT: {ATR_MULT}")
-    print(f"SUPERTREND_ATR_LENGTH: {SUPERTREND_ATR_LENGTH}")
-    print(f"SUPERTREND_MULT: {SUPERTREND_MULT}")
-    print(f"SUPERTREND_SOURCE: {SUPERTREND_SOURCE}")
-    print(f"SUPERTREND_USE_HMA: {SUPERTREND_USE_HMA}")
-    print(f"HMA_LENGTH: {HMA_LENGTH}")
-    print(f"TCI_FAST: {TCI_FAST}")
-    print(f"TCI_SLOW: {TCI_SLOW}")
-    print(f"TCI_SIGNAL: {TCI_SIGNAL}")
-    print(f"ENABLE_SIGNALS: {ENABLE_SIGNALS}")
-    print(f"SLEEP_SECONDS: {SLEEP_SECONDS}")
-    print(f"STRATEGY_MAX_WORKERS: {STRATEGY_MAX_WORKERS}")
-    print(f"STRATEGY_ANALYSIS_TIMEOUT_SECONDS: {STRATEGY_ANALYSIS_TIMEOUT_SECONDS}")
-    print(f"MAX_ORDERS_PER_ITERATION: {MAX_ORDERS_PER_ITERATION}")
-    print("=====================")

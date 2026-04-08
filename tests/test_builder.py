@@ -1,0 +1,433 @@
+"""
+tests/test_builder.py — Acceptance tests for strategies/builder.py (TASK-017).
+
+Run with: python tests/test_builder.py
+"""
+import ast
+import json
+import sys
+import tempfile
+from pathlib import Path
+
+import numpy as np
+import pandas as pd
+
+sys.path.insert(0, str(Path(__file__).parent.parent))
+
+from strategies.builder import (
+    GeneratorError,
+    NameCollisionError,
+    ValidationError,
+    emit_condition,
+    generate_strategy_file,
+    handle_save_edit,
+    handle_save_new,
+    sanitize_name,
+    validate_strategy_config,
+)
+
+
+# ---------------------------------------------------------------------------
+# Fixtures
+# ---------------------------------------------------------------------------
+
+EMA_RSI_CONFIG = {
+    "schema_version": 1,
+    "name": "ema_rsi_cross",
+    "display_name": "EMA Cross + RSI Filter",
+    "description": "Buy when fast EMA crosses above slow EMA and RSI is in momentum zone.",
+    "timeframe": "H1",
+    "magic_number": 47231,
+    "indicators": [
+        {"id": "EMA", "params": {"period": 9},  "columns": ["ema_9"],  "pre_computed": False},
+        {"id": "EMA", "params": {"period": 21}, "columns": ["ema_21"], "pre_computed": False},
+        {"id": "RSI", "params": {"period": 14}, "columns": ["rsi_14"], "pre_computed": False},
+    ],
+    "buy_condition": {
+        "type": "AND",
+        "children": [
+            {"type": "condition", "left": "ema_9",  "op": ">", "right": "ema_21"},
+            {"type": "condition", "left": "rsi_14", "op": ">", "right": 50},
+        ],
+    },
+    "sell_condition": {
+        "type": "AND",
+        "children": [
+            {"type": "condition", "left": "ema_9",  "op": "<", "right": "ema_21"},
+            {"type": "condition", "left": "rsi_14", "op": "<", "right": 50},
+        ],
+    },
+}
+
+COMPLEX_OR_CONFIG = {
+    "schema_version": 1,
+    "name": "complex_or",
+    "display_name": "Complex OR Strategy",
+    "description": "",
+    "timeframe": "M15",
+    "magic_number": 55555,
+    "indicators": [
+        {"id": "RSI", "params": {"period": 14}, "columns": ["rsi_14"], "pre_computed": False},
+        {"id": "EMA", "params": {"period": 9},  "columns": ["ema_9"],  "pre_computed": False},
+        {
+            "id": "BB",
+            "params": {"period": 20, "multiplier": 2.0},
+            "columns": ["bb_basis_20", "bb_upper_20", "bb_lower_20", "bb_width_pct_20"],
+            "pre_computed": False,
+        },
+        {
+            "id": "VOLUME_RATIO",
+            "params": {"lookback": 30},
+            "columns": ["volume_ratio_30"],
+            "pre_computed": False,
+        },
+    ],
+    "buy_condition": {
+        "type": "OR",
+        "children": [
+            {
+                "type": "AND",
+                "children": [
+                    {"type": "condition", "left": "rsi_14", "op": "<", "right": 30},
+                    {"type": "condition", "left": "close",  "op": ">", "right": "ema_9"},
+                ],
+            },
+            {
+                "type": "AND",
+                "children": [
+                    {"type": "condition", "left": "close",           "op": ">", "right": "bb_upper_20"},
+                    {"type": "condition", "left": "volume_ratio_30", "op": ">", "right": 1.5},
+                ],
+            },
+        ],
+    },
+    "sell_condition": {
+        "type": "condition",
+        "left": "rsi_14",
+        "op": ">",
+        "right": 70,
+    },
+}
+
+
+def make_df(n=100):
+    np.random.seed(42)
+    close = pd.Series(np.cumsum(np.random.randn(n)) + 100)
+    return pd.DataFrame({
+        "close":       close,
+        "high":        close + 0.5,
+        "low":         close - 0.5,
+        "open":        close,
+        "tick_volume": np.random.randint(1, 100, n).astype(float),
+    })
+
+
+def load_module(py_path: Path):
+    import importlib.util
+    spec = importlib.util.spec_from_file_location("_test_strategy", py_path)
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+    return mod
+
+
+# ---------------------------------------------------------------------------
+# Tests
+# ---------------------------------------------------------------------------
+
+def test_canonical_example():
+    """Generated file matches spec §8 structure and passes ast.parse."""
+    config = json.loads(json.dumps(EMA_RSI_CONFIG))
+    with tempfile.TemporaryDirectory() as tmpdir:
+        d = Path(tmpdir)
+        validate_strategy_config(config, is_new=True, strategies_dir=d)
+        py_path = generate_strategy_file(config, strategies_dir=d, is_new=True)
+
+        content = py_path.read_text()
+        ast.parse(content)
+
+        # Isolation rule
+        for forbidden in ("import config", "import trading", "import gui_charts"):
+            assert forbidden not in content, f"Isolation violated: {forbidden}"
+
+        # Required symbols
+        for sym in ("TIMEFRAME", "MAGIC_NUMBER", "DATA_WINDOW_FIELDS",
+                    "prepare_dataframe", "compute_signals",
+                    "get_last_signal_payload", "get_last_signal"):
+            assert sym in content, f"Missing symbol: {sym}"
+
+        # Companion .json
+        json_path = d / "strategy_ema_rsi_cross.json"
+        assert json_path.exists()
+        stored = json.loads(json_path.read_text())
+        assert stored["magic_number"] == 47231
+
+    print("PASS test_canonical_example")
+
+
+def test_round_trip():
+    """Loading stored .json and regenerating produces identical .py."""
+    config = json.loads(json.dumps(EMA_RSI_CONFIG))
+    with tempfile.TemporaryDirectory() as tmpdir:
+        d = Path(tmpdir)
+        py_path = generate_strategy_file(config, strategies_dir=d, is_new=True)
+        original = py_path.read_text()
+
+        stored = json.loads((d / "strategy_ema_rsi_cross.json").read_text())
+        py_path2 = generate_strategy_file(stored, strategies_dir=d, is_new=False)
+        assert py_path2.read_text() == original
+
+    print("PASS test_round_trip")
+
+
+def test_get_last_signal_produces_valid_values():
+    """Generated strategy returns only 'buy', 'sell', or 'none' on real data."""
+    config = json.loads(json.dumps(EMA_RSI_CONFIG))
+    with tempfile.TemporaryDirectory() as tmpdir:
+        d = Path(tmpdir)
+        py_path = generate_strategy_file(config, strategies_dir=d, is_new=True)
+        mod = load_module(py_path)
+
+        df = make_df()
+        df2 = mod.prepare_dataframe(df)
+        sig = mod.get_last_signal(df2)
+        assert sig in ("buy", "sell", "none"), f"Unexpected signal: {sig!r}"
+
+    print(f"PASS test_get_last_signal_produces_valid_values (signal={sig!r})")
+
+
+def test_complex_or_nested_condition():
+    """OR-nested condition tree generates valid Python and valid signals."""
+    config = json.loads(json.dumps(COMPLEX_OR_CONFIG))
+    with tempfile.TemporaryDirectory() as tmpdir:
+        d = Path(tmpdir)
+        validate_strategy_config(config, is_new=True, strategies_dir=d)
+        py_path = generate_strategy_file(config, strategies_dir=d, is_new=True)
+        ast.parse(py_path.read_text())
+
+        mod = load_module(py_path)
+        df = make_df()
+        df2 = mod.prepare_dataframe(df)
+        sig = mod.get_last_signal(df2)
+        assert sig in ("buy", "sell", "none")
+
+    print(f"PASS test_complex_or_nested_condition (signal={sig!r})")
+
+
+def test_edit_flow_rename():
+    """Edit flow: rename writes new files, deletes old ones, preserves magic_number."""
+    config = json.loads(json.dumps(COMPLEX_OR_CONFIG))
+    with tempfile.TemporaryDirectory() as tmpdir:
+        d = Path(tmpdir)
+        generate_strategy_file(config, strategies_dir=d, is_new=True)
+        # Write companion json (handle_save_edit reads it)
+        (d / "strategy_complex_or.json").write_text(json.dumps(config))
+
+        edited = json.loads(json.dumps(config))
+        edited["display_name"] = "Renamed Strategy"
+        py2 = handle_save_edit(edited, "complex_or", strategies_dir=d)
+
+        assert (d / "strategy_renamed_strategy.py").exists()
+        assert (d / "strategy_renamed_strategy.json").exists()
+        assert not (d / "strategy_complex_or.py").exists()
+        assert not (d / "strategy_complex_or.json").exists()
+
+        stored2 = json.loads((d / "strategy_renamed_strategy.json").read_text())
+        assert stored2["magic_number"] == 55555  # preserved
+
+    print("PASS test_edit_flow_rename")
+
+
+def test_no_prepare_dataframe_when_all_precomputed():
+    """prepare_dataframe is NOT emitted when all indicators are pre_computed."""
+    config = {
+        "schema_version": 1,
+        "name": "pre_only",
+        "display_name": "Pre Only",
+        "description": "",
+        "timeframe": "M1",
+        "magic_number": 99999,
+        "indicators": [
+            {
+                "id": "SUPERTREND",
+                "params": {},
+                "columns": ["supertrend", "supertrend_dir", "supertrend_up", "supertrend_down"],
+                "pre_computed": True,
+            }
+        ],
+        "buy_condition": {
+            "type": "condition", "left": "supertrend_dir", "op": "==", "right": 1
+        },
+        "sell_condition": {
+            "type": "condition", "left": "supertrend_dir", "op": "==", "right": -1
+        },
+    }
+    with tempfile.TemporaryDirectory() as tmpdir:
+        d = Path(tmpdir)
+        validate_strategy_config(config, is_new=True, strategies_dir=d)
+        py_path = generate_strategy_file(config, strategies_dir=d, is_new=True)
+        content = py_path.read_text()
+        assert "def prepare_dataframe" not in content
+        ast.parse(content)
+
+    print("PASS test_no_prepare_dataframe_when_all_precomputed")
+
+
+def test_atr_donchian():
+    """ATR + DONCHIAN indicators generate correct computation blocks."""
+    config = {
+        "schema_version": 1,
+        "name": "atr_donchian",
+        "display_name": "ATR Donchian",
+        "description": "",
+        "timeframe": "H1",
+        "magic_number": 12345,
+        "indicators": [
+            {
+                "id": "ATR",
+                "params": {"period": 14},
+                "columns": ["atr_14", "atr_pct_14"],
+                "pre_computed": False,
+            },
+            {
+                "id": "DONCHIAN",
+                "params": {"period": 20},
+                "columns": ["donchian_high_20", "donchian_low_20", "donchian_mid_20"],
+                "pre_computed": False,
+            },
+        ],
+        "buy_condition": {
+            "type": "condition", "left": "close", "op": ">", "right": "donchian_high_20"
+        },
+        "sell_condition": {
+            "type": "condition", "left": "close", "op": "<", "right": "donchian_low_20"
+        },
+    }
+    with tempfile.TemporaryDirectory() as tmpdir:
+        d = Path(tmpdir)
+        validate_strategy_config(config, is_new=True, strategies_dir=d)
+        py_path = generate_strategy_file(config, strategies_dir=d, is_new=True)
+        content = py_path.read_text()
+        ast.parse(content)
+        assert "_atr(" in content
+        assert "donchian_high_20" in content
+
+        mod = load_module(py_path)
+        df = make_df()
+        df2 = mod.prepare_dataframe(df)
+        sig = mod.get_last_signal(df2)
+        assert sig in ("buy", "sell", "none")
+
+    print("PASS test_atr_donchian")
+
+
+def test_validation_errors():
+    """Validator rejects bad name, unknown column, bad operator."""
+    # Bad name
+    config = json.loads(json.dumps(EMA_RSI_CONFIG))
+    config["name"] = "123bad"
+    with tempfile.TemporaryDirectory() as tmpdir:
+        d = Path(tmpdir)
+        try:
+            validate_strategy_config(config, is_new=True, strategies_dir=d)
+            assert False, "Should have raised"
+        except ValidationError as e:
+            assert "name" in str(e).lower()
+    print("PASS test_validation_bad_name")
+
+    # Unknown column in condition
+    config2 = json.loads(json.dumps(EMA_RSI_CONFIG))
+    config2["buy_condition"] = {
+        "type": "condition", "left": "nonexistent_col", "op": "<", "right": 30
+    }
+    with tempfile.TemporaryDirectory() as tmpdir:
+        d = Path(tmpdir)
+        try:
+            validate_strategy_config(config2, is_new=True, strategies_dir=d)
+            assert False, "Should have raised"
+        except ValidationError as e:
+            assert "nonexistent_col" in str(e)
+    print("PASS test_validation_unknown_column")
+
+    # Bad operator
+    config3 = json.loads(json.dumps(EMA_RSI_CONFIG))
+    config3["buy_condition"] = {
+        "type": "AND",
+        "children": [
+            {"type": "condition", "left": "rsi_14", "op": "INJECT", "right": 30},
+            {"type": "condition", "left": "ema_9",  "op": ">", "right": "ema_21"},
+        ],
+    }
+    with tempfile.TemporaryDirectory() as tmpdir:
+        d = Path(tmpdir)
+        try:
+            validate_strategy_config(config3, is_new=True, strategies_dir=d)
+            assert False, "Should have raised"
+        except ValidationError as e:
+            assert "INJECT" in str(e)
+    print("PASS test_validation_bad_operator")
+
+
+def test_emit_condition_spec_examples():
+    """emit_condition output matches TASK-014b spec examples exactly."""
+    # Two-level nesting example from spec
+    tree = {
+        "type": "OR",
+        "children": [
+            {
+                "type": "AND",
+                "children": [
+                    {"type": "condition", "left": "rsi_14", "op": "<", "right": 30},
+                    {"type": "condition", "left": "close",  "op": ">", "right": "ema_9"},
+                ],
+            },
+            {
+                "type": "AND",
+                "children": [
+                    {"type": "condition", "left": "close",           "op": ">", "right": "bb_upper_20"},
+                    {"type": "condition", "left": "volume_ratio_30", "op": ">", "right": 1.5},
+                ],
+            },
+        ],
+    }
+    expected = (
+        '((df.iloc[-2]["rsi_14"] < 30 and df.iloc[-2]["close"] > df.iloc[-2]["ema_9"]) '
+        'or (df.iloc[-2]["close"] > df.iloc[-2]["bb_upper_20"] and df.iloc[-2]["volume_ratio_30"] > 1.5))'
+    )
+    result = emit_condition(tree)
+    assert result == expected, f"\nExpected: {expected}\nGot:      {result}"
+    print("PASS test_emit_condition_spec_examples")
+
+
+def test_name_collision():
+    """validate_strategy_config raises ValidationError when name already taken."""
+    config = json.loads(json.dumps(EMA_RSI_CONFIG))
+    with tempfile.TemporaryDirectory() as tmpdir:
+        d = Path(tmpdir)
+        # First create succeeds
+        generate_strategy_file(config, strategies_dir=d, is_new=True)
+        # Write companion json so it's detected as Builder strategy
+        (d / "strategy_ema_rsi_cross.json").write_text(json.dumps(config))
+
+        # Trying to create again with same name should fail validation
+        config2 = json.loads(json.dumps(EMA_RSI_CONFIG))
+        try:
+            validate_strategy_config(config2, is_new=True, strategies_dir=d)
+            assert False, "Should have raised ValidationError"
+        except ValidationError:
+            pass
+
+    print("PASS test_name_collision")
+
+
+if __name__ == "__main__":
+    test_canonical_example()
+    test_round_trip()
+    test_get_last_signal_produces_valid_values()
+    test_complex_or_nested_condition()
+    test_edit_flow_rename()
+    test_no_prepare_dataframe_when_all_precomputed()
+    test_atr_donchian()
+    test_validation_errors()
+    test_emit_condition_spec_examples()
+    test_name_collision()
+    print("\nAll tests passed.")

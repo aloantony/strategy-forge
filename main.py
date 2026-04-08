@@ -8,7 +8,6 @@ import os
 import re
 import threading
 import time
-import traceback
 import zlib
 from concurrent.futures import ThreadPoolExecutor, wait
 from datetime import datetime
@@ -232,14 +231,9 @@ def load_active_strategies():
                 last_error = str(error)
 
         if module is None:
-            print(f"[WARN] No se pudo cargar estrategia '{label}' ({key}): {last_error or 'sin detalle'}")
             continue
 
         if not hasattr(module, "get_last_signal") and not hasattr(module, "get_last_signal_payload"):
-            print(
-                f"[WARN] Estrategia '{label}' ({key}) omitida: "
-                "falta get_last_signal() o get_last_signal_payload()."
-            )
             continue
 
         raw_timeframe = entry_dict.get("timeframe") if isinstance(item, dict) else None
@@ -296,8 +290,6 @@ def load_active_strategies():
                 "magic_override": None,
             }
         ]
-        print(f"[WARN] Sin estrategias validas. Se usa '{fallback_key}' por defecto.")
-
     multi_mode = len(entries) > 1
     for entry in entries:
         entry["magic_number"] = _resolve_strategy_magic_number(
@@ -387,23 +379,49 @@ def _normalize_signal_payload(value) -> dict:
     if len(reason) > 160:
         reason = reason[:157].rstrip() + "..."
 
+    pyramiding = False
+    atr_value = 0.0
+    dynamic_sizing = False
+    volume_ratio = 0.0
+
+    if isinstance(value, dict):
+        pyramiding_raw = value.get("pyramiding", False)
+        pyramiding = bool(pyramiding_raw) if pyramiding_raw is not None else False
+
+        atr_raw = value.get("atr_value", 0.0)
+        try:
+            atr_value = float(atr_raw) if atr_raw is not None else 0.0
+        except (TypeError, ValueError):
+            atr_value = 0.0
+
+        dynamic_sizing_raw = value.get("dynamic_sizing", False)
+        dynamic_sizing = bool(dynamic_sizing_raw) if dynamic_sizing_raw is not None else False
+
+        volume_ratio_raw = value.get("volume_ratio", 0.0)
+        try:
+            volume_ratio = float(volume_ratio_raw) if volume_ratio_raw is not None else 0.0
+        except (TypeError, ValueError):
+            volume_ratio = 0.0
+
     return {
-        "signal": _normalize_signal(signal_raw),
-        "reason": reason,
+        "signal":         _normalize_signal(signal_raw),
+        "reason":         reason,
+        "pyramiding":     pyramiding,
+        "atr_value":      atr_value,
+        "dynamic_sizing": dynamic_sizing,
+        "volume_ratio":   volume_ratio,
     }
 
 
 def _analyze_strategy(index: int, entry: dict, base_df: pd.DataFrame) -> dict:
-    result = {"index": index, "entry": entry, "df": None, "signal": "none", "reason": "", "error": ""}
+    result = {"index": index, "entry": entry, "df": None, "signal": "none", "reason": "", "pyramiding": False, "atr_value": 0.0, "dynamic_sizing": False, "volume_ratio": 0.0, "error": ""}
     try:
         if base_df is None or len(base_df) < 2:
             result["error"] = "No hay suficientes velas"
             return result
         strategy_df = _apply_strategy_processing(base_df, entry["module"])
         raw_payload = None
-        if bool(getattr(config, "TEST_MODE", False)) and hasattr(entry["module"], "get_test_signal"):
-            raw_payload = {"signal": entry["module"].get_test_signal(), "reason": "test_mode"}
-        elif hasattr(entry["module"], "get_last_signal_payload"):
+        if hasattr(entry["module"], "get_last_signal_payload"):
             try:
                 raw_payload = entry["module"].get_last_signal_payload(strategy_df, verbose=False)
             except TypeError:
@@ -417,51 +435,14 @@ def _analyze_strategy(index: int, entry: dict, base_df: pd.DataFrame) -> dict:
         result["df"] = strategy_df
         result["signal"] = signal_payload["signal"]
         result["reason"] = signal_payload["reason"]
+        result["pyramiding"] = signal_payload["pyramiding"]
+        result["atr_value"] = signal_payload["atr_value"]
+        result["dynamic_sizing"] = signal_payload["dynamic_sizing"]
+        result["volume_ratio"] = signal_payload["volume_ratio"]
     except Exception as error:
         result["error"] = str(error)
     return result
 
-
-def _format_number(value, digits: int = 2) -> str:
-    try:
-        if pd.isna(value):
-            return "N/A"
-        return f"{float(value):.{digits}f}"
-    except Exception:
-        return "N/A"
-
-
-def print_strategy_status(entry: dict, df: pd.DataFrame, signal: str, reason: str = ""):
-    if df is None or len(df) < 2:
-        print(f"[WARN] [{entry['label']}] Sin datos suficientes.")
-        return
-
-    row = df.iloc[len(df) - 2]
-    print("\n" + "=" * 84)
-    print(
-        f"[{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}] "
-        f"{entry['label']} ({entry['key']}) | TF {entry['timeframe_label']} | Magic {entry['magic_number']}"
-    )
-    print("=" * 84)
-    print(f"   Time: {row.get('time', 'N/A')}")
-    print(
-        f"   OHLC: O={_format_number(row.get('open'))} H={_format_number(row.get('high'))} "
-        f"L={_format_number(row.get('low'))} C={_format_number(row.get('close'))}"
-    )
-    if "up_sig" in df.columns or "dn_sig" in df.columns:
-        print(f"   Up_Sig={row.get('up_sig', 'N/A')} | Dn_Sig={row.get('dn_sig', 'N/A')}")
-    print(f"   Senal: {signal.upper() if signal != 'none' else 'NINGUNA'}")
-    if reason:
-        print(f"   Motivo: {reason}")
-
-    position_dir = trading.get_open_position_direction(config.SYMBOL, entry["magic_number"])
-    position_info = trading.get_position_info(config.SYMBOL, entry["magic_number"])
-    position_str = "[+] BUY" if position_dir == 1 else "[-] SELL" if position_dir == -1 else "[0] SIN POSICION"
-    print(f"   Posicion: {position_str}")
-    if position_info:
-        print(f"   Ticket: {position_info.get('ticket')}")
-        print(f"   Profit: {_format_number(position_info.get('profit'))}")
-    print("=" * 84)
 
 
 def _resolve_max_workers(strategy_count: int) -> int:
@@ -491,18 +472,11 @@ def _resolve_max_orders_per_iteration(strategy_count: int) -> int:
 
 
 def run_bot_loop(strategy_entries: list):
-    print("Iniciando bucle del bot...")
-    print(f"Estrategias activas: {len(strategy_entries)}")
-
     max_workers = _resolve_max_workers(len(strategy_entries))
     sleep_seconds = max(1, int(getattr(config, "SLEEP_SECONDS", 10) or 10))
     analysis_timeout = _resolve_analysis_timeout()
     max_orders_per_iteration = _resolve_max_orders_per_iteration(len(strategy_entries))
     executor = ThreadPoolExecutor(max_workers=max_workers, thread_name_prefix="strategy") if max_workers > 1 else None
-    print(f"Workers de analisis: {max_workers}")
-    print(f"Timeout analisis por ciclo: {analysis_timeout:.1f}s")
-    print(f"Max ordenes por ciclo: {max_orders_per_iteration}")
-    print("Planificador: oldest-first (prioriza estrategias con mayor espera).")
 
     last_analyzed_ts = {
         entry["key"]: 0.0 for entry in strategy_entries
@@ -512,11 +486,7 @@ def run_bot_loop(strategy_entries: list):
         while True:
             start_ts = time.time()
             try:
-                test_mode = bool(getattr(config, "TEST_MODE", False))
-                if test_mode:
-                    market_open, market_status_msg = True, "TEST_MODE (sin check)"
-                else:
-                    market_open, market_status_msg = trading.is_market_open(config.SYMBOL)
+                market_open, market_status_msg = trading.is_market_open(config.SYMBOL)
 
                 market_cache = {}
                 for timeframe_value in sorted({int(entry["timeframe_value"]) for entry in strategy_entries}):
@@ -567,12 +537,6 @@ def run_bot_loop(strategy_entries: list):
                         results[idx] = item
                         last_analyzed_ts[entry["key"]] = time.time()
 
-                print("\n" + "-" * 84)
-                print(f"{'[OK]' if market_open else '[!!]'} ESTADO DEL MERCADO: {market_status_msg}")
-                if not market_open:
-                    print("   [WARN] Se analiza, pero no se ejecutan operaciones.")
-                print("-" * 84)
-
                 executed_orders = 0
                 for idx, _ in scheduled_items:
                     result = results.get(idx)
@@ -580,59 +544,69 @@ def run_bot_loop(strategy_entries: list):
                         continue
                     entry = result["entry"]
                     if result.get("error"):
-                        print(f"[ERROR] [{entry['label']}] {result['error']}")
                         continue
 
                     signal = result["signal"]
                     reason = str(result.get("reason") or "").strip()
-                    print_strategy_status(entry, result["df"], signal, reason=reason)
 
                     if signal == "none":
-                        print(f"[WAIT] [{entry['label']}] Sin accion requerida.")
                         continue
                     if not market_open:
-                        reason_txt = f" | motivo: {reason}" if reason else ""
-                        print(
-                            f"[WAIT] [{entry['label']}] Senal {signal.upper()} detectada "
-                            f"pero mercado cerrado.{reason_txt}"
-                        )
                         continue
 
                     if executed_orders >= max_orders_per_iteration:
-                        print(
-                            f"[SKIP] [{entry['label']}] Limite de ordenes alcanzado "
-                            f"({max_orders_per_iteration} por ciclo)."
-                        )
                         continue
 
-                    reason_txt = f" | motivo: {reason}" if reason else ""
-                    print(f">>> ACCION [{entry['label']}]: Ejecutando {signal.upper()}{reason_txt}")
+                    pyramiding     = result.get("pyramiding", False)
+                    atr_value      = result.get("atr_value", 0.0)
+                    dynamic_sizing = result.get("dynamic_sizing", False)
+                    volume_ratio   = result.get("volume_ratio", 0.0)
+
                     with ORDER_EXECUTION_LOCK:
-                        trading.apply_signal(
-                            config.SYMBOL,
-                            signal,
-                            config.LOT,
-                            config.SL_POINTS,
-                            config.TP_POINTS,
-                            entry["magic_number"],
-                            timeframe_value=entry["timeframe_value"],
-                            strategy_key=entry["key"],
-                            strategy_label=entry["label"],
-                            signal_reason=reason,
-                        )
+                        if pyramiding and atr_value > 0 and signal == "buy":
+                            if dynamic_sizing and volume_ratio > 0 and atr_value > 0:
+                                account = mt5.account_info()
+                                balance = account.balance if account is not None else 0.0
+                                raw_lot = trading.calculate_dynamic_lot(
+                                    config.SYMBOL, atr_value, volume_ratio, balance=balance
+                                )
+                                lot = raw_lot if raw_lot > 0 else config.LOT
+                            else:
+                                lot = config.LOT
+                                balance = None
+
+                            trading.apply_pyramid_signal(
+                                config.SYMBOL,
+                                entry["magic_number"],
+                                atr_value,
+                                lot,
+                                strategy_key=entry["key"],
+                                strategy_label=entry["label"],
+                                signal_reason=reason,
+                                balance=balance if dynamic_sizing else None,
+                            )
+                        else:
+                            trading.apply_signal(
+                                config.SYMBOL,
+                                signal,
+                                config.LOT,
+                                config.SL_POINTS,
+                                config.TP_POINTS,
+                                entry["magic_number"],
+                                strategy_key=entry["key"],
+                                strategy_label=entry["label"],
+                                signal_reason=reason,
+                            )
                     executed_orders += 1
 
                 elapsed = time.time() - start_ts
-                print(f"\n[...] Iteracion en {elapsed:.2f}s. Esperando {sleep_seconds}s.\n")
                 time.sleep(sleep_seconds)
 
             except Exception as error:
-                print(f"\n[ERROR] Error en el bucle: {error}")
-                traceback.print_exc()
                 time.sleep(sleep_seconds)
 
     except KeyboardInterrupt:
-        print("\n\nBot detenido por el usuario")
+        pass
     finally:
         if executor is not None:
             executor.shutdown(wait=True, cancel_futures=True)
@@ -645,31 +619,18 @@ def main():
     try:
         strategy_entries = load_active_strategies()
     except Exception as error:
-        print(f"Error al cargar estrategias: {error}")
-        traceback.print_exc()
         return
 
     try:
         mt5_connection.initialize_mt5()
     except Exception as error:
-        print(f"Error al inicializar MT5: {error}")
         return
 
     try:
         mt5_connection.check_symbol(config.SYMBOL)
     except Exception as error:
-        print(f"Error al verificar simbolo: {error}")
         mt5.shutdown()
         return
-
-    config.print_config()
-    print("\n=== ESTRATEGIAS ACTIVAS ===")
-    for entry in strategy_entries:
-        print(
-            f"- {entry['label']} ({entry['key']}) | modulo={entry['module_ref']} | "
-            f"tf={entry['timeframe_label']} | magic={entry['magic_number']}"
-        )
-    print("===========================\n")
 
     run_bot_loop(strategy_entries)
     mt5.shutdown()

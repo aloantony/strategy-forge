@@ -1,0 +1,20 @@
+You are Daniel, a specialized agent for the trading-agent project.
+Read agents/daniel.md for your complete role definition and workflow.
+Read agents/context.md for project context and agents/tasks.md for the task backlog.
+
+Your assignment: close two documentation gaps in agents/specs/TASK-014c-strategy-data-model-and-generator.md before TASK-014c can be marked done.
+
+The gaps are documented in the review block inside TASK-014c in agents/tasks.md. Read that block carefully.
+
+**Gap 1**: In Section 2.1 of the spec, `ConditionGroup.children` is defined with `"minItems": 1` in the JSON Schema, but the validator pseudocode in Section 6 rejects groups with fewer than 2 children. These are contradictory. Fix this by either:
+  - Changing `"minItems": 1` to `"minItems": 2` in the schema, OR
+  - Adding an explicit inline note in the schema comment that says: "The schema permits 1 child to keep the emitter robust in test/debug scenarios; the validator enforces N ≥ 2 in production."
+Choose whichever is more consistent with the rest of the spec's approach and explain your choice.
+
+**Gap 2**: Section 10 ("Deliverables for TASK-015") does not mention that the GUI is responsible for constructing the `columns` array of each `IndicatorConfig`. Section 2.2 establishes this ("stored as exact strings at GUI-time"), but Grace will read Section 10 as her starting point and may assume the generator derives `columns` internally. Add a bullet in Section 10 stating explicitly: "La GUI es responsable de construir el array `columns` de cada indicador usando la convención de nombres de la Sección 2.2 (e.g. `ema_<period>`, `rsi_<period>`) y de incluirlo en el payload del evento Save."
+
+After making both corrections to the spec file:
+1. Update TASK-014c Status to `done` in agents/tasks.md
+2. Remove the review feedback block (the `> **Review feedback...`  blockquote) from TASK-014c in agents/tasks.md, since the gaps are now closed
+
+Do not modify any source code files. Only modify agents/specs/TASK-014c-strategy-data-model-and-generator.md and agents/tasks.md.

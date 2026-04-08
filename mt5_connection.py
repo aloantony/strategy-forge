@@ -26,11 +26,6 @@ def initialize_mt5():
         mt5.shutdown()
         raise Exception("No se pudo obtener información de la cuenta")
     
-    print(f"MT5 inicializado correctamente")
-    print(f"Login: {account_info.login}")
-    print(f"Servidor: {account_info.server}")
-    print(f"Balance: {account_info.balance}")
-    
     return True
 
 
@@ -56,7 +51,6 @@ def check_symbol(symbol: str):
         if not mt5.symbol_select(symbol, True):
             raise Exception(f"No se pudo seleccionar el símbolo {symbol}")
     
-    print(f"Símbolo {symbol} verificado correctamente")
     return True
 
 

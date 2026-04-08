@@ -22,14 +22,11 @@ import base64
 import zlib
 from datetime import datetime, timedelta, timezone
 import json
-import urllib.error
-import urllib.request
-from urllib.parse import unquote, urlparse, urlunparse
+from urllib.parse import unquote
 
 import config
 import mt5_connection
 import data_feed
-from strategies import strategy_ema_rsi_trend as default_strategy_module
 import trading
 
 
@@ -95,6 +92,7 @@ class TradingBotGUI:
         self.current_timeframe = "M1"
         self.last_action_info = None
         self._action_tooltip_ready = False
+        self._current_aggregate_risk_pct = 0.0
         self.action_markers = []
         # None/0 = sin límite (mostrar todas las operaciones)
         self.max_action_markers = getattr(config, "MAX_ACTION_MARKERS", None)
@@ -670,6 +668,10 @@ class TradingBotGUI:
             if error_text:
                 status_parts.append(f"error: {error_text}")
 
+            strategy_dir = self._get_strategy_dir()
+            json_path = os.path.join(strategy_dir, f"strategy_{entry['key']}.json")
+            has_config = os.path.isfile(json_path)
+
             payload.append({
                 "key": entry["key"],
                 "label": entry["label"],
@@ -679,6 +681,7 @@ class TradingBotGUI:
                 "magic": int(entry.get("magic_number") or 0),
                 "status": " | ".join(status_parts),
                 "last_run": entry.get("last_run_at") or "",
+                "has_config": has_config,
             })
         return payload
 
@@ -1112,7 +1115,7 @@ class TradingBotGUI:
         config.STRATEGY_MODULE = entry["module"]
 
         if loaded_ok:
-            self.strategy_module = entry.get("module_obj") or default_strategy_module
+            self.strategy_module = entry.get("module_obj")
             self.log_message(f"Interfaz activa: {entry['label']} ({entry['module']})")
             self._apply_strategy_timeframe(entry, refresh=False)
             self._refresh_object_tree_items()
@@ -1430,6 +1433,9 @@ class TradingBotGUI:
                 if (window.renderStrategyList) {{
                     window.renderStrategyList(payload);
                 }}
+                if (window.renderBuilderButtons) {{
+                    window.renderBuilderButtons(payload);
+                }}
             }})();
         ''')
         self._render_strategy_data_scope_selector()
@@ -1452,10 +1458,580 @@ class TradingBotGUI:
             }})();
         ''')
 
+    def _build_strategy_builder_ui(self):
+        # esta funcion sirve para construir la interfaz del constructor de estrategias.
+        self.chart.run_script('''
+            ;(function() {
+                if (document.getElementById("tv-builder-form-view")) return;
+
+                // --- CSS injection ---
+                const style = document.createElement("style");
+                style.textContent = `
+                    #tv-builder-form-view { display: none; flex-direction: column; height: 100%; overflow: hidden; }
+                    .tv-builder-form { display: flex; flex-direction: column; height: 100%; overflow: hidden; background: var(--panel-bg, #1a1a2e); color: var(--text-color, #e0e0e0); font-size: 12px; }
+                    .tv-builder-header { display: flex; align-items: center; justify-content: space-between; padding: 8px 10px; border-bottom: 1px solid rgba(255,255,255,0.1); flex-shrink: 0; }
+                    .tv-builder-title { font-weight: 600; font-size: 13px; }
+                    .tv-builder-cancel-btn { background: transparent; border: 1px solid rgba(255,255,255,0.2); color: #e0e0e0; border-radius: 4px; padding: 3px 10px; cursor: pointer; font-size: 11px; }
+                    .tv-builder-cancel-btn:hover { background: rgba(255,255,255,0.08); }
+                    .tv-builder-body { flex: 1; overflow-y: auto; padding: 8px 10px; }
+                    .tv-builder-section { margin-bottom: 12px; }
+                    .tv-builder-section label { display: block; font-size: 11px; color: rgba(255,255,255,0.55); margin-bottom: 2px; margin-top: 6px; }
+                    .tv-builder-section input[type=text], .tv-builder-section select { width: 100%; background: rgba(255,255,255,0.06); border: 1px solid rgba(255,255,255,0.15); color: #e0e0e0; border-radius: 4px; padding: 4px 6px; font-size: 12px; box-sizing: border-box; }
+                    .tv-builder-section-title { font-weight: 600; font-size: 11px; text-transform: uppercase; letter-spacing: 0.05em; color: rgba(255,255,255,0.45); margin-bottom: 6px; margin-top: 4px; }
+                    .tv-builder-indicator-picker { display: flex; gap: 6px; align-items: center; margin-bottom: 6px; }
+                    .tv-builder-indicator-picker select { flex: 1; background: rgba(255,255,255,0.06); border: 1px solid rgba(255,255,255,0.15); color: #e0e0e0; border-radius: 4px; padding: 4px 6px; font-size: 12px; }
+                    .tv-builder-indicator-picker button { background: rgba(255,255,255,0.1); border: 1px solid rgba(255,255,255,0.2); color: #e0e0e0; border-radius: 4px; padding: 4px 10px; cursor: pointer; font-size: 12px; flex-shrink: 0; }
+                    .tv-builder-indicator-picker button:hover { background: rgba(255,255,255,0.18); }
+                    .tv-builder-indicator-list { display: flex; flex-direction: column; gap: 4px; }
+                    .tv-builder-indicator-row { display: flex; align-items: center; gap: 5px; background: rgba(255,255,255,0.04); border-radius: 4px; padding: 4px 6px; }
+                    .tv-builder-indicator-label { font-size: 11px; font-weight: 600; min-width: 60px; }
+                    .tv-builder-indicator-row input[type=number] { width: 60px; background: rgba(255,255,255,0.06); border: 1px solid rgba(255,255,255,0.15); color: #e0e0e0; border-radius: 4px; padding: 3px 5px; font-size: 11px; }
+                    .tv-builder-indicator-row button { background: transparent; border: none; color: rgba(255,255,255,0.4); cursor: pointer; font-size: 12px; padding: 0 4px; margin-left: auto; }
+                    .tv-builder-indicator-row button:hover { color: #e0e0e0; }
+                    .tv-builder-tree { display: flex; flex-direction: column; gap: 4px; }
+                    .tv-builder-condition-group { border-left: 2px solid rgba(255,255,255,0.15); padding-left: 8px; margin-left: 4px; }
+                    .tv-builder-group-header { display: flex; align-items: center; gap: 5px; margin-bottom: 4px; flex-wrap: wrap; }
+                    .tv-builder-group-type { background: rgba(74,144,226,0.25); border: 1px solid rgba(74,144,226,0.5); color: #7ab4f5; border-radius: 3px; padding: 2px 7px; cursor: pointer; font-size: 11px; font-weight: 600; }
+                    .tv-builder-group-type:hover { background: rgba(74,144,226,0.4); }
+                    .tv-builder-add-cond-btn, .tv-builder-add-group-btn { background: transparent; border: 1px solid rgba(255,255,255,0.2); color: rgba(255,255,255,0.65); border-radius: 3px; padding: 2px 7px; cursor: pointer; font-size: 11px; }
+                    .tv-builder-add-cond-btn:hover, .tv-builder-add-group-btn:hover { background: rgba(255,255,255,0.08); }
+                    .tv-builder-add-group-btn:disabled { opacity: 0.35; cursor: not-allowed; }
+                    .tv-builder-group-children { display: flex; flex-direction: column; gap: 4px; }
+                    .tv-builder-condition-leaf { display: flex; align-items: center; gap: 4px; flex-wrap: wrap; }
+                    .tv-builder-col-sel, .tv-builder-op-sel { background: rgba(255,255,255,0.06); border: 1px solid rgba(255,255,255,0.15); color: #e0e0e0; border-radius: 3px; padding: 2px 4px; font-size: 11px; }
+                    .tv-builder-right-type { background: rgba(255,255,255,0.08); border: 1px solid rgba(255,255,255,0.2); color: #e0e0e0; border-radius: 3px; padding: 2px 6px; cursor: pointer; font-size: 10px; }
+                    .tv-builder-num-inp { width: 70px; background: rgba(255,255,255,0.06); border: 1px solid rgba(255,255,255,0.15); color: #e0e0e0; border-radius: 3px; padding: 2px 4px; font-size: 11px; }
+                    .tv-builder-remove-btn { background: transparent; border: none; color: rgba(255,255,255,0.35); cursor: pointer; font-size: 12px; padding: 0 3px; }
+                    .tv-builder-remove-btn:hover { color: #e05c5c; }
+                    .tv-builder-footer { padding: 8px 10px; border-top: 1px solid rgba(255,255,255,0.1); flex-shrink: 0; }
+                    .tv-builder-error { background: rgba(220,50,50,0.15); border: 1px solid rgba(220,50,50,0.4); color: #f08080; border-radius: 4px; padding: 5px 8px; font-size: 11px; margin-bottom: 6px; }
+                    .tv-builder-save-btn { width: 100%; background: rgba(74,144,226,0.3); border: 1px solid rgba(74,144,226,0.6); color: #7ab4f5; border-radius: 4px; padding: 6px 0; cursor: pointer; font-size: 13px; font-weight: 600; }
+                    .tv-builder-save-btn:hover { background: rgba(74,144,226,0.5); }
+                    .tv-builder-new-btn { width: 100%; background: rgba(74,144,226,0.2); border: 1px solid rgba(74,144,226,0.4); color: #7ab4f5; border-radius: 4px; padding: 6px 0; cursor: pointer; font-size: 12px; margin-top: 8px; }
+                    .tv-builder-new-btn:hover { background: rgba(74,144,226,0.35); }
+                    .tv-builder-edit-btn { background: transparent; border: 1px solid rgba(255,255,255,0.2); color: rgba(255,255,255,0.55); border-radius: 3px; padding: 2px 7px; cursor: pointer; font-size: 10px; flex-shrink: 0; }
+                    .tv-builder-edit-btn:hover { background: rgba(255,255,255,0.08); color: #e0e0e0; }
+                    #tv-strategy-panel.builder-mode > :not(#tv-builder-form-view) { display: none !important; }
+                    #tv-strategy-panel.builder-mode > #tv-builder-form-view { display: flex; flex-direction: column; }
+                    .tv-builder-vwap-d1-warn { color: #f0c040; font-size: 10px; margin-top: 4px; }
+                    #tv-risk-widget { display: flex; align-items: center; gap: 6px; padding: 6px 10px 6px 10px; font-size: 12px; border-bottom: 1px solid rgba(255,255,255,0.07); margin-bottom: 4px; flex-shrink: 0; }
+                    .tv-risk-label { color: rgba(255,255,255,0.45); font-size: 11px; }
+                    #tv-risk-value { font-weight: 600; color: #4CAF50; min-width: 36px; }
+                    .tv-risk-sep { color: rgba(255,255,255,0.3); font-size: 11px; }
+                `;
+                document.head.appendChild(style);
+
+                // --- "Nueva estrategia" button ---
+                const strategyPanel = document.getElementById("tv-strategy-panel");
+                if (!strategyPanel) return;
+                const newBtn = document.createElement("button");
+                newBtn.id = "tv-builder-new-btn";
+                newBtn.type = "button";
+                newBtn.className = "tv-builder-new-btn";
+                newBtn.innerText = "Nueva estrategia";
+                newBtn.addEventListener("click", () => {
+                    window.callbackFunction(window._strategyBuilderState._handler + "_~_strategy_builder_new");
+                });
+                strategyPanel.appendChild(newBtn);
+
+                // --- Builder form view ---
+                const formView = document.createElement("div");
+                formView.id = "tv-builder-form-view";
+                formView.className = "tv-builder-form";
+                formView.innerHTML = `
+                    <div class="tv-builder-header">
+                        <span class="tv-builder-title" id="tv-builder-title">Nueva estrategia</span>
+                        <button type="button" id="tv-builder-cancel" class="tv-builder-cancel-btn">Cancelar</button>
+                    </div>
+                    <div class="tv-builder-body">
+                        <div class="tv-builder-section">
+                            <label>Nombre (id)</label>
+                            <input id="tv-builder-name" type="text" placeholder="mi_estrategia" />
+                            <label>Nombre visible</label>
+                            <input id="tv-builder-display-name" type="text" placeholder="Mi Estrategia" />
+                            <label>Temporalidad</label>
+                            <select id="tv-builder-timeframe">
+                                <option value="M1">M1</option>
+                                <option value="M5">M5</option>
+                                <option value="M15">M15</option>
+                                <option value="M30">M30</option>
+                                <option value="H1">H1</option>
+                                <option value="H4">H4</option>
+                                <option value="D1">D1</option>
+                            </select>
+                        </div>
+                        <div class="tv-builder-section">
+                            <div class="tv-builder-section-title">Indicadores</div>
+                            <div class="tv-builder-indicator-picker">
+                                <select id="tv-builder-indicator-type">
+                                    <option value="EMA">EMA</option>
+                                    <option value="RSI">RSI</option>
+                                    <option value="BB">Bollinger Bands</option>
+                                    <option value="DONCHIAN">Donchian Channel</option>
+                                    <option value="ATR">ATR</option>
+                                    <option value="VWAP">VWAP</option>
+                                    <option value="VOLUME_RATIO">Volume Ratio</option>
+                                    <option value="SMA">SMA</option>
+                                    <option value="HMA">HMA (pre-computed)</option>
+                                    <option value="SUPERTREND">Supertrend (pre-computed)</option>
+                                    <option value="TCI">TCI (pre-computed)</option>
+                                </select>
+                                <button type="button" id="tv-builder-add-indicator">Añadir</button>
+                            </div>
+                            <div id="tv-builder-indicator-list" class="tv-builder-indicator-list"></div>
+                        </div>
+                        <div class="tv-builder-section">
+                            <div class="tv-builder-section-title">Condición de Compra</div>
+                            <div id="tv-builder-buy-tree" class="tv-builder-tree"></div>
+                        </div>
+                        <div class="tv-builder-section">
+                            <div class="tv-builder-section-title">Condición de Venta</div>
+                            <div id="tv-builder-sell-tree" class="tv-builder-tree"></div>
+                        </div>
+                    </div>
+                    <div class="tv-builder-footer">
+                        <div id="tv-builder-error" class="tv-builder-error" style="display:none"></div>
+                        <button type="button" id="tv-builder-save" class="tv-builder-save-btn">Guardar</button>
+                    </div>
+                `;
+                strategyPanel.appendChild(formView);
+
+                // --- Global builder state ---
+                window._strategyBuilderState = {
+                    is_new: true,
+                    magic_number: 0,
+                    editing_key: null,
+                    buy_tree: null,
+                    sell_tree: null,
+                    indicators: [],
+                    _handler: ""
+                };
+
+                // --- openStrategyBuilder(config) ---
+                window.openStrategyBuilder = (config) => {
+                    window._strategyBuilderState.is_new = !!config.is_new;
+                    window._strategyBuilderState.magic_number = config.magic_number || 0;
+                    window._strategyBuilderState.editing_key = config.editing_key || null;
+                    window._strategyBuilderState.indicators = config.indicators ? JSON.parse(JSON.stringify(config.indicators)) : [];
+                    window._strategyBuilderState.buy_tree = config.buy_condition || { "type": "AND", "children": [] };
+                    window._strategyBuilderState.sell_tree = config.sell_condition || { "type": "AND", "children": [] };
+                    window._strategyBuilderState._handler = config.handler || window._strategyBuilderState._handler;
+
+                    document.getElementById("tv-builder-title").innerText = config.is_new ? "Nueva estrategia" : ("Editar: " + (config.display_name || config.name || ""));
+                    const nameInput = document.getElementById("tv-builder-name");
+                    nameInput.value = config.name || "";
+                    nameInput.disabled = !config.is_new;
+                    document.getElementById("tv-builder-display-name").value = config.display_name || "";
+                    document.getElementById("tv-builder-timeframe").value = config.timeframe || "M1";
+
+                    window._builderRenderIndicators();
+                    window._builderRenderTree("buy");
+                    window._builderRenderTree("sell");
+                    window.setBuilderError("");
+
+                    strategyPanel.classList.add("builder-mode");
+                };
+
+                // --- closeStrategyBuilder() ---
+                window.closeStrategyBuilder = () => {
+                    strategyPanel.classList.remove("builder-mode");
+                };
+
+                // --- openStrategyBuilderError(msg) ---
+                window.openStrategyBuilderError = (msg) => {
+                    const empty = document.getElementById("tv-strategy-empty");
+                    if (empty) {
+                        empty.style.display = "block";
+                        empty.innerText = "Error: " + msg;
+                    }
+                };
+
+                // --- setBuilderError(msg) ---
+                window.setBuilderError = (msg) => {
+                    const errEl = document.getElementById("tv-builder-error");
+                    if (!errEl) return;
+                    if (msg) {
+                        errEl.innerText = msg;
+                        errEl.style.display = "block";
+                    } else {
+                        errEl.innerText = "";
+                        errEl.style.display = "none";
+                    }
+                };
+
+                // --- renderBuilderButtons(data) ---
+                window.renderBuilderButtons = (data) => {
+                    const strategies = data.strategies || [];
+                    strategies.forEach((strategy) => {
+                        if (!strategy.has_config) return;
+                        const row = document.querySelector(`.tv-strategy-item[data-key="${strategy.key}"]`);
+                        if (!row) return;
+                        if (row.querySelector(".tv-builder-edit-btn")) return;
+                        const editBtn = document.createElement("button");
+                        editBtn.type = "button";
+                        editBtn.className = "tv-builder-edit-btn";
+                        editBtn.innerText = "Editar";
+                        editBtn.addEventListener("click", (e) => {
+                            e.stopPropagation();
+                            const handler = (data && data.handler) ? data.handler : "";
+                            const key = encodeURIComponent(String(strategy.key || ""));
+                            window.callbackFunction(handler + "_~_strategy_builder_open;;;" + key);
+                        });
+                        const right = row.querySelector(".tv-strategy-right");
+                        if (right) right.appendChild(editBtn);
+                    });
+                };
+
+                // --- Indicator list rendering ---
+                const INDICATOR_PARAM_DEFS = {
+                    "EMA":          [{ key: "period", label: "Período", type: "int", min: 1, default: 9 }],
+                    "RSI":          [{ key: "period", label: "Período", type: "int", min: 2, default: 14 }],
+                    "BB":           [{ key: "period", label: "Período", type: "int", min: 2, default: 20 },
+                                     { key: "multiplier", label: "Multiplicador", type: "float", min: 0.1, default: 2.0 }],
+                    "DONCHIAN":     [{ key: "period", label: "Período", type: "int", min: 2, default: 12 }],
+                    "ATR":          [{ key: "period", label: "Período", type: "int", min: 1, default: 14 }],
+                    "VWAP":         [],
+                    "VOLUME_RATIO": [{ key: "lookback", label: "Lookback", type: "int", min: 2, default: 30 }],
+                    "SMA":          [{ key: "period", label: "Período", type: "int", min: 1, default: 20 }],
+                    "HMA":          [],
+                    "SUPERTREND":   [],
+                    "TCI":          []
+                };
+
+                window._indicatorColumns = (ind) => {
+                    const p = ind.params || {};
+                    switch (ind.id) {
+                        case "EMA":          return [`ema_${p.period}`];
+                        case "RSI":          return [`rsi_${p.period}`];
+                        case "BB":           return [`bb_basis_${p.period}`, `bb_upper_${p.period}`, `bb_lower_${p.period}`, `bb_width_pct_${p.period}`];
+                        case "DONCHIAN":     return [`donchian_high_${p.period}`, `donchian_low_${p.period}`, `donchian_mid_${p.period}`];
+                        case "ATR":          return [`atr_${p.period}`, `atr_pct_${p.period}`];
+                        case "VWAP":         return ["vwap"];
+                        case "VOLUME_RATIO": return [`volume_ratio_${p.lookback}`];
+                        case "SMA":          return [`sma_${p.period}`];
+                        case "HMA":          return ["hma"];
+                        case "SUPERTREND":   return ["supertrend", "supertrend_dir", "supertrend_up", "supertrend_down"];
+                        case "TCI":          return ["tci", "tci_signal", "tci_hist"];
+                        default:             return [];
+                    }
+                };
+
+                const ALWAYS_AVAILABLE_COLS = ["open", "high", "low", "close", "OHLC4", "HLC3", "HL2",
+                                               "tick_volume", "average", "atr", "upper", "lower"];
+
+                window._builderGetColumns = () => {
+                    const cols = new Set(ALWAYS_AVAILABLE_COLS);
+                    (window._strategyBuilderState.indicators || []).forEach((ind) => {
+                        window._indicatorColumns(ind).forEach(c => cols.add(c));
+                    });
+                    return Array.from(cols).sort();
+                };
+
+                window._builderRenderIndicators = () => {
+                    const list = document.getElementById("tv-builder-indicator-list");
+                    if (!list) return;
+                    list.innerHTML = "";
+                    // VWAP + D1 warning
+                    const tfSel = document.getElementById("tv-builder-timeframe");
+                    const hasVWAP = (window._strategyBuilderState.indicators || []).some(i => i.id === "VWAP");
+                    const isD1 = tfSel && tfSel.value === "D1";
+                    if (hasVWAP && isD1) {
+                        const warn = document.createElement("div");
+                        warn.className = "tv-builder-vwap-d1-warn";
+                        warn.innerText = "⚠ VWAP con D1 puede producir señales inesperadas.";
+                        list.appendChild(warn);
+                    }
+                    (window._strategyBuilderState.indicators || []).forEach((ind, idx) => {
+                        const row = document.createElement("div");
+                        row.className = "tv-builder-indicator-row";
+                        const label = document.createElement("span");
+                        label.className = "tv-builder-indicator-label";
+                        label.innerText = ind.id;
+                        row.appendChild(label);
+                        const paramDefs = INDICATOR_PARAM_DEFS[ind.id] || [];
+                        paramDefs.forEach((def) => {
+                            const inp = document.createElement("input");
+                            inp.type = "number";
+                            inp.min = def.min;
+                            inp.step = def.type === "float" ? "0.1" : "1";
+                            inp.value = (ind.params && ind.params[def.key] !== undefined) ? ind.params[def.key] : def.default;
+                            inp.title = def.label;
+                            inp.addEventListener("change", () => {
+                                const val = def.type === "float" ? parseFloat(inp.value) : parseInt(inp.value, 10);
+                                ind.params[def.key] = isNaN(val) ? def.default : val;
+                                ind.columns = window._indicatorColumns(ind);
+                                window._builderRenderTree("buy");
+                                window._builderRenderTree("sell");
+                            });
+                            row.appendChild(inp);
+                        });
+                        const removeBtn = document.createElement("button");
+                        removeBtn.type = "button";
+                        removeBtn.innerText = "✕";
+                        removeBtn.addEventListener("click", () => {
+                            window._strategyBuilderState.indicators.splice(idx, 1);
+                            window._builderRenderIndicators();
+                            window._builderRenderTree("buy");
+                            window._builderRenderTree("sell");
+                        });
+                        row.appendChild(removeBtn);
+                        list.appendChild(row);
+                    });
+                };
+
+                document.getElementById("tv-builder-add-indicator").addEventListener("click", () => {
+                    const typeSelect = document.getElementById("tv-builder-indicator-type");
+                    const id = typeSelect.value;
+                    const paramDefs = INDICATOR_PARAM_DEFS[id] || [];
+                    const params = {};
+                    paramDefs.forEach(def => { params[def.key] = def.default; });
+                    const preComputed = ["HMA", "SUPERTREND", "TCI"].includes(id);
+                    const newInd = {
+                        id,
+                        params,
+                        columns: window._indicatorColumns({ id, params }),
+                        pre_computed: preComputed
+                    };
+                    window._strategyBuilderState.indicators.push(newInd);
+                    window._builderRenderIndicators();
+                    window._builderRenderTree("buy");
+                    window._builderRenderTree("sell");
+                });
+
+                // --- Condition Tree rendering (recursive) ---
+                const OPERATORS = ["<", ">", "<=", ">=", "==", "!="];
+
+                window._builderRenderNode = (node, containerEl, onRemove, depth) => {
+                    depth = depth || 0;
+                    if (node.type === "condition") {
+                        const row = document.createElement("div");
+                        row.className = "tv-builder-condition-leaf";
+
+                        const cols = window._builderGetColumns();
+
+                        const leftSel = document.createElement("select");
+                        leftSel.className = "tv-builder-col-sel";
+                        cols.forEach(c => {
+                            const opt = document.createElement("option");
+                            opt.value = c; opt.text = c;
+                            if (c === node.left) opt.selected = true;
+                            leftSel.appendChild(opt);
+                        });
+                        leftSel.addEventListener("change", () => { node.left = leftSel.value; });
+
+                        const opSel = document.createElement("select");
+                        opSel.className = "tv-builder-op-sel";
+                        OPERATORS.forEach(op => {
+                            const opt = document.createElement("option");
+                            opt.value = op; opt.text = op;
+                            if (op === node.op) opt.selected = true;
+                            opSel.appendChild(opt);
+                        });
+                        opSel.addEventListener("change", () => { node.op = opSel.value; });
+
+                        const rightTypeBtn = document.createElement("button");
+                        rightTypeBtn.type = "button";
+                        rightTypeBtn.className = "tv-builder-right-type";
+                        const isColumnRef = typeof node.right === "string";
+                        rightTypeBtn.innerText = isColumnRef ? "col" : "val";
+                        rightTypeBtn.title = isColumnRef ? "Cambiar a valor escalar" : "Cambiar a columna";
+
+                        const rightColSel = document.createElement("select");
+                        rightColSel.className = "tv-builder-col-sel";
+                        rightColSel.style.display = isColumnRef ? "" : "none";
+                        cols.forEach(c => {
+                            const opt = document.createElement("option");
+                            opt.value = c; opt.text = c;
+                            if (c === node.right) opt.selected = true;
+                            rightColSel.appendChild(opt);
+                        });
+                        rightColSel.addEventListener("change", () => { node.right = rightColSel.value; });
+
+                        const rightNumInp = document.createElement("input");
+                        rightNumInp.type = "number";
+                        rightNumInp.step = "any";
+                        rightNumInp.className = "tv-builder-num-inp";
+                        rightNumInp.style.display = isColumnRef ? "none" : "";
+                        rightNumInp.value = isColumnRef ? 0 : node.right;
+                        rightNumInp.addEventListener("change", () => {
+                            const v = parseFloat(rightNumInp.value);
+                            node.right = isNaN(v) ? 0 : v;
+                        });
+
+                        rightTypeBtn.addEventListener("click", () => {
+                            const nowCol = rightColSel.style.display !== "none";
+                            if (nowCol) {
+                                rightColSel.style.display = "none";
+                                rightNumInp.style.display = "";
+                                rightTypeBtn.innerText = "val";
+                                node.right = parseFloat(rightNumInp.value) || 0;
+                            } else {
+                                rightNumInp.style.display = "none";
+                                rightColSel.style.display = "";
+                                rightTypeBtn.innerText = "col";
+                                node.right = rightColSel.value || cols[0] || "close";
+                            }
+                        });
+
+                        const removeBtn = document.createElement("button");
+                        removeBtn.type = "button";
+                        removeBtn.className = "tv-builder-remove-btn";
+                        removeBtn.innerText = "✕";
+                        removeBtn.addEventListener("click", () => { if (onRemove) onRemove(); });
+
+                        row.appendChild(leftSel);
+                        row.appendChild(opSel);
+                        row.appendChild(rightTypeBtn);
+                        row.appendChild(rightColSel);
+                        row.appendChild(rightNumInp);
+                        row.appendChild(removeBtn);
+                        containerEl.appendChild(row);
+
+                    } else if (node.type === "AND" || node.type === "OR") {
+                        const group = document.createElement("div");
+                        group.className = "tv-builder-condition-group";
+                        group.setAttribute("data-depth", depth);
+
+                        const groupHeader = document.createElement("div");
+                        groupHeader.className = "tv-builder-group-header";
+
+                        const typeToggle = document.createElement("button");
+                        typeToggle.type = "button";
+                        typeToggle.className = "tv-builder-group-type";
+                        typeToggle.innerText = node.type;
+                        typeToggle.addEventListener("click", () => {
+                            node.type = node.type === "AND" ? "OR" : "AND";
+                            typeToggle.innerText = node.type;
+                        });
+
+                        const addCondBtn = document.createElement("button");
+                        addCondBtn.type = "button";
+                        addCondBtn.className = "tv-builder-add-cond-btn";
+                        addCondBtn.innerText = "+ Condición";
+                        addCondBtn.addEventListener("click", () => {
+                            const newLeaf = { type: "condition", left: "close", op: ">", right: 0 };
+                            node.children.push(newLeaf);
+                            renderChildren();
+                        });
+
+                        const addGroupBtn = document.createElement("button");
+                        addGroupBtn.type = "button";
+                        addGroupBtn.className = "tv-builder-add-group-btn";
+                        addGroupBtn.innerText = "+ Grupo";
+                        addGroupBtn.disabled = depth >= 4;
+                        addGroupBtn.addEventListener("click", () => {
+                            if (depth >= 4) return;
+                            const newGroup = { type: "AND", children: [] };
+                            node.children.push(newGroup);
+                            renderChildren();
+                        });
+
+                        const removeGroupBtn = document.createElement("button");
+                        removeGroupBtn.type = "button";
+                        removeGroupBtn.className = "tv-builder-remove-btn";
+                        removeGroupBtn.innerText = "✕";
+                        removeGroupBtn.addEventListener("click", () => { if (onRemove) onRemove(); });
+
+                        groupHeader.appendChild(typeToggle);
+                        groupHeader.appendChild(addCondBtn);
+                        if (depth > 0) {
+                            groupHeader.appendChild(addGroupBtn);
+                            groupHeader.appendChild(removeGroupBtn);
+                        } else {
+                            groupHeader.appendChild(addGroupBtn);
+                        }
+                        group.appendChild(groupHeader);
+
+                        const childContainer = document.createElement("div");
+                        childContainer.className = "tv-builder-group-children";
+                        group.appendChild(childContainer);
+
+                        const renderChildren = () => {
+                            childContainer.innerHTML = "";
+                            node.children.forEach((child, i) => {
+                                window._builderRenderNode(child, childContainer, () => {
+                                    node.children.splice(i, 1);
+                                    renderChildren();
+                                }, depth + 1);
+                            });
+                        };
+                        renderChildren();
+
+                        containerEl.appendChild(group);
+                    }
+                };
+
+                window._builderRenderTree = (side) => {
+                    const containerId = side === "buy" ? "tv-builder-buy-tree" : "tv-builder-sell-tree";
+                    const container = document.getElementById(containerId);
+                    if (!container) return;
+                    container.innerHTML = "";
+                    const tree = side === "buy" ? window._strategyBuilderState.buy_tree : window._strategyBuilderState.sell_tree;
+                    if (!tree) return;
+                    window._builderRenderNode(tree, container, null, 0);
+                };
+
+                // --- Cancel button ---
+                document.getElementById("tv-builder-cancel").addEventListener("click", () => {
+                    window.closeStrategyBuilder();
+                });
+
+                // --- Save button ---
+                document.getElementById("tv-builder-save").addEventListener("click", () => {
+                    window.setBuilderError("");
+                    const state = window._strategyBuilderState;
+                    const name = (document.getElementById("tv-builder-name").value || "").trim();
+                    const displayName = (document.getElementById("tv-builder-display-name").value || "").trim();
+                    const timeframe = document.getElementById("tv-builder-timeframe").value;
+
+                    if (!name) { window.setBuilderError("El nombre (id) es obligatorio."); return; }
+                    if (!/^[a-z][a-z0-9_]*$/.test(name)) { window.setBuilderError("El nombre solo puede tener letras minúsculas, números y guión bajo, y debe empezar con letra."); return; }
+                    if (!displayName) { window.setBuilderError("El nombre visible es obligatorio."); return; }
+
+                    const buyTree = state.buy_tree;
+                    const sellTree = state.sell_tree;
+                    if (!buyTree || !buyTree.children || buyTree.children.length === 0) {
+                        window.setBuilderError("La condición de compra no puede estar vacía.");
+                        return;
+                    }
+                    if (!sellTree || !sellTree.children || sellTree.children.length === 0) {
+                        window.setBuilderError("La condición de venta no puede estar vacía.");
+                        return;
+                    }
+
+                    const config = {
+                        schema_version: 1,
+                        name: name,
+                        display_name: displayName,
+                        description: "",
+                        timeframe: timeframe,
+                        magic_number: state.magic_number,
+                        indicators: JSON.parse(JSON.stringify(state.indicators)),
+                        buy_condition: JSON.parse(JSON.stringify(buyTree)),
+                        sell_condition: JSON.parse(JSON.stringify(sellTree)),
+                        _is_new: state.is_new,
+                        _editing_key: state.editing_key
+                    };
+
+                    const json = JSON.stringify(config);
+                    window.callbackFunction(state._handler + "_~_strategy_builder_save;;;" + encodeURIComponent(json));
+                });
+
+            })();
+        ''')
+        self.chart.run_script(f'''
+            ;(function() {{
+                if (window._strategyBuilderState) {{
+                    window._strategyBuilderState._handler = "{self.side_panel_handler}";
+                }}
+            }})();
+        ''')
+
     def _apply_strategy_processing_with_module(self, df: pd.DataFrame, module, strategy_key: str = "") -> pd.DataFrame:
         # esta funcion sirve para aplicar el procesado de una estrategia con su modulo.
-        module = module or default_strategy_module
-        label = strategy_key or self.current_strategy_key or "ema_rsi_trend"
+        if module is None:
+            return df
+        label = strategy_key or self.current_strategy_key or ""
         try:
             if hasattr(module, "prepare_dataframe"):
                 result = module.prepare_dataframe(df)
@@ -1536,17 +2112,9 @@ class TradingBotGUI:
         verbose: bool = False
     ) -> dict:
         # esta funcion sirve para obtener payload de señal con modulo.
-        module = module or default_strategy_module
-        label = strategy_key or self.current_strategy_key or "ema_rsi_trend"
-        if getattr(config, "TEST_MODE", False):
-            if hasattr(module, "get_test_signal"):
-                return self._normalize_signal_payload(
-                    {"signal": module.get_test_signal(), "reason": "test_mode"}
-                )
-            return self._normalize_signal_payload(
-                {"signal": default_strategy_module.get_test_signal(), "reason": "test_mode"}
-            )
-
+        if module is None:
+            return {"signal": "none", "reason": ""}
+        label = strategy_key or self.current_strategy_key or ""
         payload = None
         if hasattr(module, "get_last_signal_payload"):
             try:
@@ -2006,115 +2574,6 @@ class TradingBotGUI:
                         font-size: 11px;
                         line-height: 1.4;
                         color: #9a9a9a;
-                    }
-                    .tv-feedback-form {
-                        display: flex;
-                        flex-direction: column;
-                        gap: 8px;
-                    }
-                    .tv-feedback-form input,
-                    .tv-feedback-form textarea {
-                        background: #1a1a1a;
-                        border: 1px solid #333333;
-                        color: var(--tv-text-primary);
-                        padding: 8px;
-                        border-radius: 6px;
-                        font-size: 12px;
-                    }
-                    .tv-feedback-form textarea {
-                        resize: vertical;
-                        min-height: 90px;
-                    }
-                    .tv-feedback-form button {
-                        background: #2b2b2b;
-                        color: var(--tv-text-primary);
-                        border: 1px solid #3a3a3a;
-                        padding: 8px;
-                        border-radius: 6px;
-                        font-size: 12px;
-                        cursor: pointer;
-                    }
-                    .tv-feedback-form button:hover {
-                        background: #3a3a3a;
-                    }
-                    .tv-feedback-hint {
-                        font-size: 11px;
-                        color: #7a7a7a;
-                    }
-                    .tv-feedback-status {
-                        font-size: 11px;
-                        color: #9aa0a6;
-                        min-height: 14px;
-                    }
-                    .tv-feedback-status.success {
-                        color: #5fd6a3;
-                    }
-                    .tv-feedback-status.error {
-                        color: #ff8a80;
-                    }
-                    .tv-feedback-actions {
-                        display: flex;
-                        gap: 8px;
-                        align-items: center;
-                    }
-                    .tv-feedback-refresh {
-                        background: #2b2b2b;
-                        color: var(--tv-text-primary);
-                        border: 1px solid #3a3a3a;
-                        padding: 6px 10px;
-                        border-radius: 6px;
-                        font-size: 11px;
-                        cursor: pointer;
-                    }
-                    .tv-feedback-refresh:hover {
-                        background: #3a3a3a;
-                    }
-                    .tv-feedback-list-status {
-                        font-size: 11px;
-                        color: #9aa0a6;
-                        min-height: 14px;
-                    }
-                    .tv-feedback-list-status.success {
-                        color: #5fd6a3;
-                    }
-                    .tv-feedback-list-status.error {
-                        color: #ff8a80;
-                    }
-                    .tv-feedback-list {
-                        display: flex;
-                        flex-direction: column;
-                        gap: 8px;
-                    }
-                    .tv-feedback-item {
-                        background: #1f1f1f;
-                        border: 1px solid #2a2a2a;
-                        border-radius: 6px;
-                        padding: 8px;
-                        display: flex;
-                        flex-direction: column;
-                        gap: 4px;
-                    }
-                    .tv-feedback-item-title {
-                        font-size: 12px;
-                        font-weight: 600;
-                        color: var(--tv-text-primary);
-                    }
-                    .tv-feedback-item-message {
-                        font-size: 11px;
-                        color: #c8c8c8;
-                        white-space: pre-wrap;
-                        line-height: 1.4;
-                    }
-                    .tv-feedback-item-meta {
-                        font-size: 10px;
-                        color: #8c8c8c;
-                        display: flex;
-                        flex-wrap: wrap;
-                        gap: 8px;
-                    }
-                    .tv-feedback-empty {
-                        font-size: 11px;
-                        color: #7a7a7a;
                     }
                     .tv-legacy-panel {
                         flex: 1;
@@ -2823,7 +3282,6 @@ class TradingBotGUI:
                 config.SL_POINTS,
                 config.TP_POINTS,
                 self._selected_strategy_magic(),
-                timeframe_value=timeframe_value,
                 strategy_key=strategy_key,
                 strategy_label=strategy_label,
                 signal_reason="trade_manual_rapido"
@@ -2971,20 +3429,11 @@ class TradingBotGUI:
 
         self._refresh_object_tree_items(render=False)
         items = self.object_tree_items
-        save_dir = getattr(config, "FEEDBACK_SAVE_DIR", "feedback") or "feedback"
-        webhook_url = (getattr(config, "FEEDBACK_WEBHOOK_URL", "") or "").strip()
-        if webhook_url:
-            feedback_target = "Webhook"
-        else:
-            feedback_target = f"Archivo local ({save_dir})"
-        feedback_list_url = ""
-        list_url_getter = getattr(self, "_get_feedback_list_url", None)
-        if callable(list_url_getter):
-            feedback_list_url = list_url_getter()
-        self._build_side_panel(items, feedback_target, feedback_list_url)
+        self._build_side_panel(items)
         self._render_strategy_panel()
+        self._build_strategy_builder_ui()
 
-    def _build_side_panel(self, items, feedback_target: str, feedback_list_url: str):
+    def _build_side_panel(self, items):
         # esta funcion sirve para construir panel lateral.
         icons = self._get_side_panel_icons()
 
@@ -2998,8 +3447,6 @@ class TradingBotGUI:
             "strategy_data_options": self._get_strategy_data_scope_options(items),
             "strategy_data_selected": self._get_strategy_data_scope(items),
             "strategy_data_all_actives": bool(self.strategy_data_all_actives),
-            "feedback_target": feedback_target or "Archivo local",
-            "feedback_list_url": feedback_list_url or "",
         })
 
         self.chart.run_script(f'''            ;(function() {{
@@ -3026,134 +3473,6 @@ class TradingBotGUI:
                 <div class="tv-section-title">Noticias del mercado</div>
                 <div class="tv-section-desc">Aquí aparecerán noticias relevantes del mercado actual (próximamente).</div>
             `;
-
-            const feedbackPanel = document.createElement("div");
-            feedbackPanel.id = "tv-feedback-panel";
-            feedbackPanel.className = "tv-side-content";
-            feedbackPanel.style.display = "none";
-
-            const feedbackTitle = document.createElement("div");
-            feedbackTitle.className = "tv-section-title";
-            feedbackTitle.innerText = "Envíanos sugerencias";
-
-            const feedbackDesc = document.createElement("div");
-            feedbackDesc.className = "tv-section-desc";
-            feedbackDesc.innerText = "Escribe tu sugerencia o petición.";
-
-            const form = document.createElement("div");
-            form.className = "tv-feedback-form";
-
-            const subjectInput = document.createElement("input");
-            subjectInput.id = "tv-feedback-subject";
-            subjectInput.type = "text";
-            subjectInput.placeholder = "Asunto (opcional)";
-
-            const messageInput = document.createElement("textarea");
-            messageInput.id = "tv-feedback-message";
-            messageInput.placeholder = "Describe tu sugerencia o mejora...";
-            messageInput.rows = 6;
-
-            const sendBtn = document.createElement("button");
-            sendBtn.type = "button";
-            sendBtn.innerText = "Enviar";
-
-            const statusLine = document.createElement("div");
-            statusLine.id = "tv-feedback-status";
-            statusLine.className = "tv-feedback-status";
-
-            const feedbackHint = document.createElement("div");
-            feedbackHint.className = "tv-feedback-hint";
-            feedbackHint.innerText = "Destino: " + (payload.feedback_target || "Archivo local");
-
-            const listTitle = document.createElement("div");
-            listTitle.className = "tv-section-title";
-            listTitle.innerText = "Mensajes recibidos";
-
-            const listDesc = document.createElement("div");
-            listDesc.className = "tv-section-desc";
-            listDesc.innerText = "Últimos mensajes guardados en el servidor.";
-
-            const listActions = document.createElement("div");
-            listActions.className = "tv-feedback-actions";
-            const refreshBtn = document.createElement("button");
-            refreshBtn.type = "button";
-            refreshBtn.className = "tv-feedback-refresh";
-            refreshBtn.innerText = "Actualizar";
-            const listStatus = document.createElement("div");
-            listStatus.id = "tv-feedback-list-status";
-            listStatus.className = "tv-feedback-list-status";
-            listActions.appendChild(refreshBtn);
-            listActions.appendChild(listStatus);
-
-            const listContainer = document.createElement("div");
-            listContainer.id = "tv-feedback-list";
-            listContainer.className = "tv-feedback-list";
-
-            const setStatus = (text, kind) => {{
-                statusLine.innerText = text || "";
-                statusLine.classList.remove("success", "error");
-                if (kind === "success") {{
-                    statusLine.classList.add("success");
-                }}
-                if (kind === "error") {{
-                    statusLine.classList.add("error");
-                }}
-            }};
-
-            const sendFeedback = () => {{
-                const subjectRaw = (subjectInput.value || "Sugerencia Trading Agent").trim();
-                const bodyRaw = (messageInput.value || "").trim();
-                if (!bodyRaw) {{
-                    setStatus("Escribe un mensaje antes de enviar.", "error");
-                    return;
-                }}
-                setStatus("Enviando...", "");
-                const subject = encodeURIComponent(subjectRaw);
-                const body = encodeURIComponent(bodyRaw);
-                window.callbackFunction(payload.handler + "_~_feedback_send;;;" + subject + ";;;" + body);
-            }};
-
-            const setListStatus = (text, kind) => {{
-                listStatus.innerText = text || "";
-                listStatus.classList.remove("success", "error");
-                if (kind === "success") {{
-                    listStatus.classList.add("success");
-                }}
-                if (kind === "error") {{
-                    listStatus.classList.add("error");
-                }}
-            }};
-
-            const requestList = () => {{
-                if (!payload.feedback_list_url) {{
-                    setListStatus("Servidor no configurado.", "error");
-                    return;
-                }}
-                setListStatus("Cargando...", "");
-                window.callbackFunction(payload.handler + "_~_feedback_list");
-            }};
-
-            sendBtn.addEventListener("click", sendFeedback);
-            messageInput.addEventListener("keydown", (e) => {{
-                if (e.key === "Enter" && (e.ctrlKey || e.metaKey)) {{
-                    sendFeedback();
-                }}
-            }});
-            refreshBtn.addEventListener("click", requestList);
-
-            form.appendChild(subjectInput);
-            form.appendChild(messageInput);
-            form.appendChild(sendBtn);
-            form.appendChild(statusLine);
-            form.appendChild(feedbackHint);
-
-            feedbackPanel.appendChild(feedbackTitle);
-            feedbackPanel.appendChild(feedbackDesc);
-            feedbackPanel.appendChild(form);
-            feedbackPanel.appendChild(listTitle);
-            feedbackPanel.appendChild(listDesc);
-            feedbackPanel.appendChild(listActions);
-            feedbackPanel.appendChild(listContainer);
 
             const legacyPanel = document.createElement("div");
             legacyPanel.id = "tv-legacy-panel";
@@ -3387,6 +3706,31 @@ class TradingBotGUI:
             addBox.appendChild(fileInput);
             addBox.appendChild(addBtn);
 
+            let riskWidget = document.getElementById("tv-risk-widget");
+            if (!riskWidget) {{
+                riskWidget = document.createElement("div");
+                riskWidget.id = "tv-risk-widget";
+                riskWidget.className = "tv-risk-widget";
+
+                const riskLabel = document.createElement("span");
+                riskLabel.className = "tv-risk-label";
+                riskLabel.innerText = "Riesgo:";
+
+                const riskValue = document.createElement("span");
+                riskValue.id = "tv-risk-value";
+                riskValue.className = "tv-risk-value";
+                riskValue.innerText = "--";
+
+                const riskSep = document.createElement("span");
+                riskSep.className = "tv-risk-sep";
+                riskSep.innerText = "/ 3.0%";
+
+                riskWidget.appendChild(riskLabel);
+                riskWidget.appendChild(riskValue);
+                riskWidget.appendChild(riskSep);
+            }}
+            strategyPanel.appendChild(riskWidget);
+
             strategyPanel.appendChild(strategyList);
             strategyPanel.appendChild(strategyEmpty);
             strategyPanel.appendChild(runBox);
@@ -3424,7 +3768,6 @@ class TradingBotGUI:
             }});
 
             panel.appendChild(newsPanel);
-            panel.appendChild(feedbackPanel);
             panel.appendChild(legacyPanel);
             if (!panel.parentElement) {{
                 container.appendChild(panel);
@@ -4177,27 +4520,15 @@ class TradingBotGUI:
                     key: "news",
                     label: "Noticias",
                     icon: "<svg viewBox='0 0 16 16' fill='none' stroke='currentColor' stroke-width='1.3'><rect x='2' y='3' width='12' height='10' rx='1.5'/><path d='M5 6 H11'/><path d='M5 8 H11'/><path d='M5 10 H9'/></svg>"
-                }},
-                {{
-                    key: "feedback",
-                    label: "Sugerencias",
-                    icon: "<svg viewBox='0 0 16 16' fill='none' stroke='currentColor' stroke-width='1.3'><path d='M2 4 H14 V12 H2 Z'/><path d='M2 4 L8 9 L14 4'/></svg>"
                 }}
             ];
             const buttons = {{}};
-            let feedbackLoaded = false;
-
             const activate = (key) => {{
                 newsPanel.style.display = key === "news" ? "flex" : "none";
-                feedbackPanel.style.display = key === "feedback" ? "flex" : "none";
                 legacyPanel.style.display = key === "legacy" ? "flex" : "none";
                 Object.keys(buttons).forEach((btnKey) => {{
                     buttons[btnKey].classList.toggle("active", btnKey === key);
                 }});
-                if (key === "feedback" && !feedbackLoaded) {{
-                    feedbackLoaded = true;
-                    requestList();
-                }}
             }};
 
             tools.forEach((tool) => {{
@@ -4218,14 +4549,6 @@ class TradingBotGUI:
     def on_side_panel_event(self, action, *args):
         # esta funcion sirve para reaccionar a panel lateral evento.
         action = (action or "").strip()
-        if action == "feedback_send":
-            subject = unquote(args[0]) if len(args) > 0 else ""
-            message = unquote(args[1]) if len(args) > 1 else ""
-            self._handle_feedback_send(subject, message)
-            return
-        if action == "feedback_list":
-            self._handle_feedback_list()
-            return
         if action == "toggle" and args:
             self.toggle_indicator(args[0])
             return
@@ -4259,232 +4582,17 @@ class TradingBotGUI:
         if action == "strategy_toggle":
             self._toggle_strategy_run()
             return
-
-    def _handle_feedback_send(self, subject: str, message: str):
-        # esta funcion sirve para gestionar envio de comentarios.
-        subject = (subject or "").strip() or "Sugerencia Trading Agent"
-        message = (message or "").strip()
-        if not message:
-            self._set_feedback_status("Escribe un mensaje antes de enviar.", "error")
+        if action == "strategy_builder_new":
+            self._on_strategy_builder_new()
             return
-
-        payload = {
-            "subject": subject,
-            "message": message,
-            "symbol": getattr(config, "SYMBOL", ""),
-            "strategy": self.current_strategy_key or "",
-            "timeframe": self.current_timeframe or "",
-            "timestamp": datetime.now(timezone.utc).isoformat().replace("+00:00", "Z"),
-        }
-
-        saved_ok = self._save_feedback_local(payload)
-        webhook_url = (getattr(config, "FEEDBACK_WEBHOOK_URL", "") or "").strip()
-        if webhook_url:
-            sent_ok, error = self._post_feedback_webhook(webhook_url, payload)
-            if sent_ok:
-                self._set_feedback_status("Enviado correctamente.", "success")
-            else:
-                if saved_ok:
-                    self._set_feedback_status("No se pudo enviar, pero quedó guardado localmente.", "error")
-                else:
-                    self._set_feedback_status("No se pudo enviar.", "error")
-                if error:
-                    self.log_message(f"Error enviando feedback: {error}")
+        if action == "strategy_builder_open" and args:
+            key = unquote(args[0]) if len(args) > 0 else ""
+            self._on_strategy_builder_open(key)
             return
-
-        if saved_ok:
-            self._set_feedback_status("Guardado localmente.", "success")
-        else:
-            self._set_feedback_status("No se pudo guardar localmente.", "error")
-
-    def _save_feedback_local(self, payload: dict) -> bool:
-        # esta funcion sirve para guardar comentarios local.
-        save_dir = getattr(config, "FEEDBACK_SAVE_DIR", "feedback") or "feedback"
-        try:
-            os.makedirs(save_dir, exist_ok=True)
-            filename = f"feedback_{datetime.now().strftime('%Y-%m-%d')}.jsonl"
-            path = os.path.join(save_dir, filename)
-            with open(path, "a", encoding="utf-8") as f:
-                f.write(json.dumps(payload) + "\n")
-            return True
-        except Exception as e:
-            self.log_message(f"Error al guardar feedback: {e}")
-            return False
-
-    def _post_feedback_webhook(self, url: str, payload: dict):
-        # esta funcion sirve para publicar comentarios webhook.
-        try:
-            data = json.dumps(payload).encode("utf-8")
-            request = urllib.request.Request(
-                url,
-                data=data,
-                headers={"Content-Type": "application/json"}
-            )
-            timeout = getattr(config, "FEEDBACK_TIMEOUT_SECONDS", 4) or 4
-            with urllib.request.urlopen(request, timeout=timeout) as response:
-                status = response.getcode()
-            if 200 <= status < 300:
-                return True, ""
-            return False, f"HTTP {status}"
-        except Exception as e:
-            return False, str(e)
-
-    def _get_feedback_list_url(self) -> str:
-        # esta funcion sirve para obtener la URL de la lista de comentarios.
-        list_url = (getattr(config, "FEEDBACK_LIST_URL", "") or "").strip()
-        if list_url:
-            return list_url
-
-        webhook_url = (getattr(config, "FEEDBACK_WEBHOOK_URL", "") or "").strip()
-        if not webhook_url:
-            return ""
-        try:
-            parsed = urlparse(webhook_url)
-            path = parsed.path or ""
-            if path.endswith("/feedback"):
-                path = path[:-len("/feedback")] + "/feedback/list"
-            else:
-                path = path.rstrip("/") + "/feedback/list"
-            return urlunparse(parsed._replace(path=path))
-        except Exception:
-            return ""
-
-    def _handle_feedback_list(self):
-        # esta funcion sirve para gestionar la lista de comentarios.
-        list_url = self._get_feedback_list_url()
-        if not list_url:
-            self._set_feedback_list([], "Servidor no configurado.", "error")
+        if action == "strategy_builder_save" and args:
+            json_str = unquote(args[0]) if len(args) > 0 else ""
+            self._on_strategy_builder_save(json_str)
             return
-        try:
-            request = urllib.request.Request(list_url, headers={"Accept": "application/json"})
-            timeout = getattr(config, "FEEDBACK_TIMEOUT_SECONDS", 4) or 4
-            with urllib.request.urlopen(request, timeout=timeout) as response:
-                data = response.read().decode("utf-8")
-            payload = json.loads(data)
-            items = payload.get("items", []) if isinstance(payload, dict) else []
-            if not isinstance(items, list):
-                items = []
-            status_text = f"{len(items)} mensajes"
-            self._set_feedback_list(items, status_text, "success")
-        except urllib.error.HTTPError as e:
-            if e.code == 401:
-                msg = "Token inválido o faltante (401)."
-                self.log_message(f"Error cargando feedback: {e}")
-            elif e.code == 403:
-                msg = "Acceso restringido para este equipo (403)."
-                self.log_message(f"Acceso denegado al listado de feedback: {e}")
-            elif e.code == 404:
-                msg = "Endpoint /feedback/list no disponible (404)."
-                if not getattr(self, "_feedback_list_404_seen", False):
-                    self.log_message(f"Error cargando feedback: {e}")
-                    self._feedback_list_404_seen = True
-            else:
-                msg = f"Error HTTP {e.code}."
-                self.log_message(f"Error cargando feedback: {e}")
-            self._set_feedback_list([], msg, "error")
-        except Exception as e:
-            self._set_feedback_list([], "No se pudo cargar.", "error")
-            self.log_message(f"Error cargando feedback: {e}")
-
-    def _set_feedback_list(self, items, status_text: str = "", kind: str = ""):
-        # esta funcion sirve para actualizar la lista de comentarios.
-        try:
-            items_js = json.dumps(items or [])
-        except Exception:
-            items_js = "[]"
-        status_js = json.dumps(status_text or "")
-        kind_js = json.dumps(kind or "")
-        self.chart.run_script(f'''
-            ;(function() {{
-                var list = document.getElementById("tv-feedback-list");
-                var status = document.getElementById("tv-feedback-list-status");
-                if (status) {{
-                    status.textContent = {status_js};
-                    status.classList.remove("success", "error");
-                    var kind = {kind_js};
-                    if (kind === "success") status.classList.add("success");
-                    if (kind === "error") status.classList.add("error");
-                }}
-                if (!list) return;
-                list.innerHTML = "";
-                var items = {items_js};
-                if (!items || !items.length) {{
-                    var empty = document.createElement("div");
-                    empty.className = "tv-feedback-empty";
-                    empty.innerText = "Sin mensajes.";
-                    list.appendChild(empty);
-                    return;
-                }}
-                items.forEach((item) => {{
-                    if (!item) return;
-                    var card = document.createElement("div");
-                    card.className = "tv-feedback-item";
-
-                    var title = document.createElement("div");
-                    title.className = "tv-feedback-item-title";
-                    title.innerText = item.subject || "Sin asunto";
-
-                    var message = document.createElement("div");
-                    message.className = "tv-feedback-item-message";
-                    message.innerText = item.message || "";
-
-                    var meta = document.createElement("div");
-                    meta.className = "tv-feedback-item-meta";
-                    var timeText = item.received_at || item.timestamp || "";
-                    if (timeText) {{
-                        var time = document.createElement("span");
-                        time.innerText = timeText;
-                        meta.appendChild(time);
-                    }}
-                    if (item.symbol) {{
-                        var symbol = document.createElement("span");
-                        symbol.innerText = item.symbol;
-                        meta.appendChild(symbol);
-                    }}
-                    if (item.strategy) {{
-                        var strat = document.createElement("span");
-                        strat.innerText = item.strategy;
-                        meta.appendChild(strat);
-                    }}
-                    if (item.timeframe) {{
-                        var tf = document.createElement("span");
-                        tf.innerText = item.timeframe;
-                        meta.appendChild(tf);
-                    }}
-
-                    card.appendChild(title);
-                    card.appendChild(message);
-                    if (meta.childNodes.length) {{
-                        card.appendChild(meta);
-                    }}
-                    list.appendChild(card);
-                }});
-            }})();
-        ''')
-
-    def _set_feedback_status(self, text: str, kind: str = ""):
-        # esta funcion sirve para actualizar comentarios estado.
-        text_js = json.dumps(text or "")
-        kind_js = json.dumps(kind or "")
-        clear_inputs = "true" if kind == "success" else "false"
-        self.chart.run_script(f'''
-            ;(function() {{
-                var status = document.getElementById("tv-feedback-status");
-                if (status) {{
-                    status.textContent = {text_js};
-                    status.classList.remove("success", "error");
-                    var kind = {kind_js};
-                    if (kind === "success") status.classList.add("success");
-                    if (kind === "error") status.classList.add("error");
-                }}
-                if ({clear_inputs}) {{
-                    var subject = document.getElementById("tv-feedback-subject");
-                    var message = document.getElementById("tv-feedback-message");
-                    if (subject) subject.value = "";
-                    if (message) message.value = "";
-                }}
-            }})();
-        ''')
 
     def _toggle_strategy_run(self):
         # este boton enciende o apaga el motor que ejecuta las estrategias.
@@ -4497,6 +4605,165 @@ class TradingBotGUI:
             # Estado inconsistente: el hilo no está vivo pero el flag sigue activo.
             self.bot_running = False
         self.start_bot()
+
+    def _on_strategy_builder_new(self):
+        # esta funcion sirve para abrir el constructor de estrategias vacío.
+        import random
+        used_magics = {int(e.get("magic_number") or 0) for e in self.strategy_registry.values()}
+        while True:
+            magic = random.randint(10000, 99999)
+            if magic not in used_magics:
+                break
+        payload = json.dumps({
+            "is_new": True,
+            "magic_number": magic,
+            "editing_key": None,
+            "name": "",
+            "display_name": "",
+            "timeframe": "M1",
+            "indicators": [],
+            "buy_condition": {"type": "AND", "children": []},
+            "sell_condition": {"type": "AND", "children": []},
+            "handler": self.side_panel_handler,
+        })
+        self.chart.run_script(f'''
+            ;(function() {{
+                const payload = {payload};
+                if (window.openStrategyBuilder) {{
+                    window.openStrategyBuilder(payload);
+                }}
+            }})();
+        ''')
+
+    def _on_strategy_builder_open(self, key: str):
+        # esta funcion sirve para abrir el constructor de estrategias con datos existentes.
+        key = (key or "").strip()
+        entry = self._get_strategy_entry(key)
+        if not entry:
+            self.chart.run_script(f'''
+                ;(function() {{
+                    if (window.openStrategyBuilderError) {{
+                        window.openStrategyBuilderError("Estrategia no encontrada: {key}");
+                    }}
+                }})();
+            ''')
+            return
+        strategy_dir = self._get_strategy_dir()
+        json_path = os.path.join(strategy_dir, f"strategy_{key}.json")
+        if not os.path.isfile(json_path):
+            self.chart.run_script('''
+                ;(function() {
+                    if (window.openStrategyBuilderError) {
+                        window.openStrategyBuilderError("No se encontró la configuración editable para esta estrategia.");
+                    }
+                })();
+            ''')
+            return
+        try:
+            with open(json_path, "r", encoding="utf-8") as f:
+                config_data = json.load(f)
+        except Exception as e:
+            err_escaped = json.dumps(str(e))
+            self.chart.run_script(f'''
+                ;(function() {{
+                    if (window.openStrategyBuilderError) {{
+                        window.openStrategyBuilderError("Error al leer configuración: " + {err_escaped});
+                    }}
+                }})();
+            ''')
+            return
+        config_data["is_new"] = False
+        config_data["editing_key"] = key
+        config_data["handler"] = self.side_panel_handler
+        payload = json.dumps(config_data)
+        self.chart.run_script(f'''
+            ;(function() {{
+                const payload = {payload};
+                if (window.openStrategyBuilder) {{
+                    window.openStrategyBuilder(payload);
+                }}
+            }})();
+        ''')
+
+    def _on_strategy_builder_save(self, json_str: str):
+        # esta funcion sirve para guardar una estrategia desde el constructor.
+        json_str = (json_str or "").strip()
+        if not json_str:
+            self._show_builder_error("Payload vacío.")
+            return
+        try:
+            config_data = json.loads(json_str)
+        except Exception as e:
+            self._show_builder_error(f"JSON inválido: {e}")
+            return
+        name = (config_data.get("name") or "").strip()
+        display_name = (config_data.get("display_name") or "").strip()
+        timeframe = (config_data.get("timeframe") or "").strip()
+        magic_number = config_data.get("magic_number")
+        is_new = bool(config_data.get("_is_new", True))
+        import re as _re
+        if not name or not _re.match(r'^[a-z][a-z0-9_]*$', name):
+            self._show_builder_error("Nombre inválido. Solo letras minúsculas, números y guión bajo.")
+            return
+        if not display_name:
+            self._show_builder_error("El nombre visible es obligatorio.")
+            return
+        valid_timeframes = {"M1", "M5", "M15", "M30", "H1", "H4", "D1"}
+        if timeframe not in valid_timeframes:
+            self._show_builder_error(f"Temporalidad inválida: {timeframe}")
+            return
+        if not isinstance(magic_number, int) or not (10000 <= magic_number <= 99999):
+            self._show_builder_error("Magic number inválido.")
+            return
+        if is_new and name in self.strategy_registry:
+            self._show_builder_error(f"Ya existe una estrategia con el nombre '{name}'.")
+            return
+        generator_config = {k: v for k, v in config_data.items() if not k.startswith("_")}
+        strategies_dir = self._get_strategy_dir()
+        try:
+            strategy_builder = importlib.import_module("strategies.builder")
+            py_path = strategy_builder.generate_strategy_file(
+                generator_config,
+                strategies_dir,
+                is_new=is_new
+            )
+        except ImportError:
+            self._show_builder_error("El generador de estrategias aún no está implementado (TASK-017).")
+            return
+        except Exception as e:
+            self._show_builder_error(f"Error al generar estrategia: {e}")
+            return
+        module_ref = str(py_path)
+        if name not in self.strategy_registry:
+            self._register_strategy(name, display_name, module_ref)
+        else:
+            entry = self.strategy_registry[name]
+            entry["label"] = display_name
+            entry["module"] = module_ref
+        entry = self.strategy_registry.get(name)
+        if entry:
+            self._load_strategy_entry(entry)
+            entry["enabled"] = True
+        config.ACTIVE_STRATEGIES = [e["key"] for e in self.strategy_registry.values() if e.get("enabled")]
+        self.chart.run_script('''
+            ;(function() {
+                if (window.closeStrategyBuilder) {
+                    window.closeStrategyBuilder();
+                }
+            })();
+        ''')
+        self._render_strategy_panel()
+
+    def _show_builder_error(self, message: str):
+        # esta funcion sirve para mostrar un error en el constructor de estrategias.
+        msg_escaped = json.dumps(message)
+        self.chart.run_script(f'''
+            ;(function() {{
+                if (window.setBuilderError) {{
+                    window.setBuilderError({msg_escaped});
+                }}
+            }})();
+        ''')
 
     def toggle_indicator(self, key: str):
         # esta funcion sirve para activar o desactivar indicador.
@@ -4660,13 +4927,7 @@ class TradingBotGUI:
             pass
     
     def log_message(self, message):
-        # esta funcion sirve para escribir en el log mensaje.
-        """Registra un mensaje."""
-        timestamp = datetime.now().strftime("%H:%M:%S")
-        try:
-            print(f"[{timestamp}] {message}")
-        except:
-            pass
+        pass
     
     def init_mt5(self):
         # esta funcion sirve para iniciar mt5.
@@ -6218,6 +6479,73 @@ class TradingBotGUI:
         self.log_message("Bot detenido")
         self._sync_strategy_status_ui()
     
+    def _update_risk_widget(self):
+        # esta funcion sirve para actualizar el widget de riesgo agregado en el panel.
+        try:
+            selected_entry = self._get_selected_strategy_entry()
+            if not isinstance(selected_entry, dict):
+                risk_pct = 0.0
+                color = "#888888"
+            else:
+                magic_number = int(selected_entry.get("magic_number") or 0)
+                symbol = getattr(config, "SYMBOL", "")
+
+                account = mt5.account_info()
+                balance = account.balance if account is not None else 0.0
+                if balance <= 0:
+                    risk_pct = 0.0
+                    color = "#888888"
+                else:
+                    symbol_info = mt5.symbol_info(symbol)
+                    tick_size = getattr(symbol_info, "trade_tick_size", 0.0) or 0.0
+                    tick_value = getattr(symbol_info, "trade_tick_value", 0.0) or 0.0
+                    if tick_size <= 0 or tick_value <= 0:
+                        risk_pct = 0.0
+                        color = "#888888"
+                    else:
+                        value_per_unit = tick_value / tick_size
+                        all_positions = mt5.positions_get(symbol=symbol)
+                        risk_money = 0.0
+                        if all_positions:
+                            for pos in all_positions:
+                                if getattr(pos, "magic", None) != magic_number:
+                                    continue
+                                if pos.type != mt5.ORDER_TYPE_BUY:
+                                    continue
+                                sl = pos.sl
+                                if sl <= 0:
+                                    continue
+                                distance = pos.price_open - sl
+                                if distance <= 0:
+                                    continue
+                                risk_money += pos.volume * distance * value_per_unit
+                        risk_pct = (risk_money / balance) * 100.0
+
+                        if risk_pct >= 3.0:
+                            color = "#ef5350"
+                        elif risk_pct >= 2.0:
+                            color = "#ffaa00"
+                        else:
+                            color = "#4CAF50"
+
+            self._current_aggregate_risk_pct = risk_pct
+
+            payload = json.dumps({
+                "risk_pct": round(risk_pct, 2),
+                "color": color,
+            })
+            self.chart.run_script(f'''
+                ;(function() {{
+                    const payload = {payload};
+                    const valEl = document.getElementById("tv-risk-value");
+                    if (!valEl) return;
+                    valEl.innerText = payload.risk_pct.toFixed(1) + "%";
+                    valEl.style.color = payload.color;
+                }})();
+            ''')
+        except Exception as e:
+            self.log_message(f"Error actualizando widget de riesgo: {e}")
+
     def bot_loop(self):
         # esta funcion sirve para ciclo del bot.
         """Bucle principal del bot."""
@@ -6231,11 +6559,7 @@ class TradingBotGUI:
                             break
                         continue
 
-                    test_mode = getattr(config, "TEST_MODE", False)
-                    if test_mode:
-                        market_open, market_status = True, "TEST_MODE (sin check)"
-                    else:
-                        market_open, market_status = trading.is_market_open(config.SYMBOL)
+                    market_open, market_status = trading.is_market_open(config.SYMBOL)
 
                     market_cache = {}
 
@@ -6285,7 +6609,6 @@ class TradingBotGUI:
                                 config.SL_POINTS,
                                 config.TP_POINTS,
                                 int(entry.get("magic_number") or config.MAGIC_NUMBER),
-                                timeframe_value=timeframe_value,
                                 strategy_key=entry.get("key", ""),
                                 strategy_label=entry.get("label", ""),
                                 signal_reason=signal_reason
@@ -6332,6 +6655,7 @@ class TradingBotGUI:
                         self.update_tci_chart(display_df)
 
                     self.update_balance()
+                    self._update_risk_widget()
                     self.update_quotes()
                     self._render_strategy_panel()
                     
