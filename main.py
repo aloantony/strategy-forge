@@ -178,14 +178,22 @@ def _resolve_strategy_magic_number(key: str, module, multi_mode: bool, magic_ove
 
 
 def load_active_strategies():
-    default_key = _slugify(getattr(config, "STRATEGY_KEY", "ema_rsi_trend") or "ema_rsi_trend")
+    raw_default_key = str(getattr(config, "STRATEGY_KEY", "") or "").strip()
+    default_key = _slugify(raw_default_key) if raw_default_key else ""
     default_module_ref = str(getattr(config, "STRATEGY_MODULE", "") or "").strip()
-    if not default_module_ref:
+    if default_key and not default_module_ref:
         default_module_ref = f"strategies.strategy_{default_key}"
 
     active_raw = getattr(config, "ACTIVE_STRATEGIES", None)
-    requested = list(active_raw) if isinstance(active_raw, (list, tuple, set)) and active_raw else [default_key]
     discovered_map = _discover_strategy_modules_from_dir()
+    if isinstance(active_raw, (list, tuple, set)) and active_raw:
+        requested = list(active_raw)
+    elif default_key:
+        requested = [default_key]
+    elif discovered_map:
+        requested = [next(iter(discovered_map.keys()))]
+    else:
+        requested = []
 
     entries = []
     used_keys = set()
@@ -256,9 +264,11 @@ def load_active_strategies():
         )
 
     if not entries:
-        fallback_key = default_key or "ema_rsi_trend"
+        fallback_key = default_key
         if discovered_map:
             fallback_key = next(iter(discovered_map.keys()), fallback_key)
+        if not fallback_key:
+            raise RuntimeError("No hay estrategias válidas disponibles en la carpeta configurada.")
         module_ref = ""
         module = None
         last_error = ""

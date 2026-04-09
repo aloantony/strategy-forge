@@ -1,5 +1,5 @@
 """
-strategies/builder.py — Strategy Builder generator module.
+strategy_builder/generator.py — Strategy Builder generator module.
 
 Provides generate_strategy_file() — the entry point that receives a validated
 StrategyConfig dict and writes strategies/strategy_<name>.py + strategy_<name>.json.
@@ -11,16 +11,18 @@ This module is NOT imported by generated strategies (isolation rule).
 """
 
 import ast
+import copy
 import json
 import random
 import re
+import types
 from pathlib import Path
 
 # ---------------------------------------------------------------------------
 # Constants
 # ---------------------------------------------------------------------------
 
-STRATEGIES_DIR = Path(__file__).parent
+STRATEGIES_DIR = Path(__file__).resolve().parent.parent / "strategies"
 
 ALLOWED_OPERATORS = {"<", ">", "<=", ">=", "==", "!="}
 
@@ -72,7 +74,25 @@ def generate_strategy_file(config: dict, strategies_dir: Path = None, is_new: bo
     if strategies_dir is None:
         strategies_dir = STRATEGIES_DIR
 
+    py_content = render_strategy_source(config)
+
     name = config["name"]
+
+    py_path = strategies_dir / f"strategy_{name}.py"
+    json_path = strategies_dir / f"strategy_{name}.json"
+
+    _write_atomic(py_path, py_content)
+    _write_atomic(json_path, json.dumps(config, indent=2, ensure_ascii=False))
+
+    return py_path
+
+
+def render_strategy_source(config: dict) -> str:
+    """Render a validated StrategyConfig into Python source code."""
+    name = config["name"]
+    if not name:
+        raise GeneratorError("Strategy name is required to render source.")
+
     display_name = config["display_name"]
     description = config.get("description", "")
     timeframe = config["timeframe"]
@@ -98,13 +118,14 @@ def generate_strategy_file(config: dict, strategies_dir: Path = None, is_new: bo
         _emit_docstring(display_name, description, timeframe),
         "import pandas as pd",
         _emit_module_constants(timeframe, magic_number, indicators),
+        _emit_strategy_object_tree_items(indicators),
         _emit_data_window_fields(indicators),
         _emit_helper_functions(indicators),
     ]
 
     if needs_prepare:
         sections.append(
-            _emit_prepare_dataframe(custom_indicators, needs_close, needs_high_low, needs_volume)
+            _emit_prepare_dataframe(indicators, custom_indicators, needs_close, needs_high_low, needs_volume)
         )
 
     payload_extra = config.get("payload_extra_fields", [])
@@ -120,13 +141,28 @@ def generate_strategy_file(config: dict, strategies_dir: Path = None, is_new: bo
     except SyntaxError as exc:
         raise GeneratorError(f"Generated code failed ast.parse: {exc}") from exc
 
-    py_path = strategies_dir / f"strategy_{name}.py"
-    json_path = strategies_dir / f"strategy_{name}.json"
+    return py_content
 
-    _write_atomic(py_path, py_content)
-    _write_atomic(json_path, json.dumps(config, indent=2, ensure_ascii=False))
 
-    return py_path
+def build_strategy_module(
+    config: dict,
+    strategies_dir: Path = None,
+    is_new: bool = False,
+    module_name: str = "strategy_builder_preview",
+):
+    """
+    Build an in-memory strategy module from config.
+
+    Useful for Builder previews without writing files to disk.
+    """
+    preview_config = copy.deepcopy(config)
+    validate_strategy_config(preview_config, is_new=is_new, strategies_dir=strategies_dir)
+    py_content = render_strategy_source(preview_config)
+
+    module = types.ModuleType(module_name)
+    module.__file__ = f"<{module_name}>"
+    exec(compile(py_content, module.__file__, "exec"), module.__dict__)
+    return module
 
 
 def handle_save_new(raw_config: dict, strategies_dir: Path = None) -> Path:
@@ -522,6 +558,92 @@ def _emit_module_constants(timeframe: str, magic_number: int, indicators: list) 
     return "\n".join(lines)
 
 
+def _overlay_series_specs(indicators: list) -> dict:
+    trend_item = None
+    band_item = None
+    has_supertrend = False
+    has_tci = False
+
+    for ind in indicators:
+        ind_id = ind["id"]
+        params = ind.get("params", {})
+
+        if ind_id == "EMA":
+            trend_item = {
+                "label": f'EMA ({int(params["period"])})',
+                "assignments": [('average', f'ema_{int(params["period"])}')],
+            }
+        elif ind_id == "SMA":
+            trend_item = {
+                "label": f'SMA ({int(params["period"])})',
+                "assignments": [('average', f'sma_{int(params["period"])}')],
+            }
+        elif ind_id == "HMA":
+            trend_item = {
+                "label": "HMA (55)",
+                "assignments": [('average', 'hma')],
+            }
+        elif ind_id == "VWAP":
+            trend_item = {
+                "label": "VWAP",
+                "assignments": [('average', 'vwap')],
+            }
+        elif ind_id == "BB":
+            period = int(params["period"])
+            band_item = {
+                "label": f'Bollinger Bands ({period})',
+                "assignments": [
+                    ('average', f'bb_basis_{period}'),
+                    ('upper', f'bb_upper_{period}'),
+                    ('lower', f'bb_lower_{period}'),
+                ],
+            }
+        elif ind_id == "DONCHIAN":
+            period = int(params["period"])
+            band_item = {
+                "label": f'Donchian Channel ({period})',
+                "assignments": [
+                    ('average', f'donchian_mid_{period}'),
+                    ('upper', f'donchian_high_{period}'),
+                    ('lower', f'donchian_low_{period}'),
+                ],
+            }
+        elif ind_id == "SUPERTREND":
+            has_supertrend = True
+        elif ind_id == "TCI":
+            has_tci = True
+
+    return {
+        "trend": trend_item,
+        "bands": band_item,
+        "supertrend": has_supertrend,
+        "tci": has_tci,
+    }
+
+
+def _emit_strategy_object_tree_items(indicators: list) -> str:
+    specs = _overlay_series_specs(indicators)
+    entries = []
+
+    if specs["trend"]:
+        entries.append(
+            f'{{"key": "baseline", "label": "{specs["trend"]["label"]}", "icon": "line", "toggle": True}}'
+        )
+    if specs["bands"]:
+        entries.append(
+            f'{{"key": "atr_bands", "label": "{specs["bands"]["label"]}", "icon": "bands", "toggle": True}}'
+        )
+    if specs["supertrend"]:
+        entries.append('{"key": "supertrend", "label": "Supertrend", "icon": "trend", "toggle": True}')
+    if specs["tci"]:
+        entries.append('{"key": "tci", "label": "TCI", "icon": "hist", "toggle": True}')
+
+    if not entries:
+        return "OBJECT_TREE_ITEMS = []"
+
+    return "OBJECT_TREE_ITEMS = [\n    " + ",\n    ".join(entries) + ",\n]"
+
+
 def _emit_data_window_fields(indicators: list) -> str:
     entries = []
 
@@ -791,7 +913,11 @@ def _emit_indicator_computation_block(ind: dict) -> list:
 
 
 def _emit_prepare_dataframe(
-    custom_indicators: list, needs_close: bool, needs_high_low: bool, needs_volume: bool
+    indicators: list,
+    custom_indicators: list,
+    needs_close: bool,
+    needs_high_low: bool,
+    needs_volume: bool
 ) -> str:
     required: set = set()
     if needs_close:
@@ -823,6 +949,19 @@ def _emit_prepare_dataframe(
         for col in ind["columns"]:
             # Skip intermediate variables (bb_std_*, vol_ma_*) which are not in columns
             body.append(f'    out["{col}"] = {col}')
+
+    overlay_specs = _overlay_series_specs(indicators)
+    trend_item = overlay_specs["trend"]
+    if trend_item:
+        for alias, source_col in trend_item["assignments"]:
+            body.append(f'    if "{source_col}" in out.columns:')
+            body.append(f'        out["{alias}"] = out["{source_col}"]')
+
+    band_item = overlay_specs["bands"]
+    if band_item:
+        for alias, source_col in band_item["assignments"]:
+            body.append(f'    if "{source_col}" in out.columns:')
+            body.append(f'        out["{alias}"] = out["{source_col}"]')
 
     body.append("    return out")
 

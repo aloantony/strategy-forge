@@ -3,7 +3,7 @@ Gestión de órdenes y posiciones en MetaTrader 5.
 """
 
 import MetaTrader5 as mt5
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 import math
 import re
 import config
@@ -13,6 +13,10 @@ _FILLING_NAME = {
     getattr(mt5, "ORDER_FILLING_IOC", 1): "IOC",
     getattr(mt5, "ORDER_FILLING_RETURN", 2): "RETURN",
 }
+
+_MARKET_FUTURE_TICK_TOLERANCE_SECONDS = 60
+_MARKET_STALE_TICK_SECONDS = 300
+_MAX_BROKER_TICK_OFFSET_HOURS = 14
 
 # Prefijo para comentarios de órdenes creadas por el bot.
 _TRADE_COMMENT_PREFIX = "TA"
@@ -51,6 +55,32 @@ def _fallback_comment_from_request(request: dict) -> str:
     if isinstance(request, dict) and request.get("position"):
         return _FALLBACK_CLOSE_COMMENT
     return _FALLBACK_OPEN_COMMENT
+
+
+def _tick_timestamp_to_utc(raw_timestamp) -> datetime | None:
+    # convierte el timestamp MT5 a datetime UTC y filtra valores vacios/invalidos.
+    try:
+        timestamp_value = float(raw_timestamp)
+    except (TypeError, ValueError):
+        return None
+    if timestamp_value <= 0:
+        return None
+    return datetime.fromtimestamp(timestamp_value, tz=timezone.utc)
+
+
+def _resolve_tick_time_alignment(tick_time_utc: datetime, now_utc: datetime):
+    # algunos brokers entregan ticks con la hora del servidor en vez de UTC.
+    raw_diff = (now_utc - tick_time_utc).total_seconds()
+    if raw_diff >= -_MARKET_FUTURE_TICK_TOLERANCE_SECONDS:
+        return tick_time_utc, raw_diff, 0
+
+    for offset_hours in range(1, _MAX_BROKER_TICK_OFFSET_HOURS + 1):
+        adjusted_tick_time = tick_time_utc - timedelta(hours=offset_hours)
+        adjusted_diff = (now_utc - adjusted_tick_time).total_seconds()
+        if -_MARKET_FUTURE_TICK_TOLERANCE_SECONDS <= adjusted_diff <= _MARKET_STALE_TICK_SECONDS:
+            return adjusted_tick_time, adjusted_diff, offset_hours
+
+    return tick_time_utc, raw_diff, 0
 
 
 def _humanize_reason_token(token: str) -> str:
@@ -394,25 +424,36 @@ def is_market_open(symbol: str):
     if tick is None:
         return False, "No se pudo obtener información del tick"
     
-    # Verificar si el último tick es reciente (menos de 5 minutos)
-    # Si el tick es muy antiguo, probablemente el mercado está cerrado
-    tick_time = datetime.fromtimestamp(tick.time)
-    now = datetime.now()
-    time_diff = (now - tick_time).total_seconds()
-    
+    tick_time = _tick_timestamp_to_utc(getattr(tick, "time", None))
+    if tick_time is None:
+        return False, "Hora de tick inválida"
+
+    now = datetime.now(timezone.utc)
+    _, time_diff, broker_offset_hours = _resolve_tick_time_alignment(tick_time, now)
+
+    # Si el tick viene "del futuro", no es seguro asumir que el mercado esté abierto.
+    if time_diff < -_MARKET_FUTURE_TICK_TOLERANCE_SECONDS:
+        return False, (
+            f"Hora de tick adelantada {int(abs(time_diff) / 60)} min "
+            "(reloj local/broker desalineado)"
+        )
+
     # Si el tick tiene más de 5 minutos, considerar el mercado cerrado
-    if time_diff > 300:  # 5 minutos
-        return False, f"Mercado cerrado (último tick hace {int(time_diff/60)} minutos)"
+    if time_diff > _MARKET_STALE_TICK_SECONDS:
+        return False, f"Sin tick reciente ({int(time_diff/60)} min)"
     
     # Verificar si hay spread válido (si el spread es 0 o muy grande, puede estar cerrado)
     if tick.ask == 0 or tick.bid == 0:
-        return False, "Precios no disponibles (mercado cerrado)"
+        return False, "Precios no disponibles"
     
     spread = tick.ask - tick.bid
     if spread <= 0:
-        return False, "Spread inválido (mercado cerrado)"
-    
-    return True, "Mercado abierto"
+        return False, "Spread inválido"
+
+    status = f"Tick reciente ({int(max(time_diff, 0))} s)"
+    if broker_offset_hours:
+        status = f"{status} | offset broker +{broker_offset_hours}h compensado"
+    return True, status
 
 
 def get_open_position_direction(symbol: str, magic_number: int) -> int:

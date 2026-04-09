@@ -12,6 +12,7 @@ import threading
 import time
 import asyncio
 import queue
+import copy
 import sys
 import io
 import importlib
@@ -20,6 +21,7 @@ import os
 import re
 import base64
 import zlib
+from pathlib import Path
 from datetime import datetime, timedelta, timezone
 import json
 from urllib.parse import unquote
@@ -133,6 +135,9 @@ class TradingBotGUI:
         self.current_strategy_key = None
         self.strategy_module = None
         self.strategy_data_all_actives = False
+        self.builder_preview_active = False
+        self.builder_preview_entry = None
+        self._strategy_builder_module_cache = None
         self._init_strategy_registry()
 
         _patch_lightweight_charts_js_worker()
@@ -271,30 +276,10 @@ class TradingBotGUI:
         # esta funcion sirve para iniciar registro de estrategias.
         """Inicializa el registro de estrategias disponibles."""
         self.strategy_registry = {}
-        default_module_ref = "strategies.strategy_ema_rsi_trend"
-        self._register_strategy(
-            key="ema_rsi_trend",
-            label="Scalp M1 EMA+VWAP",
-            module_ref=default_module_ref
-        )
-        self._register_strategy(
-            key="bollinger_rsi_reversion",
-            label="Scalp M1 BB+RSI",
-            module_ref="strategies.strategy_bollinger_rsi_reversion"
-        )
-        self._register_strategy(
-            key="donchian_breakout",
-            label="Scalp M1 Donchian",
-            module_ref="strategies.strategy_donchian_breakout"
-        )
-        cfg_key = getattr(config, "STRATEGY_KEY", "ema_rsi_trend")
-        cfg_module = getattr(config, "STRATEGY_MODULE", default_module_ref)
-        legacy_map = {
-            "strategy_baseline": default_module_ref,
-            "strategies.strategy_baseline": default_module_ref,
-        }
-        cfg_module = legacy_map.get(cfg_module, cfg_module)
-        if cfg_module and cfg_module != default_module_ref:
+        raw_cfg_key = str(getattr(config, "STRATEGY_KEY", "") or "").strip()
+        cfg_key = self._slugify(raw_cfg_key) if raw_cfg_key else ""
+        cfg_module = str(getattr(config, "STRATEGY_MODULE", "") or "").strip()
+        if cfg_module:
             custom_key = self._slugify(cfg_key or cfg_module)
             if custom_key not in self.strategy_registry:
                 self._register_strategy(custom_key, cfg_key or custom_key, cfg_module)
@@ -302,18 +287,18 @@ class TradingBotGUI:
 
         # Descubre estrategias adicionales guardadas en la carpeta strategies/
         self._sync_strategy_registry_from_disk(load_entries=False, force=True)
-        default_key = cfg_key
-        if default_key not in self.strategy_registry:
-            default_key = "ema_rsi_trend"
+        default_key = cfg_key if cfg_key in self.strategy_registry else ""
+        if not default_key and self.strategy_registry:
+            default_key = next(iter(self.strategy_registry.keys()))
 
         active_from_config = getattr(config, "ACTIVE_STRATEGIES", None)
         if isinstance(active_from_config, (list, tuple, set)):
             requested_active = [self._slugify(str(k)) for k in active_from_config if str(k).strip()]
         else:
-            requested_active = [default_key]
+            requested_active = [default_key] if default_key else []
 
         active_keys = [k for k in requested_active if k in self.strategy_registry]
-        if not active_keys:
+        if not active_keys and default_key:
             active_keys = [default_key]
 
         for key, entry in self.strategy_registry.items():
@@ -321,7 +306,16 @@ class TradingBotGUI:
             entry["enabled"] = key in active_keys
         config.ACTIVE_STRATEGIES = list(active_keys)
 
-        self._set_strategy_by_key(default_key, refresh=False, sync_ui=False)
+        if default_key:
+            self._set_strategy_by_key(default_key, refresh=False, sync_ui=False)
+            return
+
+        self.current_strategy_key = None
+        self.strategy_module = None
+        self.strategy_timeframe = None
+        self.timeframe_locked = False
+        config.STRATEGY_KEY = ""
+        config.STRATEGY_MODULE = ""
 
     def _register_strategy(self, key: str, label: str, module_ref: str):
         # esta funcion sirve para registrar una estrategia.
@@ -371,9 +365,6 @@ class TradingBotGUI:
         base_dir = self._get_strategy_dir()
         reserved_stems = {
             "__init__",
-            "strategy_ema_rsi_trend",
-            "strategy_bollinger_rsi_reversion",
-            "strategy_donchian_breakout",
         }
         discovered = []
 
@@ -558,6 +549,9 @@ class TradingBotGUI:
 
     def _get_selected_strategy_entry(self):
         # esta funcion sirve para obtener la estrategia seleccionada.
+        preview_entry = self._get_builder_preview_entry()
+        if preview_entry:
+            return preview_entry
         entry = self._get_strategy_entry(self.current_strategy_key or "")
         if entry:
             return entry
@@ -662,7 +656,7 @@ class TradingBotGUI:
                     short_reason = reason if len(reason) <= 46 else (reason[:43].rstrip() + "...")
                     status_parts.append(f"motivo: {short_reason}")
             market_status = (entry.get("last_market_status") or "").strip()
-            if market_status:
+            if market_status and self.bot_running:
                 status_parts.append(market_status)
             error_text = (entry.get("last_error") or "").strip()
             if error_text:
@@ -776,7 +770,11 @@ class TradingBotGUI:
     def _get_strategy_object_tree_items(self, module=None):
         # esta funcion sirve para obtener elementos del arbol segun la estrategia.
         if module is None:
-            module = self.strategy_module
+            preview_entry = self._get_builder_preview_entry()
+            if preview_entry is not None:
+                module = preview_entry.get("module_obj")
+            else:
+                module = self.strategy_module
         if module is None:
             return []
         candidates = (
@@ -1477,6 +1475,8 @@ class TradingBotGUI:
                     .tv-builder-section { margin-bottom: 12px; }
                     .tv-builder-section label { display: block; font-size: 11px; color: rgba(255,255,255,0.55); margin-bottom: 2px; margin-top: 6px; }
                     .tv-builder-section input[type=text], .tv-builder-section select { width: 100%; background: rgba(255,255,255,0.06); border: 1px solid rgba(255,255,255,0.15); color: #e0e0e0; border-radius: 4px; padding: 4px 6px; font-size: 12px; box-sizing: border-box; }
+                    .tv-builder-section select, .tv-builder-col-sel, .tv-builder-op-sel { color-scheme: dark; }
+                    .tv-builder-section select option, .tv-builder-col-sel option, .tv-builder-op-sel option { background: #1b2033; color: #eef2ff; }
                     .tv-builder-section-title { font-weight: 600; font-size: 11px; text-transform: uppercase; letter-spacing: 0.05em; color: rgba(255,255,255,0.45); margin-bottom: 6px; margin-top: 4px; }
                     .tv-builder-indicator-picker { display: flex; gap: 6px; align-items: center; margin-bottom: 6px; }
                     .tv-builder-indicator-picker select { flex: 1; background: rgba(255,255,255,0.06); border: 1px solid rgba(255,255,255,0.15); color: #e0e0e0; border-radius: 4px; padding: 4px 6px; font-size: 12px; }
@@ -1498,7 +1498,7 @@ class TradingBotGUI:
                     .tv-builder-add-group-btn:disabled { opacity: 0.35; cursor: not-allowed; }
                     .tv-builder-group-children { display: flex; flex-direction: column; gap: 4px; }
                     .tv-builder-condition-leaf { display: flex; align-items: center; gap: 4px; flex-wrap: wrap; }
-                    .tv-builder-col-sel, .tv-builder-op-sel { background: rgba(255,255,255,0.06); border: 1px solid rgba(255,255,255,0.15); color: #e0e0e0; border-radius: 3px; padding: 2px 4px; font-size: 11px; }
+                    .tv-builder-col-sel, .tv-builder-op-sel { min-width: 112px; background: rgba(255,255,255,0.06); border: 1px solid rgba(255,255,255,0.15); color: #e0e0e0; border-radius: 3px; padding: 2px 4px; font-size: 11px; }
                     .tv-builder-right-type { background: rgba(255,255,255,0.08); border: 1px solid rgba(255,255,255,0.2); color: #e0e0e0; border-radius: 3px; padding: 2px 6px; cursor: pointer; font-size: 10px; }
                     .tv-builder-num-inp { width: 70px; background: rgba(255,255,255,0.06); border: 1px solid rgba(255,255,255,0.15); color: #e0e0e0; border-radius: 3px; padding: 2px 4px; font-size: 11px; }
                     .tv-builder-remove-btn { background: transparent; border: none; color: rgba(255,255,255,0.35); cursor: pointer; font-size: 12px; padding: 0 3px; }
@@ -1569,6 +1569,7 @@ class TradingBotGUI:
                                     <option value="BB">Bollinger Bands</option>
                                     <option value="DONCHIAN">Donchian Channel</option>
                                     <option value="ATR">ATR</option>
+                                    <option value="ADX_DI">ADX + DI</option>
                                     <option value="VWAP">VWAP</option>
                                     <option value="VOLUME_RATIO">Volume Ratio</option>
                                     <option value="SMA">SMA</option>
@@ -1604,7 +1605,53 @@ class TradingBotGUI:
                     buy_tree: null,
                     sell_tree: null,
                     indicators: [],
-                    _handler: ""
+                    _handler: "",
+                    _previewTimer: 0
+                };
+
+                window._builderClone = (value) => JSON.parse(JSON.stringify(value === undefined ? null : value));
+
+                window._builderCollectConfig = (strictMode) => {
+                    const state = window._strategyBuilderState || {};
+                    const nameEl = document.getElementById("tv-builder-name");
+                    const displayNameEl = document.getElementById("tv-builder-display-name");
+                    const timeframeEl = document.getElementById("tv-builder-timeframe");
+                    const strict = !!strictMode;
+
+                    let name = ((nameEl && nameEl.value) || "").trim();
+                    if (!strict && !/^[a-z][a-z0-9_]*$/.test(name)) {
+                        name = "builder_preview";
+                    }
+
+                    const displayNameRaw = ((displayNameEl && displayNameEl.value) || "").trim();
+                    const displayName = strict ? displayNameRaw : (displayNameRaw || name || "Builder Preview");
+
+                    return {
+                        schema_version: 1,
+                        name,
+                        display_name: displayName,
+                        description: "",
+                        timeframe: ((timeframeEl && timeframeEl.value) || "M1").trim() || "M1",
+                        magic_number: Number.isInteger(state.magic_number) ? state.magic_number : 10000,
+                        indicators: window._builderClone(state.indicators || []),
+                        buy_condition: window._builderClone(state.buy_tree || { type: "AND", children: [] }),
+                        sell_condition: window._builderClone(state.sell_tree || { type: "AND", children: [] }),
+                        _is_new: !!state.is_new,
+                        _editing_key: state.editing_key || null
+                    };
+                };
+
+                window._builderSchedulePreview = () => {
+                    const state = window._strategyBuilderState;
+                    if (!state || !state._handler || !window.callbackFunction) return;
+                    if (state._previewTimer) {
+                        window.clearTimeout(state._previewTimer);
+                    }
+                    state._previewTimer = window.setTimeout(() => {
+                        state._previewTimer = 0;
+                        const json = JSON.stringify(window._builderCollectConfig(false));
+                        window.callbackFunction(state._handler + "_~_strategy_builder_preview;;;" + encodeURIComponent(json));
+                    }, 120);
                 };
 
                 // --- openStrategyBuilder(config) ---
@@ -1616,6 +1663,10 @@ class TradingBotGUI:
                     window._strategyBuilderState.buy_tree = config.buy_condition || { "type": "AND", "children": [] };
                     window._strategyBuilderState.sell_tree = config.sell_condition || { "type": "AND", "children": [] };
                     window._strategyBuilderState._handler = config.handler || window._strategyBuilderState._handler;
+                    if (window._strategyBuilderState._previewTimer) {
+                        window.clearTimeout(window._strategyBuilderState._previewTimer);
+                        window._strategyBuilderState._previewTimer = 0;
+                    }
 
                     document.getElementById("tv-builder-title").innerText = config.is_new ? "Nueva estrategia" : ("Editar: " + (config.display_name || config.name || ""));
                     const nameInput = document.getElementById("tv-builder-name");
@@ -1634,6 +1685,10 @@ class TradingBotGUI:
 
                 // --- closeStrategyBuilder() ---
                 window.closeStrategyBuilder = () => {
+                    if (window._strategyBuilderState && window._strategyBuilderState._previewTimer) {
+                        window.clearTimeout(window._strategyBuilderState._previewTimer);
+                        window._strategyBuilderState._previewTimer = 0;
+                    }
                     strategyPanel.classList.remove("builder-mode");
                 };
 
@@ -1690,6 +1745,7 @@ class TradingBotGUI:
                                      { key: "multiplier", label: "Multiplicador", type: "float", min: 0.1, default: 2.0 }],
                     "DONCHIAN":     [{ key: "period", label: "Período", type: "int", min: 2, default: 12 }],
                     "ATR":          [{ key: "period", label: "Período", type: "int", min: 1, default: 14 }],
+                    "ADX_DI":       [{ key: "period", label: "Período", type: "int", min: 2, default: 14 }],
                     "VWAP":         [],
                     "VOLUME_RATIO": [{ key: "lookback", label: "Lookback", type: "int", min: 2, default: 30 }],
                     "SMA":          [{ key: "period", label: "Período", type: "int", min: 1, default: 20 }],
@@ -1706,6 +1762,7 @@ class TradingBotGUI:
                         case "BB":           return [`bb_basis_${p.period}`, `bb_upper_${p.period}`, `bb_lower_${p.period}`, `bb_width_pct_${p.period}`];
                         case "DONCHIAN":     return [`donchian_high_${p.period}`, `donchian_low_${p.period}`, `donchian_mid_${p.period}`];
                         case "ATR":          return [`atr_${p.period}`, `atr_pct_${p.period}`];
+                        case "ADX_DI":       return [`adx_${p.period}`, `plus_di_${p.period}`, `minus_di_${p.period}`, `plus_di_cross_${p.period}`, `minus_di_cross_${p.period}`];
                         case "VWAP":         return ["vwap"];
                         case "VOLUME_RATIO": return [`volume_ratio_${p.lookback}`];
                         case "SMA":          return [`sma_${p.period}`];
@@ -1756,12 +1813,13 @@ class TradingBotGUI:
                             inp.step = def.type === "float" ? "0.1" : "1";
                             inp.value = (ind.params && ind.params[def.key] !== undefined) ? ind.params[def.key] : def.default;
                             inp.title = def.label;
-                            inp.addEventListener("change", () => {
+                            inp.addEventListener("input", () => {
                                 const val = def.type === "float" ? parseFloat(inp.value) : parseInt(inp.value, 10);
                                 ind.params[def.key] = isNaN(val) ? def.default : val;
                                 ind.columns = window._indicatorColumns(ind);
                                 window._builderRenderTree("buy");
                                 window._builderRenderTree("sell");
+                                window._builderSchedulePreview();
                             });
                             row.appendChild(inp);
                         });
@@ -1773,6 +1831,7 @@ class TradingBotGUI:
                             window._builderRenderIndicators();
                             window._builderRenderTree("buy");
                             window._builderRenderTree("sell");
+                            window._builderSchedulePreview();
                         });
                         row.appendChild(removeBtn);
                         list.appendChild(row);
@@ -1796,6 +1855,20 @@ class TradingBotGUI:
                     window._builderRenderIndicators();
                     window._builderRenderTree("buy");
                     window._builderRenderTree("sell");
+                    window._builderSchedulePreview();
+                });
+
+                document.getElementById("tv-builder-timeframe").addEventListener("change", () => {
+                    window._builderRenderIndicators();
+                    window._builderSchedulePreview();
+                });
+
+                document.getElementById("tv-builder-name").addEventListener("input", () => {
+                    window._builderSchedulePreview();
+                });
+
+                document.getElementById("tv-builder-display-name").addEventListener("input", () => {
+                    window._builderSchedulePreview();
                 });
 
                 // --- Condition Tree rendering (recursive) ---
@@ -1808,6 +1881,17 @@ class TradingBotGUI:
                         row.className = "tv-builder-condition-leaf";
 
                         const cols = window._builderGetColumns();
+                        const fallbackCol = cols[0] || "close";
+                        if (!cols.includes(node.left)) {
+                            node.left = fallbackCol;
+                        }
+                        if (!OPERATORS.includes(node.op)) {
+                            node.op = ">";
+                        }
+                        const rightIsColumn = typeof node.right === "string";
+                        if (rightIsColumn && !cols.includes(node.right)) {
+                            node.right = fallbackCol;
+                        }
 
                         const leftSel = document.createElement("select");
                         leftSel.className = "tv-builder-col-sel";
@@ -1817,7 +1901,10 @@ class TradingBotGUI:
                             if (c === node.left) opt.selected = true;
                             leftSel.appendChild(opt);
                         });
-                        leftSel.addEventListener("change", () => { node.left = leftSel.value; });
+                        leftSel.addEventListener("change", () => {
+                            node.left = leftSel.value;
+                            window._builderSchedulePreview();
+                        });
 
                         const opSel = document.createElement("select");
                         opSel.className = "tv-builder-op-sel";
@@ -1827,7 +1914,10 @@ class TradingBotGUI:
                             if (op === node.op) opt.selected = true;
                             opSel.appendChild(opt);
                         });
-                        opSel.addEventListener("change", () => { node.op = opSel.value; });
+                        opSel.addEventListener("change", () => {
+                            node.op = opSel.value;
+                            window._builderSchedulePreview();
+                        });
 
                         const rightTypeBtn = document.createElement("button");
                         rightTypeBtn.type = "button";
@@ -1845,7 +1935,10 @@ class TradingBotGUI:
                             if (c === node.right) opt.selected = true;
                             rightColSel.appendChild(opt);
                         });
-                        rightColSel.addEventListener("change", () => { node.right = rightColSel.value; });
+                        rightColSel.addEventListener("change", () => {
+                            node.right = rightColSel.value;
+                            window._builderSchedulePreview();
+                        });
 
                         const rightNumInp = document.createElement("input");
                         rightNumInp.type = "number";
@@ -1853,9 +1946,10 @@ class TradingBotGUI:
                         rightNumInp.className = "tv-builder-num-inp";
                         rightNumInp.style.display = isColumnRef ? "none" : "";
                         rightNumInp.value = isColumnRef ? 0 : node.right;
-                        rightNumInp.addEventListener("change", () => {
+                        rightNumInp.addEventListener("input", () => {
                             const v = parseFloat(rightNumInp.value);
                             node.right = isNaN(v) ? 0 : v;
+                            window._builderSchedulePreview();
                         });
 
                         rightTypeBtn.addEventListener("click", () => {
@@ -1871,13 +1965,17 @@ class TradingBotGUI:
                                 rightTypeBtn.innerText = "col";
                                 node.right = rightColSel.value || cols[0] || "close";
                             }
+                            window._builderSchedulePreview();
                         });
 
                         const removeBtn = document.createElement("button");
                         removeBtn.type = "button";
                         removeBtn.className = "tv-builder-remove-btn";
                         removeBtn.innerText = "✕";
-                        removeBtn.addEventListener("click", () => { if (onRemove) onRemove(); });
+                        removeBtn.addEventListener("click", () => {
+                            if (onRemove) onRemove();
+                            window._builderSchedulePreview();
+                        });
 
                         row.appendChild(leftSel);
                         row.appendChild(opSel);
@@ -1902,6 +2000,7 @@ class TradingBotGUI:
                         typeToggle.addEventListener("click", () => {
                             node.type = node.type === "AND" ? "OR" : "AND";
                             typeToggle.innerText = node.type;
+                            window._builderSchedulePreview();
                         });
 
                         const addCondBtn = document.createElement("button");
@@ -1912,6 +2011,7 @@ class TradingBotGUI:
                             const newLeaf = { type: "condition", left: "close", op: ">", right: 0 };
                             node.children.push(newLeaf);
                             renderChildren();
+                            window._builderSchedulePreview();
                         });
 
                         const addGroupBtn = document.createElement("button");
@@ -1924,13 +2024,17 @@ class TradingBotGUI:
                             const newGroup = { type: "AND", children: [] };
                             node.children.push(newGroup);
                             renderChildren();
+                            window._builderSchedulePreview();
                         });
 
                         const removeGroupBtn = document.createElement("button");
                         removeGroupBtn.type = "button";
                         removeGroupBtn.className = "tv-builder-remove-btn";
                         removeGroupBtn.innerText = "✕";
-                        removeGroupBtn.addEventListener("click", () => { if (onRemove) onRemove(); });
+                        removeGroupBtn.addEventListener("click", () => {
+                            if (onRemove) onRemove();
+                            window._builderSchedulePreview();
+                        });
 
                         groupHeader.appendChild(typeToggle);
                         groupHeader.appendChild(addCondBtn);
@@ -1952,6 +2056,7 @@ class TradingBotGUI:
                                 window._builderRenderNode(child, childContainer, () => {
                                     node.children.splice(i, 1);
                                     renderChildren();
+                                    window._builderSchedulePreview();
                                 }, depth + 1);
                             });
                         };
@@ -1974,15 +2079,23 @@ class TradingBotGUI:
                 // --- Cancel button ---
                 document.getElementById("tv-builder-cancel").addEventListener("click", () => {
                     window.closeStrategyBuilder();
+                    const state = window._strategyBuilderState;
+                    if (state && state._handler && window.callbackFunction) {
+                        window.callbackFunction(state._handler + "_~_strategy_builder_close");
+                    }
                 });
 
                 // --- Save button ---
                 document.getElementById("tv-builder-save").addEventListener("click", () => {
                     window.setBuilderError("");
                     const state = window._strategyBuilderState;
-                    const name = (document.getElementById("tv-builder-name").value || "").trim();
-                    const displayName = (document.getElementById("tv-builder-display-name").value || "").trim();
-                    const timeframe = document.getElementById("tv-builder-timeframe").value;
+                    const config = window._builderCollectConfig(true);
+                    const name = config.name;
+                    const displayName = config.display_name;
+                    if (state._previewTimer) {
+                        window.clearTimeout(state._previewTimer);
+                        state._previewTimer = 0;
+                    }
 
                     if (!name) { window.setBuilderError("El nombre (id) es obligatorio."); return; }
                     if (!/^[a-z][a-z0-9_]*$/.test(name)) { window.setBuilderError("El nombre solo puede tener letras minúsculas, números y guión bajo, y debe empezar con letra."); return; }
@@ -1998,20 +2111,6 @@ class TradingBotGUI:
                         window.setBuilderError("La condición de venta no puede estar vacía.");
                         return;
                     }
-
-                    const config = {
-                        schema_version: 1,
-                        name: name,
-                        display_name: displayName,
-                        description: "",
-                        timeframe: timeframe,
-                        magic_number: state.magic_number,
-                        indicators: JSON.parse(JSON.stringify(state.indicators)),
-                        buy_condition: JSON.parse(JSON.stringify(buyTree)),
-                        sell_condition: JSON.parse(JSON.stringify(sellTree)),
-                        _is_new: state.is_new,
-                        _editing_key: state.editing_key
-                    };
 
                     const json = JSON.stringify(config);
                     window.callbackFunction(state._handler + "_~_strategy_builder_save;;;" + encodeURIComponent(json));
@@ -2072,6 +2171,10 @@ class TradingBotGUI:
         # esta funcion sirve para normalizar payload de señal.
         signal_raw = payload
         reason_raw = ""
+        pyramiding = False
+        atr_value = 0.0
+        dynamic_sizing = False
+        volume_ratio = 0.0
 
         if isinstance(payload, dict):
             signal_raw = (
@@ -2089,6 +2192,23 @@ class TradingBotGUI:
                 or payload.get("why")
                 or ""
             )
+            pyramiding_raw = payload.get("pyramiding", False)
+            pyramiding = bool(pyramiding_raw) if pyramiding_raw is not None else False
+
+            atr_raw = payload.get("atr_value", 0.0)
+            try:
+                atr_value = float(atr_raw) if atr_raw is not None else 0.0
+            except (TypeError, ValueError):
+                atr_value = 0.0
+
+            dynamic_sizing_raw = payload.get("dynamic_sizing", False)
+            dynamic_sizing = bool(dynamic_sizing_raw) if dynamic_sizing_raw is not None else False
+
+            volume_ratio_raw = payload.get("volume_ratio", 0.0)
+            try:
+                volume_ratio = float(volume_ratio_raw) if volume_ratio_raw is not None else 0.0
+            except (TypeError, ValueError):
+                volume_ratio = 0.0
         elif isinstance(payload, (tuple, list)):
             if len(payload) > 0:
                 signal_raw = payload[0]
@@ -2102,6 +2222,10 @@ class TradingBotGUI:
         return {
             "signal": self._normalize_signal_value(signal_raw),
             "reason": reason,
+            "pyramiding": pyramiding,
+            "atr_value": atr_value,
+            "dynamic_sizing": dynamic_sizing,
+            "volume_ratio": volume_ratio,
         }
 
     def _get_strategy_signal_payload_with_module(
@@ -4589,6 +4713,13 @@ class TradingBotGUI:
             key = unquote(args[0]) if len(args) > 0 else ""
             self._on_strategy_builder_open(key)
             return
+        if action == "strategy_builder_preview" and args:
+            json_str = unquote(args[0]) if len(args) > 0 else ""
+            self._on_strategy_builder_preview(json_str)
+            return
+        if action == "strategy_builder_close":
+            self._clear_strategy_builder_preview(refresh=True)
+            return
         if action == "strategy_builder_save" and args:
             json_str = unquote(args[0]) if len(args) > 0 else ""
             self._on_strategy_builder_save(json_str)
@@ -4626,6 +4757,7 @@ class TradingBotGUI:
             "sell_condition": {"type": "AND", "children": []},
             "handler": self.side_panel_handler,
         })
+        self._apply_strategy_builder_preview(payload)
         self.chart.run_script(f'''
             ;(function() {{
                 const payload = {payload};
@@ -4675,6 +4807,7 @@ class TradingBotGUI:
         config_data["is_new"] = False
         config_data["editing_key"] = key
         config_data["handler"] = self.side_panel_handler
+        self._apply_strategy_builder_preview(config_data)
         payload = json.dumps(config_data)
         self.chart.run_script(f'''
             ;(function() {{
@@ -4684,6 +4817,190 @@ class TradingBotGUI:
                 }}
             }})();
         ''')
+
+    def _get_builder_preview_entry(self):
+        # esta funcion sirve para obtener la estrategia temporal del builder.
+        if not getattr(self, "builder_preview_active", False):
+            return None
+        entry = getattr(self, "builder_preview_entry", None)
+        if not isinstance(entry, dict):
+            return None
+        if entry.get("module_obj") is None:
+            return None
+        return entry
+
+    def _get_strategy_builder_module(self):
+        # esta funcion sirve para cargar el modulo generador del builder.
+        module = getattr(self, "_strategy_builder_module_cache", None)
+        if module is not None:
+            return module
+        module = importlib.import_module("strategy_builder.generator")
+        self._strategy_builder_module_cache = module
+        return module
+
+    def _normalize_builder_preview_condition(self, node, available_columns: set):
+        # esta funcion sirve para sanear una condicion para la previsualizacion.
+        fallback_left = "close" if "close" in available_columns else next(iter(sorted(available_columns)), "open")
+        if not isinstance(node, dict):
+            return None
+
+        node_type = str(node.get("type") or "").upper()
+        if node_type == "CONDITION":
+            left = node.get("left")
+            if left not in available_columns:
+                left = fallback_left
+
+            op = node.get("op")
+            if op not in {"<", ">", "<=", ">=", "==", "!="}:
+                op = ">"
+
+            right = node.get("right")
+            if isinstance(right, str):
+                if right not in available_columns:
+                    right = 0
+            elif not isinstance(right, (int, float)):
+                right = 0
+
+            return {
+                "type": "condition",
+                "left": left,
+                "op": op,
+                "right": right,
+            }
+
+        if node_type in {"AND", "OR"}:
+            children = []
+            for child in node.get("children", []):
+                normalized = self._normalize_builder_preview_condition(child, available_columns)
+                if normalized is not None:
+                    children.append(normalized)
+
+            if len(children) >= 2:
+                return {"type": node_type, "children": children}
+            if len(children) == 1:
+                return children[0]
+            return None
+
+        return None
+
+    def _build_strategy_builder_preview_config(self, config_data: dict) -> dict:
+        # esta funcion sirve para preparar una configuracion valida para previsualizacion.
+        preview_config = copy.deepcopy(config_data if isinstance(config_data, dict) else {})
+
+        raw_name = str(preview_config.get("name") or "").strip()
+        if not re.match(r'^[a-z][a-z0-9_]*$', raw_name):
+            raw_name = "builder_preview"
+
+        display_name = str(preview_config.get("display_name") or "").strip() or "Builder Preview"
+        timeframe = str(preview_config.get("timeframe") or "").strip().upper()
+        valid_timeframes = {"M1", "M5", "M15", "M30", "H1", "H4", "D1"}
+        if timeframe not in valid_timeframes:
+            timeframe = self.current_timeframe if self.current_timeframe in valid_timeframes else "M1"
+
+        magic_number = preview_config.get("magic_number")
+        if not isinstance(magic_number, int) or not (10000 <= magic_number <= 99999):
+            magic_number = 10000
+
+        indicators = preview_config.get("indicators")
+        if not isinstance(indicators, list):
+            indicators = []
+
+        available_columns = {
+            "open", "high", "low", "close", "OHLC4", "HLC3", "HL2",
+            "tick_volume", "average", "atr", "upper", "lower",
+            "hma", "supertrend", "supertrend_dir", "supertrend_up", "supertrend_down",
+            "tci", "tci_signal", "tci_hist",
+        }
+        for ind in indicators:
+            if not isinstance(ind, dict):
+                continue
+            for col in ind.get("columns", []):
+                if isinstance(col, str) and col:
+                    available_columns.add(col)
+
+        buy_condition = self._normalize_builder_preview_condition(
+            preview_config.get("buy_condition"), available_columns
+        )
+        sell_condition = self._normalize_builder_preview_condition(
+            preview_config.get("sell_condition"), available_columns
+        )
+
+        if buy_condition is None:
+            buy_condition = {"type": "condition", "left": "close", "op": ">", "right": 0}
+        if sell_condition is None:
+            sell_condition = {"type": "condition", "left": "close", "op": "<", "right": 0}
+
+        return {
+            "schema_version": 1,
+            "name": raw_name,
+            "display_name": display_name,
+            "description": str(preview_config.get("description") or ""),
+            "timeframe": timeframe,
+            "magic_number": magic_number,
+            "indicators": indicators,
+            "buy_condition": buy_condition,
+            "sell_condition": sell_condition,
+            "payload_extra_fields": copy.deepcopy(preview_config.get("payload_extra_fields", [])),
+        }
+
+    def _apply_strategy_builder_preview(self, config_data: dict):
+        # esta funcion sirve para actualizar la estrategia temporal del builder.
+        try:
+            strategy_builder = self._get_strategy_builder_module()
+            preview_config = self._build_strategy_builder_preview_config(config_data)
+            preview_module = strategy_builder.build_strategy_module(
+                preview_config,
+                strategies_dir=Path(self._get_strategy_dir()),
+                is_new=False,
+                module_name="strategy_builder_preview",
+            )
+        except Exception:
+            self._clear_strategy_builder_preview(refresh=True)
+            return
+
+        timeframe_value = self._resolve_timeframe_value(self._get_strategy_timeframe(preview_module))
+        timeframe_label = self._timeframe_label(timeframe_value) if timeframe_value is not None else preview_config["timeframe"]
+
+        self.builder_preview_entry = {
+            "key": "__builder_preview__",
+            "label": preview_config["display_name"],
+            "module": "<builder preview>",
+            "module_obj": preview_module,
+            "enabled": False,
+            "timeframe_value": timeframe_value,
+            "timeframe_label": timeframe_label or preview_config["timeframe"],
+            "magic_number": int(getattr(preview_module, "MAGIC_NUMBER", preview_config["magic_number"]) or preview_config["magic_number"]),
+            "last_error": "",
+            "last_df": None,
+        }
+        self.builder_preview_active = True
+        self._refresh_object_tree_items()
+        self.refresh_data(None, log_update=False)
+
+    def _clear_strategy_builder_preview(self, refresh: bool = False):
+        # esta funcion sirve para limpiar la previsualizacion temporal del builder.
+        had_preview = bool(getattr(self, "builder_preview_active", False) or getattr(self, "builder_preview_entry", None))
+        self.builder_preview_active = False
+        self.builder_preview_entry = None
+        if not had_preview:
+            return
+
+        self._refresh_object_tree_items()
+        if refresh:
+            self.refresh_data(None, log_update=False)
+
+    def _on_strategy_builder_preview(self, json_str: str):
+        # esta funcion sirve para recibir una previsualizacion desde el builder.
+        json_str = (json_str or "").strip()
+        if not json_str:
+            self._clear_strategy_builder_preview(refresh=True)
+            return
+        try:
+            config_data = json.loads(json_str)
+        except Exception:
+            self._clear_strategy_builder_preview(refresh=True)
+            return
+        self._apply_strategy_builder_preview(config_data)
 
     def _on_strategy_builder_save(self, json_str: str):
         # esta funcion sirve para guardar una estrategia desde el constructor.
@@ -4721,7 +5038,7 @@ class TradingBotGUI:
         generator_config = {k: v for k, v in config_data.items() if not k.startswith("_")}
         strategies_dir = self._get_strategy_dir()
         try:
-            strategy_builder = importlib.import_module("strategies.builder")
+            strategy_builder = self._get_strategy_builder_module()
             py_path = strategy_builder.generate_strategy_file(
                 generator_config,
                 strategies_dir,
@@ -4745,6 +5062,7 @@ class TradingBotGUI:
             self._load_strategy_entry(entry)
             entry["enabled"] = True
         config.ACTIVE_STRATEGIES = [e["key"] for e in self.strategy_registry.values() if e.get("enabled")]
+        self._clear_strategy_builder_preview(refresh=False)
         self.chart.run_script('''
             ;(function() {
                 if (window.closeStrategyBuilder) {
@@ -4752,7 +5070,7 @@ class TradingBotGUI:
                 }
             })();
         ''')
-        self._render_strategy_panel()
+        self._set_strategy_by_key(name, refresh=True, sync_ui=True)
 
     def _show_builder_error(self, message: str):
         # esta funcion sirve para mostrar un error en el constructor de estrategias.
@@ -5208,8 +5526,48 @@ class TradingBotGUI:
         minutes = period_minutes.get(period_str, 1 * minutes_per_day)
         bars = minutes // timeframe_minutes
         return max(100, min(bars, 10000))
+
+    def _get_display_bars(self, timeframe_minutes: int) -> int:
+        # esta funcion sirve para calcular cuantas velas debe ver el usuario.
+        minutes_per_day = 24 * 60
+        minutes_per_month = 30 * minutes_per_day
+        minutes_per_year = 365 * minutes_per_day
+        now = datetime.now()
+        start_year = datetime(now.year, 1, 1)
+        ytd_minutes = int((now - start_year).total_seconds() / 60)
+
+        period_minutes = {
+            "1D": 1 * minutes_per_day,
+            "5D": 5 * minutes_per_day,
+            "1M": 1 * minutes_per_month,
+            "3M": 3 * minutes_per_month,
+            "6M": 6 * minutes_per_month,
+            "YTD": ytd_minutes,
+            "1A": 1 * minutes_per_year,
+            "1Y": 1 * minutes_per_year,
+            "5Y": 5 * minutes_per_year,
+            "All": 10000 * timeframe_minutes,
+            "Todo": 10000 * timeframe_minutes
+        }
+
+        minutes = period_minutes.get(self.view_period, 1 * minutes_per_day)
+        bars = minutes // timeframe_minutes
+        return max(1, min(bars, 10000))
+
+    def _get_analysis_bars(self, timeframe_minutes: int) -> int:
+        # esta funcion sirve para pedir suficiente historia para calcular indicadores.
+        history_floor = int(getattr(config, "BARS_HISTORY", 500) or 500)
+        return max(history_floor, self.get_period_bars(self.view_period, timeframe_minutes))
+
+    def _trim_df_for_display(self, df: pd.DataFrame, timeframe_minutes: int) -> pd.DataFrame:
+        # esta funcion sirve para limitar lo que se pinta al periodo visible.
+        if df is None or len(df) == 0:
+            return df
+        display_bars = self._get_display_bars(timeframe_minutes)
+        trimmed = df.tail(int(display_bars)).copy()
+        return trimmed.reset_index(drop=True)
     
-    def refresh_data(self, chart=None):
+    def refresh_data(self, chart=None, log_update: bool = True):
         # esta funcion sirve para refrescar datos.
         """Actualiza los datos del gráfico."""
         expected_strategy_key = (self.current_strategy_key or "").strip()
@@ -5223,7 +5581,7 @@ class TradingBotGUI:
                     enforce_selection=True,
                     expected_strategy_key=expected_strategy_key,
                     expected_selection_seq=expected_selection_seq,
-                    log_update=True
+                    log_update=log_update
                 )
             except Exception as e:
                 self.log_message(f"Error al actualizar datos: {e}")
@@ -5245,15 +5603,16 @@ class TradingBotGUI:
             timeframe_value = mt5.TIMEFRAME_M1
 
         timeframe_minutes = self._timeframe_to_minutes(timeframe_value)
-        bars_needed = self.get_period_bars(self.view_period, timeframe_minutes)
+        bars_needed = self._get_analysis_bars(timeframe_minutes)
         df = self._build_market_dataframe(timeframe_value, bars_needed)
         df = self._apply_strategy_processing_for_entry(selected_entry, df)
+        display_df = self._trim_df_for_display(df, timeframe_minutes)
 
-        if len(df) < 2:
+        if len(display_df) < 2:
             return False
 
         if isinstance(selected_entry, dict):
-            selected_entry["last_df"] = df
+            selected_entry["last_df"] = display_df
 
         if enforce_selection:
             current_key = (self.current_strategy_key or "").strip()
@@ -5261,15 +5620,15 @@ class TradingBotGUI:
             if current_seq != expected_selection_seq or current_key != expected_strategy_key:
                 return False
 
-        self.price_data = df
-        self.update_chart(df, fit_view=fit_view, strategy_entry=selected_entry)
+        self.price_data = display_df
+        self.update_chart(display_df, fit_view=fit_view, strategy_entry=selected_entry)
         self.update_equity_chart()
-        self.update_tci_chart(df)
+        self.update_tci_chart(display_df)
         self.update_balance()
         self.update_quotes()
 
         if log_update:
-            self.log_message(f"Datos actualizados: {len(df)} velas")
+            self.log_message(f"Datos actualizados: {len(display_df)} velas")
         return True
     
     def update_chart(self, df, fit_view: bool = False, strategy_entry=None):
@@ -6569,10 +6928,7 @@ class TradingBotGUI:
                             timeframe_value = mt5.TIMEFRAME_M1
 
                         timeframe_minutes = self._timeframe_to_minutes(timeframe_value)
-                        bars_needed = max(
-                            int(getattr(config, "BARS_HISTORY", 500) or 500),
-                            self.get_period_bars(self.view_period, timeframe_minutes)
-                        )
+                        bars_needed = self._get_analysis_bars(timeframe_minutes)
 
                         if timeframe_value not in market_cache:
                             market_cache[timeframe_value] = self._build_market_dataframe(
@@ -6586,7 +6942,7 @@ class TradingBotGUI:
                             continue
 
                         strategy_df = self._apply_strategy_processing_for_entry(entry, base_df.copy())
-                        entry["last_df"] = strategy_df
+                        entry["last_df"] = self._trim_df_for_display(strategy_df, timeframe_minutes)
                         entry["last_run_at"] = datetime.now().strftime("%H:%M:%S")
                         entry["last_market_status"] = market_status
                         entry["last_error"] = ""
@@ -6596,23 +6952,53 @@ class TradingBotGUI:
                         )
                         signal = signal_payload.get("signal", "none")
                         signal_reason = str(signal_payload.get("reason") or "").strip()
+                        pyramiding = bool(signal_payload.get("pyramiding", False))
+                        atr_value = float(signal_payload.get("atr_value", 0.0) or 0.0)
+                        dynamic_sizing = bool(signal_payload.get("dynamic_sizing", False))
+                        volume_ratio = float(signal_payload.get("volume_ratio", 0.0) or 0.0)
                         entry["last_signal"] = signal
                         entry["last_signal_reason"] = signal_reason
 
                         if signal != "none" and market_open:
                             reason_txt = f" | motivo: {signal_reason}" if signal_reason else ""
                             self.log_message(f"[{entry['label']}] Senal detectada: {signal.upper()}{reason_txt}")
-                            action_info = trading.apply_signal(
-                                config.SYMBOL,
-                                signal,
-                                config.LOT,
-                                config.SL_POINTS,
-                                config.TP_POINTS,
-                                int(entry.get("magic_number") or config.MAGIC_NUMBER),
-                                strategy_key=entry.get("key", ""),
-                                strategy_label=entry.get("label", ""),
-                                signal_reason=signal_reason
-                            )
+                            if pyramiding and atr_value > 0 and signal == "buy":
+                                if dynamic_sizing and volume_ratio > 0:
+                                    account = mt5.account_info()
+                                    balance = account.balance if account is not None else 0.0
+                                    raw_lot = trading.calculate_dynamic_lot(
+                                        config.SYMBOL,
+                                        atr_value,
+                                        volume_ratio,
+                                        balance=balance,
+                                    )
+                                    lot = raw_lot if raw_lot > 0 else config.LOT
+                                else:
+                                    balance = None
+                                    lot = config.LOT
+
+                                action_info = trading.apply_pyramid_signal(
+                                    config.SYMBOL,
+                                    int(entry.get("magic_number") or config.MAGIC_NUMBER),
+                                    atr_value,
+                                    lot,
+                                    strategy_key=entry.get("key", ""),
+                                    strategy_label=entry.get("label", ""),
+                                    signal_reason=signal_reason,
+                                    balance=balance if dynamic_sizing else None,
+                                )
+                            else:
+                                action_info = trading.apply_signal(
+                                    config.SYMBOL,
+                                    signal,
+                                    config.LOT,
+                                    config.SL_POINTS,
+                                    config.TP_POINTS,
+                                    int(entry.get("magic_number") or config.MAGIC_NUMBER),
+                                    strategy_key=entry.get("key", ""),
+                                    strategy_label=entry.get("label", ""),
+                                    signal_reason=signal_reason
+                                )
                             if action_info:
                                 action_info["strategy"] = entry.get("key", "")
                                 action_info["strategy_label"] = entry.get("label", "")
@@ -6633,10 +7019,7 @@ class TradingBotGUI:
                             timeframe_value = mt5.TIMEFRAME_M1
 
                         timeframe_minutes = self._timeframe_to_minutes(timeframe_value)
-                        bars_needed = max(
-                            int(getattr(config, "BARS_HISTORY", 500) or 500),
-                            self.get_period_bars(self.view_period, timeframe_minutes)
-                        )
+                        bars_needed = self._get_analysis_bars(timeframe_minutes)
 
                         if timeframe_value not in market_cache:
                             market_cache[timeframe_value] = self._build_market_dataframe(
@@ -6647,6 +7030,7 @@ class TradingBotGUI:
                             display_df = self._apply_strategy_processing_for_entry(
                                 selected_entry, base_df.copy()
                             )
+                            display_df = self._trim_df_for_display(display_df, timeframe_minutes)
                             selected_entry["last_df"] = display_df
 
                     if display_df is not None and len(display_df) > 1:

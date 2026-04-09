@@ -1,5 +1,5 @@
 """
-tests/test_builder.py — Acceptance tests for strategies/builder.py (TASK-017).
+tests/test_builder.py — Acceptance tests for strategy_builder/generator.py (TASK-017).
 
 Run with: python tests/test_builder.py
 """
@@ -14,10 +14,11 @@ import pandas as pd
 
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
-from strategies.builder import (
+from strategy_builder.generator import (
     GeneratorError,
     NameCollisionError,
     ValidationError,
+    build_strategy_module,
     emit_condition,
     generate_strategy_file,
     handle_save_edit,
@@ -419,6 +420,65 @@ def test_name_collision():
     print("PASS test_name_collision")
 
 
+def test_preview_module_exposes_overlay_metadata():
+    """Preview modules expose object-tree metadata and chart aliases for live Builder preview."""
+    config = {
+        "schema_version": 1,
+        "name": "preview_overlay",
+        "display_name": "Preview Overlay",
+        "description": "",
+        "timeframe": "M15",
+        "magic_number": 12345,
+        "indicators": [
+            {
+                "id": "BB",
+                "params": {"period": 20, "multiplier": 2.0},
+                "columns": ["bb_basis_20", "bb_upper_20", "bb_lower_20", "bb_width_pct_20"],
+                "pre_computed": False,
+            },
+            {
+                "id": "TCI",
+                "params": {},
+                "columns": ["tci", "tci_signal", "tci_hist"],
+                "pre_computed": True,
+            },
+        ],
+        "buy_condition": {
+            "type": "AND",
+            "children": [
+                {"type": "condition", "left": "close", "op": ">", "right": "bb_basis_20"},
+                {"type": "condition", "left": "bb_width_pct_20", "op": ">", "right": 0.01},
+            ],
+        },
+        "sell_condition": {
+            "type": "AND",
+            "children": [
+                {"type": "condition", "left": "close", "op": "<", "right": "bb_basis_20"},
+                {"type": "condition", "left": "bb_width_pct_20", "op": ">", "right": 0.01},
+            ],
+        },
+    }
+
+    mod = build_strategy_module(config)
+    assert hasattr(mod, "OBJECT_TREE_ITEMS")
+    assert any(item.get("key") == "atr_bands" for item in mod.OBJECT_TREE_ITEMS)
+    assert any(item.get("key") == "tci" for item in mod.OBJECT_TREE_ITEMS)
+
+    df = make_df()
+    df["tci"] = 0.0
+    df["tci_signal"] = 0.0
+    df["tci_hist"] = 0.0
+    df2 = mod.prepare_dataframe(df)
+    assert "average" in df2.columns
+    assert "upper" in df2.columns
+    assert "lower" in df2.columns
+    assert df2["average"].equals(df2["bb_basis_20"])
+    assert df2["upper"].equals(df2["bb_upper_20"])
+    assert df2["lower"].equals(df2["bb_lower_20"])
+
+    print("PASS test_preview_module_exposes_overlay_metadata")
+
+
 if __name__ == "__main__":
     test_canonical_example()
     test_round_trip()
@@ -430,4 +490,5 @@ if __name__ == "__main__":
     test_validation_errors()
     test_emit_condition_spec_examples()
     test_name_collision()
+    test_preview_module_exposes_overlay_metadata()
     print("\nAll tests passed.")
