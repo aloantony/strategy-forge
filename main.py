@@ -8,9 +8,10 @@ import os
 import re
 import threading
 import time
+import uuid
 import zlib
 from concurrent.futures import ThreadPoolExecutor, wait
-from datetime import datetime
+from datetime import datetime, timezone
 
 import MetaTrader5 as mt5
 import pandas as pd
@@ -19,19 +20,56 @@ import config
 import data_feed
 import mt5_connection
 import trading
-
-
-TIMEFRAME_MAP = {
-    "M1": mt5.TIMEFRAME_M1,
-    "M5": mt5.TIMEFRAME_M5,
-    "M15": mt5.TIMEFRAME_M15,
-    "M30": mt5.TIMEFRAME_M30,
-    "H1": mt5.TIMEFRAME_H1,
-    "H4": mt5.TIMEFRAME_H4,
-    "D1": mt5.TIMEFRAME_D1,
-}
+from strategy_runtime import (
+    TIMEFRAME_MAP,
+    apply_strategy_processing as runtime_apply_strategy_processing,
+    get_strategy_signal_payload as runtime_get_strategy_signal_payload,
+    get_strategy_timeframe as runtime_get_strategy_timeframe,
+    normalize_signal as runtime_normalize_signal,
+    normalize_signal_payload as runtime_normalize_signal_payload,
+    resolve_timeframe_value as runtime_resolve_timeframe_value,
+    timeframe_label as runtime_timeframe_label,
+)
 
 ORDER_EXECUTION_LOCK = threading.Lock()
+
+# ---------------------------------------------------------------------------
+# Supersistema v1 — estado de runtime
+# ---------------------------------------------------------------------------
+_db_conn = None          # Conexión SQLite; se inicializa en main() si PERSISTENCE_ENABLED
+_db_lock = threading.Lock()  # Lock para serializar escrituras en DB desde múltiples workers
+
+
+def _now_utc() -> str:
+    return datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+
+
+def _new_id() -> str:
+    return str(uuid.uuid4())
+
+
+def _v1_enabled() -> bool:
+    mode = getattr(config, "STRATEGY_RUNTIME_MODE", "legacy")
+    return mode in ("dual", "v1_only")
+
+
+def _persistence_enabled() -> bool:
+    return bool(getattr(config, "PERSISTENCE_ENABLED", False)) and _db_conn is not None
+
+
+def _plan_executor_enabled() -> bool:
+    return bool(getattr(config, "PLAN_EXECUTOR_ENABLED", False))
+
+
+def _get_instance_id(strategy_key: str, symbol: str) -> str:
+    return f"{strategy_key}::{symbol}"
+
+
+def _is_v1_module(module) -> bool:
+    return (
+        getattr(module, "STRATEGY_API_VERSION", None) == 1
+        and hasattr(module, "decide")
+    )
 
 
 def _slugify(text: str) -> str:
@@ -54,35 +92,15 @@ def _strategy_module_stem(module_ref: str) -> str:
 
 
 def _resolve_timeframe_value(value):
-    if value is None:
-        return None
-    if isinstance(value, str):
-        return TIMEFRAME_MAP.get(value.strip().upper())
-    if isinstance(value, int) and value in TIMEFRAME_MAP.values():
-        return value
-    return None
+    return runtime_resolve_timeframe_value(value)
 
 
 def _timeframe_label(timeframe_value: int) -> str:
-    reverse_map = {v: k for k, v in TIMEFRAME_MAP.items()}
-    return reverse_map.get(timeframe_value, "")
+    return runtime_timeframe_label(timeframe_value)
 
 
 def _get_strategy_timeframe(module):
-    if module is None:
-        return None
-    if hasattr(module, "get_timeframe"):
-        try:
-            return module.get_timeframe()
-        except Exception:
-            return None
-    for key in ("TIMEFRAME", "STRATEGY_TIMEFRAME", "TIMEFRAME_STR"):
-        if hasattr(module, key):
-            try:
-                return getattr(module, key)
-            except Exception:
-                return None
-    return None
+    return runtime_get_strategy_timeframe(module)
 
 
 def _load_strategy_module(module_ref: str):
@@ -241,7 +259,9 @@ def load_active_strategies():
         if module is None:
             continue
 
-        if not hasattr(module, "get_last_signal") and not hasattr(module, "get_last_signal_payload"):
+        _is_legacy = hasattr(module, "get_last_signal") or hasattr(module, "get_last_signal_payload")
+        _is_v1 = _is_v1_module(module)
+        if not _is_legacy and not _is_v1:
             continue
 
         raw_timeframe = entry_dict.get("timeframe") if isinstance(item, dict) else None
@@ -338,89 +358,19 @@ def _build_market_dataframe(timeframe_value: int, bars_needed: int) -> pd.DataFr
 
 
 def _apply_strategy_processing(df: pd.DataFrame, module) -> pd.DataFrame:
-    out = df.copy()
-    if hasattr(module, "prepare_dataframe"):
-        candidate = module.prepare_dataframe(out)
-        if isinstance(candidate, pd.DataFrame):
-            out = candidate
-    if hasattr(module, "compute_dir1_and_signals"):
-        candidate = module.compute_dir1_and_signals(out, config.ENABLE_SIGNALS)
-        if isinstance(candidate, pd.DataFrame):
-            out = candidate
-    elif hasattr(module, "compute_signals"):
-        candidate = module.compute_signals(out, config.ENABLE_SIGNALS)
-        if isinstance(candidate, pd.DataFrame):
-            out = candidate
-    return out
+    return runtime_apply_strategy_processing(
+        df,
+        module,
+        enable_signals=bool(getattr(config, "ENABLE_SIGNALS", True)),
+    )
 
 
 def _normalize_signal(value) -> str:
-    signal = str(value or "").strip().lower()
-    return signal if signal in {"buy", "sell", "none"} else "none"
+    return runtime_normalize_signal(value)
 
 
 def _normalize_signal_payload(value) -> dict:
-    signal_raw = value
-    reason_raw = ""
-
-    if isinstance(value, dict):
-        signal_raw = (
-            value.get("signal")
-            or value.get("side")
-            or value.get("action")
-            or value.get("decision")
-            or "none"
-        )
-        reason_raw = (
-            value.get("reason")
-            or value.get("motivo")
-            or value.get("message")
-            or value.get("detail")
-            or value.get("why")
-            or ""
-        )
-    elif isinstance(value, (tuple, list)):
-        if len(value) > 0:
-            signal_raw = value[0]
-        if len(value) > 1:
-            reason_raw = value[1]
-
-    reason = str(reason_raw or "").strip()
-    if len(reason) > 160:
-        reason = reason[:157].rstrip() + "..."
-
-    pyramiding = False
-    atr_value = 0.0
-    dynamic_sizing = False
-    volume_ratio = 0.0
-
-    if isinstance(value, dict):
-        pyramiding_raw = value.get("pyramiding", False)
-        pyramiding = bool(pyramiding_raw) if pyramiding_raw is not None else False
-
-        atr_raw = value.get("atr_value", 0.0)
-        try:
-            atr_value = float(atr_raw) if atr_raw is not None else 0.0
-        except (TypeError, ValueError):
-            atr_value = 0.0
-
-        dynamic_sizing_raw = value.get("dynamic_sizing", False)
-        dynamic_sizing = bool(dynamic_sizing_raw) if dynamic_sizing_raw is not None else False
-
-        volume_ratio_raw = value.get("volume_ratio", 0.0)
-        try:
-            volume_ratio = float(volume_ratio_raw) if volume_ratio_raw is not None else 0.0
-        except (TypeError, ValueError):
-            volume_ratio = 0.0
-
-    return {
-        "signal":         _normalize_signal(signal_raw),
-        "reason":         reason,
-        "pyramiding":     pyramiding,
-        "atr_value":      atr_value,
-        "dynamic_sizing": dynamic_sizing,
-        "volume_ratio":   volume_ratio,
-    }
+    return runtime_normalize_signal_payload(value)
 
 
 def _analyze_strategy(index: int, entry: dict, base_df: pd.DataFrame) -> dict:
@@ -430,18 +380,11 @@ def _analyze_strategy(index: int, entry: dict, base_df: pd.DataFrame) -> dict:
             result["error"] = "No hay suficientes velas"
             return result
         strategy_df = _apply_strategy_processing(base_df, entry["module"])
-        raw_payload = None
-        if hasattr(entry["module"], "get_last_signal_payload"):
-            try:
-                raw_payload = entry["module"].get_last_signal_payload(strategy_df, verbose=False)
-            except TypeError:
-                raw_payload = entry["module"].get_last_signal_payload(strategy_df)
-        else:
-            try:
-                raw_payload = entry["module"].get_last_signal(strategy_df, verbose=False)
-            except TypeError:
-                raw_payload = entry["module"].get_last_signal(strategy_df)
-        signal_payload = _normalize_signal_payload(raw_payload)
+        signal_payload = runtime_get_strategy_signal_payload(
+            strategy_df,
+            entry["module"],
+            verbose=False,
+        )
         result["df"] = strategy_df
         result["signal"] = signal_payload["signal"]
         result["reason"] = signal_payload["reason"]
@@ -453,6 +396,285 @@ def _analyze_strategy(index: int, entry: dict, base_df: pd.DataFrame) -> dict:
         result["error"] = str(error)
     return result
 
+
+
+# ---------------------------------------------------------------------------
+# Supersistema v1 — funciones de integración
+# ---------------------------------------------------------------------------
+
+def _ensure_strategy_instance(uow, strategy_key: str, symbol: str) -> str:
+    """Asegura que existe un registro de instancia en DB. Devuelve instance_id."""
+    instance_id = _get_instance_id(strategy_key, symbol)
+    existing = uow.strategy_instances.get(instance_id)
+    if existing is None:
+        now = _now_utc()
+        uow.strategy_instances.upsert({
+            "instance_id": instance_id,
+            "strategy_key": strategy_key,
+            "symbol": symbol,
+            "status": "active",
+            "book_revision": 0,
+            "created_at": now,
+        })
+    return instance_id
+
+
+def _persist_legacy_execution(
+    entry: dict,
+    signal: str,
+    reason: str,
+    iteration_id: str,
+):
+    """
+    Fase 1: persiste trazabilidad del ciclo legacy sin cambiar el comportamiento.
+    Crea strategy_instance (si no existe), plan sintético, execution_report y evento.
+    """
+    if not _persistence_enabled():
+        return
+    from src.persistence import UnitOfWork
+    strategy_key = entry["key"]
+    symbol = config.SYMBOL
+    instance_id = _get_instance_id(strategy_key, symbol)
+    plan_id = _new_id()
+    report_id = _new_id()
+    now = _now_utc()
+
+    try:
+        with _db_lock:
+            uow = UnitOfWork(_db_conn)
+            with uow.immediate():
+                _ensure_strategy_instance(uow, strategy_key, symbol)
+                actions_count = 1 if signal != "none" else 0
+                uow.plans.insert({
+                    "plan_id": plan_id,
+                    "instance_id": instance_id,
+                    "strategy_key": strategy_key,
+                    "symbol": symbol,
+                    "iteration_id": iteration_id,
+                    "schema_version": 1,
+                    "status": "executed",
+                    "action_count": actions_count,
+                    "reason": reason or f"Señal legacy: {signal}",
+                    "plan": {
+                        "schema_version": 1,
+                        "actions": [{"type": "open_position", "signal": signal}] if signal != "none" else [],
+                        "meta": {"origin": "legacy_adapter", "legacy_signal": signal},
+                    },
+                })
+                uow.execution_reports.insert({
+                    "report_id": report_id,
+                    "plan_id": plan_id,
+                    "instance_id": instance_id,
+                    "strategy_key": strategy_key,
+                    "symbol": symbol,
+                    "status": "executed",
+                    "summary": f"Legacy signal: {signal}",
+                    "stats": {"signal": signal},
+                    "report": {"legacy_signal": signal, "reason": reason},
+                    "created_at": now,
+                })
+                uow.event_log.append({
+                    "event_type": "legacy_signal_executed",
+                    "iteration_id": iteration_id,
+                    "mode": "live",
+                    "strategy_key": strategy_key,
+                    "instance_id": instance_id,
+                    "symbol": symbol,
+                    "plan_id": plan_id,
+                    "report_id": report_id,
+                    "payload": {"signal": signal, "reason": reason},
+                })
+    except Exception:
+        pass
+
+
+def _run_v1_strategy_cycle(
+    entry: dict,
+    base_df,
+    iteration_id: str,
+    market_open: bool,
+):
+    """
+    Ciclo completo v1 para una estrategia (legacy o v1 nativa).
+    Devuelve dict con signal, reason y un flag executed_order.
+    Solo ejecuta si market_open y PLAN_EXECUTOR_ENABLED.
+    """
+    result = {
+        "signal": "none",
+        "reason": "",
+        "executed_order": False,
+        "error": "",
+    }
+    if not _persistence_enabled():
+        return result
+
+    import MetaTrader5 as _mt5
+    from src.persistence import UnitOfWork
+    from src.runtime import (
+        StrategyContextBuilder,
+        StrategyStateStore,
+        LegacyStrategyAdapter,
+        PlanInterpreter,
+        PlanValidationError,
+        ExecutionEngine,
+    )
+
+    strategy_key = entry["key"]
+    symbol = config.SYMBOL
+    timeframe_label = entry.get("timeframe_label", "M1")
+    module = entry["module"]
+    magic_number = entry["magic_number"]
+    instance_id = _get_instance_id(strategy_key, symbol)
+
+    legacy_defaults = {
+        "lot": config.LOT,
+        "sl_points": config.SL_POINTS,
+        "tp_points": config.TP_POINTS,
+    }
+
+    try:
+        with _db_lock:
+            uow = UnitOfWork(_db_conn)
+            _ensure_strategy_instance(uow, strategy_key, symbol)
+            _db_conn.commit()
+
+        uow = UnitOfWork(_db_conn)
+        state_store = StrategyStateStore(uow)
+        context_builder = StrategyContextBuilder(_mt5, uow)
+
+        # Cargar state
+        strategy_state, state_revision = state_store.load(instance_id)
+
+        # Construir context
+        context = context_builder.build(
+            strategy_key=strategy_key,
+            symbol=symbol,
+            timeframe_label=timeframe_label,
+            df=base_df,
+            instance_id=instance_id,
+            state_revision=state_revision,
+            iteration_id=iteration_id,
+            legacy_defaults=legacy_defaults,
+        )
+
+        # Obtener initial_state si es la primera vez con módulo v1
+        if state_revision == 0 and _is_v1_module(module) and hasattr(module, "initial_state"):
+            try:
+                strategy_state = module.initial_state(context) or {}
+            except Exception:
+                strategy_state = {}
+
+        # Llamar a decide()
+        if _is_v1_module(module):
+            raw_decision = module.decide(context, strategy_state)
+        else:
+            adapter = LegacyStrategyAdapter(module, timeframe_label)
+            raw_decision = adapter.decide(context, strategy_state)
+
+        plan = raw_decision.get("plan", {})
+        next_state = raw_decision.get("next_state", strategy_state)
+
+        # Extraer señal para compatibilidad con métricas de log
+        meta_signal = plan.get("meta", {}).get("legacy_signal", "")
+        actions = plan.get("actions", [])
+        if not meta_signal and actions:
+            first_action = actions[0]
+            side = first_action.get("side", "")
+            if side == "long":
+                meta_signal = "buy"
+            elif side == "short":
+                meta_signal = "sell"
+            else:
+                meta_signal = "none"
+        result["signal"] = meta_signal or "none"
+        result["reason"] = plan.get("reason", "")
+
+        plan_id = plan.get("plan_id", _new_id())
+        plan["plan_id"] = plan_id
+
+        # Persistir plan
+        with _db_lock:
+            uow2 = UnitOfWork(_db_conn)
+            with uow2.immediate():
+                uow2.plans.insert({
+                    "plan_id": plan_id,
+                    "instance_id": instance_id,
+                    "strategy_key": strategy_key,
+                    "symbol": symbol,
+                    "iteration_id": iteration_id,
+                    "schema_version": plan.get("schema_version", 1),
+                    "status": "validated",
+                    "action_count": len(actions),
+                    "state_revision_before": state_revision,
+                    "reason": plan.get("reason", ""),
+                    "plan": plan,
+                })
+                uow2.event_log.append({
+                    "event_type": "plan_received",
+                    "iteration_id": iteration_id,
+                    "mode": "live",
+                    "strategy_key": strategy_key,
+                    "instance_id": instance_id,
+                    "symbol": symbol,
+                    "plan_id": plan_id,
+                    "payload": {"action_count": len(actions), "signal": meta_signal},
+                })
+
+        # Ejecutar si habilitado y mercado abierto
+        if _plan_executor_enabled() and market_open and actions:
+            interpreter = PlanInterpreter()
+            try:
+                normalized = interpreter.validate_and_normalize(plan, context)
+            except PlanValidationError as exc:
+                with _db_lock:
+                    uow3 = UnitOfWork(_db_conn)
+                    uow3.plans.update_status(plan_id, "rejected_structural")
+                    _db_conn.commit()
+                result["error"] = f"Plan inválido: {exc}"
+                return result
+
+            engine = ExecutionEngine(
+                trading_module=trading,
+                uow=UnitOfWork(_db_conn),
+                symbol=symbol,
+                magic_number=magic_number,
+                strategy_key=strategy_key,
+                instance_id=instance_id,
+            )
+
+            with ORDER_EXECUTION_LOCK:
+                exec_report = engine.execute_plan(
+                    plan=plan,
+                    normalized_actions=normalized,
+                    state_revision_before=state_revision,
+                    iteration_id=iteration_id,
+                )
+
+            result["executed_order"] = exec_report.get("status") in ("executed", "partially_executed")
+
+        # Persistir next_state
+        new_revision = state_revision + 1
+        with _db_lock:
+            uow4 = UnitOfWork(_db_conn)
+            with uow4.immediate():
+                uow4.strategy_state.upsert({
+                    "instance_id": instance_id,
+                    "strategy_key": strategy_key,
+                    "symbol": symbol,
+                    "schema_version": 1,
+                    "revision": new_revision,
+                    "last_decision_id": iteration_id,
+                    "state": {"strategy_state": next_state},
+                })
+                uow4.plans.update_status(
+                    plan_id,
+                    "executed" if result["executed_order"] else "executed",
+                )
+
+    except Exception as exc:
+        result["error"] = str(exc)
+
+    return result
 
 
 def _resolve_max_workers(strategy_count: int) -> int:
@@ -547,6 +769,7 @@ def run_bot_loop(strategy_entries: list):
                         results[idx] = item
                         last_analyzed_ts[entry["key"]] = time.time()
 
+                iteration_id = _new_id()
                 executed_orders = 0
                 for idx, _ in scheduled_items:
                     result = results.get(idx)
@@ -567,6 +790,27 @@ def run_bot_loop(strategy_entries: list):
                     if executed_orders >= max_orders_per_iteration:
                         continue
 
+                    # ----------------------------------------------------------
+                    # Rama v1: si el modo lo requiere, correr ciclo v1 completo
+                    # ----------------------------------------------------------
+                    runtime_mode = getattr(config, "STRATEGY_RUNTIME_MODE", "legacy")
+                    if runtime_mode in ("dual", "v1_only") and _persistence_enabled():
+                        # Para módulos v1 nativos en modo v1_only: el ciclo v1
+                        # es la única ruta de ejecución.
+                        if _is_v1_module(entry["module"]) and runtime_mode == "v1_only":
+                            v1_result = _run_v1_strategy_cycle(
+                                entry,
+                                market_cache.get(entry["timeframe_value"]),
+                                iteration_id,
+                                market_open,
+                            )
+                            if v1_result.get("executed_order"):
+                                executed_orders += 1
+                            continue
+
+                    # ----------------------------------------------------------
+                    # Rama legacy (default): apply_signal / apply_pyramid_signal
+                    # ----------------------------------------------------------
                     pyramiding     = result.get("pyramiding", False)
                     atr_value      = result.get("atr_value", 0.0)
                     dynamic_sizing = result.get("dynamic_sizing", False)
@@ -609,6 +853,10 @@ def run_bot_loop(strategy_entries: list):
                             )
                     executed_orders += 1
 
+                    # Fase 1: persistir trazabilidad del ciclo legacy
+                    if _v1_enabled() and _persistence_enabled():
+                        _persist_legacy_execution(entry, signal, reason, iteration_id)
+
                 elapsed = time.time() - start_ts
                 time.sleep(sleep_seconds)
 
@@ -623,8 +871,19 @@ def run_bot_loop(strategy_entries: list):
 
 
 def main():
+    global _db_conn
+
     if _resolve_timeframe_value(getattr(config, "TIMEFRAME", None)) is None:
         config.TIMEFRAME = mt5.TIMEFRAME_M1
+
+    # Bootstrap persistencia v1
+    if getattr(config, "PERSISTENCE_ENABLED", False):
+        try:
+            from src.persistence import bootstrap_persistence
+            db_path = getattr(config, "PERSISTENCE_DB_PATH", "trading_bot.db")
+            _db_conn = bootstrap_persistence(db_path)
+        except Exception:
+            _db_conn = None
 
     try:
         strategy_entries = load_active_strategies()
@@ -644,6 +903,11 @@ def main():
 
     run_bot_loop(strategy_entries)
     mt5.shutdown()
+    if _db_conn is not None:
+        try:
+            _db_conn.close()
+        except Exception:
+            pass
 
 
 if __name__ == "__main__":
