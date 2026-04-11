@@ -66,11 +66,11 @@ PERSISTENCE_DB_PATH = "trading_bot.db"
 #   "legacy"   -> comportamiento actual sin cambios (v1 no se usa)
 #   "dual"     -> legacy + trazabilidad + adaptador v1 (recomendado durante transición)
 #   "v1_only"  -> solo estrategias con decide() + STRATEGY_API_VERSION = 1
-STRATEGY_RUNTIME_MODE = "dual"
+STRATEGY_RUNTIME_MODE = "v1_only"
 
 # PLAN_EXECUTOR_ENABLED: si True, el ExecutionEngine interpreta y ejecuta planes v1.
 # Si False, sigue usando trading.apply_signal() directamente.
-PLAN_EXECUTOR_ENABLED = False
+PLAN_EXECUTOR_ENABLED = True
 
 # CANONICAL_RESOURCES_ENABLED: activa persistencia de legs, entry_groups y fills.
 CANONICAL_RESOURCES_ENABLED = True

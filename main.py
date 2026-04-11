@@ -261,6 +261,9 @@ def load_active_strategies():
 
         _is_legacy = hasattr(module, "get_last_signal") or hasattr(module, "get_last_signal_payload")
         _is_v1 = _is_v1_module(module)
+        _mode = getattr(config, "STRATEGY_RUNTIME_MODE", "legacy")
+        if _mode == "v1_only" and not _is_v1:
+            continue  # En modo v1_only solo se admiten módulos con decide() + STRATEGY_API_VERSION=1
         if not _is_legacy and not _is_v1:
             continue
 
@@ -771,6 +774,13 @@ def run_bot_loop(strategy_entries: list):
 
                 iteration_id = _new_id()
                 executed_orders = 0
+                runtime_mode = getattr(config, "STRATEGY_RUNTIME_MODE", "legacy")
+                use_v1 = (
+                    runtime_mode == "v1_only"
+                    and _plan_executor_enabled()
+                    and _persistence_enabled()
+                )
+
                 for idx, _ in scheduled_items:
                     result = results.get(idx)
                     if not result:
@@ -779,11 +789,6 @@ def run_bot_loop(strategy_entries: list):
                     if result.get("error"):
                         continue
 
-                    signal = result["signal"]
-                    reason = str(result.get("reason") or "").strip()
-
-                    if signal == "none":
-                        continue
                     if not market_open:
                         continue
 
@@ -791,26 +796,29 @@ def run_bot_loop(strategy_entries: list):
                         continue
 
                     # ----------------------------------------------------------
-                    # Rama v1: si el modo lo requiere, correr ciclo v1 completo
+                    # Ruta exclusiva v1: todos los módulos pasan por el ciclo v1.
+                    # El módulo decide() internamente si actúa o no.
                     # ----------------------------------------------------------
-                    runtime_mode = getattr(config, "STRATEGY_RUNTIME_MODE", "legacy")
-                    if runtime_mode in ("dual", "v1_only") and _persistence_enabled():
-                        # Para módulos v1 nativos en modo v1_only: el ciclo v1
-                        # es la única ruta de ejecución.
-                        if _is_v1_module(entry["module"]) and runtime_mode == "v1_only":
-                            v1_result = _run_v1_strategy_cycle(
-                                entry,
-                                market_cache.get(entry["timeframe_value"]),
-                                iteration_id,
-                                market_open,
-                            )
-                            if v1_result.get("executed_order"):
-                                executed_orders += 1
-                            continue
+                    if use_v1:
+                        v1_result = _run_v1_strategy_cycle(
+                            entry,
+                            market_cache.get(entry["timeframe_value"]),
+                            iteration_id,
+                            market_open,
+                        )
+                        if v1_result.get("executed_order"):
+                            executed_orders += 1
+                        continue
 
                     # ----------------------------------------------------------
-                    # Rama legacy (default): apply_signal / apply_pyramid_signal
+                    # Ruta legacy (solo cuando PLAN_EXECUTOR_ENABLED = False)
                     # ----------------------------------------------------------
+                    signal = result["signal"]
+                    reason = str(result.get("reason") or "").strip()
+
+                    if signal == "none":
+                        continue
+
                     pyramiding     = result.get("pyramiding", False)
                     atr_value      = result.get("atr_value", 0.0)
                     dynamic_sizing = result.get("dynamic_sizing", False)
@@ -852,10 +860,6 @@ def run_bot_loop(strategy_entries: list):
                                 signal_reason=reason,
                             )
                     executed_orders += 1
-
-                    # Fase 1: persistir trazabilidad del ciclo legacy
-                    if _v1_enabled() and _persistence_enabled():
-                        _persist_legacy_execution(entry, signal, reason, iteration_id)
 
                 elapsed = time.time() - start_ts
                 time.sleep(sleep_seconds)

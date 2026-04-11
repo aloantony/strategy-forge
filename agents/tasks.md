@@ -3,25 +3,37 @@
 _Mantenido por Jarvis. El detalle completo de cada tarea está en `agents/tasks/<TASK-ID>.md`._
 _Para actualizar el estado de tu tarea, edita tanto este índice como tu task file._
 
-<!-- hook-permission: ON -->
+<!-- hook-permission: OFF -->
 <!-- jarvis-protocol: set OFF before editing this file; ask the human before restoring ON -->
 
 ---
 
 ## Active / Todo
 
-### Sprint: Primera Estrategia Externa (TASK-019 a TASK-026)
+### Sprint: Backtest GUI — Mejoras visuales (TASK-027 a TASK-033)
 
 | ID | Status | Assigned | Blocked by | Blocks |
 |----|--------|----------|------------|--------|
-| [TASK-019](tasks/TASK-019.md) | done | Daniel | — | TASK-025 |
-| [TASK-020](tasks/TASK-020.md) | done | Daniel | — | TASK-022, TASK-023 |
-| [TASK-021](tasks/TASK-021.md) | done | Daniel | — | TASK-022, TASK-024 |
-| [TASK-022](tasks/TASK-022.md) | done | Grace | TASK-020, TASK-021 | TASK-026 |
-| [TASK-023](tasks/TASK-023.md) | done | Felix | TASK-020 | TASK-025 |
-| [TASK-024](tasks/TASK-024.md) | done | Felix | TASK-021 | TASK-025 |
-| [TASK-025](tasks/TASK-025.md) | done | Felix | TASK-019, TASK-023, TASK-024 | — |
-| [TASK-026](tasks/TASK-026.md) | done | Felix | TASK-022 | — |
+| [TASK-027](tasks/TASK-027.md) | todo | Daniel | — | TASK-028 |
+| [TASK-028](tasks/TASK-028.md) | todo | Grace | TASK-027 | TASK-031 |
+| [TASK-029](tasks/TASK-029.md) | todo | Daniel | — | TASK-030 |
+| [TASK-030](tasks/TASK-030.md) | todo | Grace | TASK-029, TASK-028 | TASK-032 |
+| [TASK-031](tasks/TASK-031.md) | todo | Felix | TASK-028 | TASK-033 |
+| [TASK-032](tasks/TASK-032.md) | todo | Felix | TASK-030, TASK-029 | — |
+| [TASK-033](tasks/TASK-033.md) | todo | Felix | TASK-031 | — |
+
+### Siguiente sprint: Broker Abstraction (TASK-034 a TASK-039)
+
+_Comienza después de que el sprint de Backtest GUI esté completo, con la excepción de TASK-034 y TASK-036 que son specs (solo lectura de archivos existentes, sin escritura en runtime.py) y pueden iniciarse en paralelo al Backtest GUI sprint cuando Daniel tenga capacidad._
+
+| ID | Status | Assigned | Blocked by | Blocks |
+|----|--------|----------|------------|--------|
+| [TASK-034](tasks/TASK-034.md) | todo | Daniel | — | TASK-035, TASK-036, TASK-038 |
+| [TASK-035](tasks/TASK-035.md) | todo | Felix | TASK-034 | TASK-038 |
+| [TASK-036](tasks/TASK-036.md) | todo | Daniel | TASK-034 | TASK-037 |
+| [TASK-037](tasks/TASK-037.md) | todo | Felix | TASK-036, TASK-033 | TASK-039 |
+| [TASK-038](tasks/TASK-038.md) | todo | Grace | TASK-035 | TASK-039 |
+| [TASK-039](tasks/TASK-039.md) | todo | Felix | TASK-037, TASK-038 | — |
 
 ---
 
@@ -29,6 +41,14 @@ _Para actualizar el estado de tu tarea, edita tanto este índice como tu task fi
 
 | ID | Assigned | Resumen |
 |----|----------|---------|
+| TASK-026 | Felix | Cambios GUI para piramidado implementados en `gui_charts.py` |
+| TASK-025 | Felix | Estrategia ADX+DI con piramidado y sizing dinámico integrada |
+| TASK-024 | Felix | Sizing dinámico y riesgo agregado implementados en `trading.py` |
+| TASK-023 | Felix | Piramidado implementado en `trading.py` |
+| TASK-022 | Grace | Spec GUI para piramidado (`agents/specs/TASK-022-pyramiding-gui-spec.md`) |
+| TASK-021 | Daniel | Spec de sizing dinámico y riesgo agregado |
+| TASK-020 | Daniel | Spec de piramidado |
+| TASK-019 | Daniel | ADX+DI catálogo, columnas y modelo de cruce |
 | TASK-018 | TBD | Eliminadas estrategias de ejemplo; `strategies/README.md` creado |
 | TASK-017 | TBD | `strategies/builder.py` con `generate_strategy_file` implementado |
 | TASK-016 | Felix | Strategy Builder UI en `gui_charts.py` |

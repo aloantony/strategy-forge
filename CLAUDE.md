@@ -17,6 +17,9 @@ python gui_charts.py
 
 # Run bot without GUI (headless loop, for debugging)
 python main.py
+
+# Run current backtesting from the package
+python -m backtesting runtime --help
 ```
 
 ## Architecture
@@ -39,7 +42,7 @@ main.py (Bot orchestrator)
 - **main.py** — Strategy loader (dynamic module resolution), main trading loop, magic number generation per strategy
 - **trading.py** — Order execution; encodes trade metadata in comment strings (`"TAo|s=strategy|r=reason"`)
 - **data_feed.py** — `get_rates_df()` fetches OHLCV, adds derived columns (OHLC4, HLC3, ATR bands, MAs)
-- **backtest.py** — `BacktestEngine` class for historical simulation with P&L and drawdown metrics
+- **backtesting/** — backtesting package: `runtime.py` for the GUI/runtime-aligned engine and `python -m backtesting runtime` for CLI entrypoints
 - **strategies/builder.py** — Strategy `.py` file generator; called by the GUI's Strategy Builder to create/overwrite strategy modules from a JSON config
 - **gui_charts.py** — 6613 line GUI; Strategy Builder UI, strategy enable/disable, Data Window for custom indicator values, performance metrics
 
