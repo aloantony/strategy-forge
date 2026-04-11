@@ -30,6 +30,16 @@ import config
 import mt5_connection
 import data_feed
 import trading
+from backtesting import run_backtest
+from strategy_runtime import (
+    apply_strategy_processing as runtime_apply_strategy_processing,
+    get_strategy_signal_payload as runtime_get_strategy_signal_payload,
+    get_strategy_timeframe as runtime_get_strategy_timeframe,
+    normalize_signal as runtime_normalize_signal,
+    normalize_signal_payload as runtime_normalize_signal_payload,
+    resolve_timeframe_value as runtime_resolve_timeframe_value,
+    timeframe_label as runtime_timeframe_label,
+)
 
 
 def _patch_lightweight_charts_js_worker():
@@ -138,6 +148,13 @@ class TradingBotGUI:
         self.builder_preview_active = False
         self.builder_preview_entry = None
         self._strategy_builder_module_cache = None
+        self.backtest_thread = None
+        self.backtest_state = {
+            "running": False,
+            "error": "",
+            "result": None,
+            "form": {},
+        }
         self._init_strategy_registry()
 
         _patch_lightweight_charts_js_worker()
@@ -679,6 +696,233 @@ class TradingBotGUI:
             })
         return payload
 
+    def _get_backtest_strategy_options(self):
+        options = []
+        for entry in self.strategy_registry.values():
+            if entry.get("module_obj") is None:
+                self._load_strategy_entry(entry)
+            options.append({
+                "key": entry["key"],
+                "label": entry["label"],
+                "timeframe": entry.get("timeframe_label") or "",
+                "disabled": entry.get("module_obj") is None,
+            })
+        return options
+
+    def _get_backtest_symbol_options(self):
+        symbols = self.get_enabled_symbols(limit=50)
+        if config.SYMBOL and config.SYMBOL not in symbols:
+            symbols.insert(0, config.SYMBOL)
+        return symbols
+
+    def _get_backtest_preset_ranges(self):
+        today = datetime.now().date()
+        ytd_start = datetime(today.year, 1, 1).date()
+
+        def _fmt(day_value):
+            return day_value.strftime("%Y-%m-%d")
+
+        return {
+            "1M": {"start": _fmt(today - timedelta(days=30)), "end": _fmt(today)},
+            "3M": {"start": _fmt(today - timedelta(days=90)), "end": _fmt(today)},
+            "6M": {"start": _fmt(today - timedelta(days=180)), "end": _fmt(today)},
+            "YTD": {"start": _fmt(ytd_start), "end": _fmt(today)},
+            "1Y": {"start": _fmt(today - timedelta(days=365)), "end": _fmt(today)},
+        }
+
+    def _get_backtest_default_balance(self) -> str:
+        try:
+            account = mt5.account_info()
+        except Exception:
+            account = None
+        balance = getattr(account, "balance", None) if account is not None else None
+        if balance is None:
+            balance = 10000.0
+        return f"{float(balance):.2f}"
+
+    def _get_backtest_form_state(self):
+        form = dict(self.backtest_state.get("form") or {})
+        strategy_options = self._get_backtest_strategy_options()
+        symbols = self._get_backtest_symbol_options()
+        presets = self._get_backtest_preset_ranges()
+
+        valid_strategy_keys = [item["key"] for item in strategy_options if not item.get("disabled")]
+        all_strategy_keys = [item["key"] for item in strategy_options]
+        strategy_key = form.get("strategy_key") if form.get("strategy_key") in all_strategy_keys else ""
+        if not strategy_key:
+            strategy_key = valid_strategy_keys[0] if valid_strategy_keys else (all_strategy_keys[0] if all_strategy_keys else "")
+
+        symbol = str(form.get("symbol") or "").strip()
+        if symbol not in symbols:
+            symbol = config.SYMBOL if config.SYMBOL else (symbols[0] if symbols else "")
+
+        preset = str(form.get("preset") or "1M").upper()
+        if preset not in presets:
+            preset = "1M"
+
+        start_date = str(form.get("start_date") or presets[preset]["start"])
+        end_date = str(form.get("end_date") or presets[preset]["end"])
+        initial_balance = str(form.get("initial_balance") or self._get_backtest_default_balance())
+
+        form = {
+            "strategy_key": strategy_key,
+            "symbol": symbol,
+            "preset": preset,
+            "start_date": start_date,
+            "end_date": end_date,
+            "initial_balance": initial_balance,
+        }
+        self.backtest_state["form"] = form
+        return form
+
+    def _get_backtest_payload(self):
+        form = self._get_backtest_form_state()
+        entry = self._get_strategy_entry(form.get("strategy_key", ""))
+        timeframe_value = self._strategy_timeframe_value(entry, fallback=None)
+        timeframe_text = self._timeframe_label(timeframe_value) if timeframe_value is not None else "--"
+        return {
+            "handler": getattr(self, "side_panel_handler", ""),
+            "running": bool(self.backtest_state.get("running")),
+            "error": str(self.backtest_state.get("error") or ""),
+            "result": self.backtest_state.get("result"),
+            "form": form,
+            "timeframe": timeframe_text or "--",
+            "strategies": self._get_backtest_strategy_options(),
+            "symbols": self._get_backtest_symbol_options(),
+            "presets": self._get_backtest_preset_ranges(),
+        }
+
+    def _render_backtest_panel(self):
+        handler = getattr(self, "side_panel_handler", None)
+        if not handler or not getattr(self, "chart", None):
+            return
+        payload = self._get_backtest_payload()
+        payload["handler"] = handler
+        payload_json = json.dumps(payload, ensure_ascii=False)
+        self.chart.run_script(f'''
+            ;(function() {{
+                const payload = {payload_json};
+                if (window.renderBacktestPanel) {{
+                    window.renderBacktestPanel(payload);
+                }}
+            }})();
+        ''')
+
+    def _parse_backtest_date(self, value: str, *, end_of_day: bool = False) -> datetime:
+        text = str(value or "").strip()
+        if not text:
+            raise ValueError("Las fechas del backtest son obligatorias")
+        base = datetime.strptime(text, "%Y-%m-%d")
+        if end_of_day:
+            base = base.replace(hour=23, minute=59, second=59)
+        local_tz = datetime.now().astimezone().tzinfo or timezone.utc
+        return base.replace(tzinfo=local_tz).astimezone(timezone.utc)
+
+    def _run_backtest_worker(self, request: dict):
+        try:
+            result = run_backtest(request)
+        except Exception as error:
+            result = {"status": "error", "error": str(error)}
+
+        self.backtest_state["running"] = False
+        if result.get("status") == "success":
+            self.backtest_state["error"] = ""
+            self.backtest_state["result"] = result
+        else:
+            self.backtest_state["error"] = str(result.get("error") or "Error al ejecutar backtest")
+        self._render_backtest_panel()
+
+    def _on_backtest_run(self, json_str: str):
+        json_str = (json_str or "").strip()
+        if not json_str:
+            self.backtest_state["error"] = "Payload de backtest vacío"
+            self._render_backtest_panel()
+            return
+
+        if self.backtest_state.get("running"):
+            self.backtest_state["error"] = "Ya hay un backtest en ejecución"
+            self._render_backtest_panel()
+            return
+
+        try:
+            payload = json.loads(json_str)
+        except Exception as error:
+            self.backtest_state["error"] = f"Payload de backtest inválido: {error}"
+            self._render_backtest_panel()
+            return
+
+        strategy_key = str(payload.get("strategy_key") or "").strip()
+        entry = self._get_strategy_entry(strategy_key)
+        if not entry:
+            self.backtest_state["error"] = "Estrategia de backtest no encontrada"
+            self._render_backtest_panel()
+            return
+        if entry.get("module_obj") is None and not self._load_strategy_entry(entry):
+            self.backtest_state["error"] = entry.get("last_error") or "No se pudo cargar la estrategia para backtest"
+            self._render_backtest_panel()
+            return
+
+        symbol = str(payload.get("symbol") or "").strip()
+        if not symbol:
+            self.backtest_state["error"] = "Debe seleccionar un símbolo"
+            self._render_backtest_panel()
+            return
+
+        try:
+            initial_balance = float(payload.get("initial_balance") or 0.0)
+        except Exception:
+            initial_balance = 0.0
+        if initial_balance <= 0:
+            self.backtest_state["error"] = "El balance inicial debe ser mayor que cero"
+            self._render_backtest_panel()
+            return
+
+        try:
+            start_date = self._parse_backtest_date(payload.get("start_date"), end_of_day=False)
+            end_date = self._parse_backtest_date(payload.get("end_date"), end_of_day=True)
+        except Exception as error:
+            self.backtest_state["error"] = str(error)
+            self._render_backtest_panel()
+            return
+
+        if end_date < start_date:
+            self.backtest_state["error"] = "La fecha fin no puede ser anterior a la fecha inicio"
+            self._render_backtest_panel()
+            return
+
+        self.backtest_state["form"] = {
+            "strategy_key": entry["key"],
+            "symbol": symbol,
+            "preset": str(payload.get("preset") or "CUSTOM").upper(),
+            "start_date": str(payload.get("start_date") or ""),
+            "end_date": str(payload.get("end_date") or ""),
+            "initial_balance": f"{initial_balance:.2f}",
+        }
+        self.backtest_state["running"] = True
+        self.backtest_state["error"] = ""
+
+        request = {
+            "strategy_key": entry["key"],
+            "strategy_label": entry["label"],
+            "module": entry.get("module_obj"),
+            "symbol": symbol,
+            "timeframe_value": entry.get("timeframe_value"),
+            "start_date": start_date,
+            "end_date": end_date,
+            "initial_balance": initial_balance,
+            "warmup_bars": max(int(getattr(config, "BARS_HISTORY", 500) or 500), 500),
+            "lot": float(getattr(config, "LOT", 0.01) or 0.01),
+            "sl_points": float(getattr(config, "SL_POINTS", 0.0) or 0.0),
+            "tp_points": float(getattr(config, "TP_POINTS", 0.0) or 0.0),
+        }
+        self._render_backtest_panel()
+        self.backtest_thread = threading.Thread(
+            target=self._run_backtest_worker,
+            args=(request,),
+            daemon=True,
+        )
+        self.backtest_thread.start()
+
     def _get_side_panel_icons(self):
         # esta funcion sirve para obtener los iconos del panel lateral.
         return {
@@ -1007,54 +1251,15 @@ class TradingBotGUI:
 
     def _resolve_timeframe_value(self, value):
         # esta funcion sirve para convertir el marco de tiempo a su valor de MT5.
-        if value is None:
-            return None
-        timeframe_map = {
-            "M1": mt5.TIMEFRAME_M1,
-            "M5": mt5.TIMEFRAME_M5,
-            "M15": mt5.TIMEFRAME_M15,
-            "M30": mt5.TIMEFRAME_M30,
-            "H1": mt5.TIMEFRAME_H1,
-            "H4": mt5.TIMEFRAME_H4,
-            "D1": mt5.TIMEFRAME_D1
-        }
-        if isinstance(value, str):
-            key = value.strip().upper()
-            return timeframe_map.get(key)
-        if isinstance(value, int):
-            if value in timeframe_map.values():
-                return value
-        return None
+        return runtime_resolve_timeframe_value(value)
 
     def _timeframe_label(self, timeframe_value):
         # esta funcion sirve para crear la etiqueta de texto del marco de tiempo.
-        reverse_map = {
-            mt5.TIMEFRAME_M1: "M1",
-            mt5.TIMEFRAME_M5: "M5",
-            mt5.TIMEFRAME_M15: "M15",
-            mt5.TIMEFRAME_M30: "M30",
-            mt5.TIMEFRAME_H1: "H1",
-            mt5.TIMEFRAME_H4: "H4",
-            mt5.TIMEFRAME_D1: "D1"
-        }
-        return reverse_map.get(timeframe_value, "")
+        return runtime_timeframe_label(timeframe_value)
 
     def _get_strategy_timeframe(self, module):
         # esta funcion sirve para obtener el marco de tiempo de una estrategia.
-        if module is None:
-            return None
-        if hasattr(module, "get_timeframe"):
-            try:
-                return module.get_timeframe()
-            except Exception:
-                return None
-        for key in ("TIMEFRAME", "STRATEGY_TIMEFRAME", "TIMEFRAME_STR"):
-            if hasattr(module, key):
-                try:
-                    return getattr(module, key)
-                except Exception:
-                    return None
-        return None
+        return runtime_get_strategy_timeframe(module)
 
     def _apply_strategy_timeframe(self, module_or_entry, refresh: bool = True):
         # esta funcion sirve para aplicar el marco de tiempo elegido por la estrategia.
@@ -1438,6 +1643,7 @@ class TradingBotGUI:
         ''')
         self._render_strategy_data_scope_selector()
         self._render_data_window_strategy_selector()
+        self._render_backtest_panel()
         self._sync_strategy_status_ui()
         self._render_strategy_readiness_overlay()
 
@@ -2132,18 +2338,11 @@ class TradingBotGUI:
             return df
         label = strategy_key or self.current_strategy_key or ""
         try:
-            if hasattr(module, "prepare_dataframe"):
-                result = module.prepare_dataframe(df)
-                if isinstance(result, pd.DataFrame):
-                    df = result
-            if hasattr(module, "compute_dir1_and_signals"):
-                result = module.compute_dir1_and_signals(df, config.ENABLE_SIGNALS)
-                if isinstance(result, pd.DataFrame):
-                    df = result
-            elif hasattr(module, "compute_signals"):
-                result = module.compute_signals(df, config.ENABLE_SIGNALS)
-                if isinstance(result, pd.DataFrame):
-                    df = result
+            df = runtime_apply_strategy_processing(
+                df,
+                module,
+                enable_signals=bool(getattr(config, "ENABLE_SIGNALS", True)),
+            )
         except Exception as e:
             self.log_message(f"Error en estrategia '{label}': {e}")
         return df
@@ -2164,69 +2363,11 @@ class TradingBotGUI:
 
     def _normalize_signal_value(self, signal) -> str:
         # esta funcion sirve para normalizar valor de señal.
-        value = str(signal or "").strip().lower()
-        return value if value in {"buy", "sell", "none"} else "none"
+        return runtime_normalize_signal(signal)
 
     def _normalize_signal_payload(self, payload) -> dict:
         # esta funcion sirve para normalizar payload de señal.
-        signal_raw = payload
-        reason_raw = ""
-        pyramiding = False
-        atr_value = 0.0
-        dynamic_sizing = False
-        volume_ratio = 0.0
-
-        if isinstance(payload, dict):
-            signal_raw = (
-                payload.get("signal")
-                or payload.get("side")
-                or payload.get("action")
-                or payload.get("decision")
-                or "none"
-            )
-            reason_raw = (
-                payload.get("reason")
-                or payload.get("motivo")
-                or payload.get("message")
-                or payload.get("detail")
-                or payload.get("why")
-                or ""
-            )
-            pyramiding_raw = payload.get("pyramiding", False)
-            pyramiding = bool(pyramiding_raw) if pyramiding_raw is not None else False
-
-            atr_raw = payload.get("atr_value", 0.0)
-            try:
-                atr_value = float(atr_raw) if atr_raw is not None else 0.0
-            except (TypeError, ValueError):
-                atr_value = 0.0
-
-            dynamic_sizing_raw = payload.get("dynamic_sizing", False)
-            dynamic_sizing = bool(dynamic_sizing_raw) if dynamic_sizing_raw is not None else False
-
-            volume_ratio_raw = payload.get("volume_ratio", 0.0)
-            try:
-                volume_ratio = float(volume_ratio_raw) if volume_ratio_raw is not None else 0.0
-            except (TypeError, ValueError):
-                volume_ratio = 0.0
-        elif isinstance(payload, (tuple, list)):
-            if len(payload) > 0:
-                signal_raw = payload[0]
-            if len(payload) > 1:
-                reason_raw = payload[1]
-
-        reason = str(reason_raw or "").strip()
-        if len(reason) > 160:
-            reason = reason[:157].rstrip() + "..."
-
-        return {
-            "signal": self._normalize_signal_value(signal_raw),
-            "reason": reason,
-            "pyramiding": pyramiding,
-            "atr_value": atr_value,
-            "dynamic_sizing": dynamic_sizing,
-            "volume_ratio": volume_ratio,
-        }
+        return runtime_normalize_signal_payload(payload)
 
     def _get_strategy_signal_payload_with_module(
         self,
@@ -2239,24 +2380,15 @@ class TradingBotGUI:
         if module is None:
             return {"signal": "none", "reason": ""}
         label = strategy_key or self.current_strategy_key or ""
-        payload = None
-        if hasattr(module, "get_last_signal_payload"):
-            try:
-                payload = module.get_last_signal_payload(df, verbose=verbose)
-            except TypeError:
-                payload = module.get_last_signal_payload(df)
-            except Exception as e:
-                self.log_message(f"Error al obtener payload de señal ({label}): {e}")
-
-        if payload is None and hasattr(module, "get_last_signal"):
-            try:
-                payload = module.get_last_signal(df, verbose=verbose)
-            except TypeError:
-                payload = module.get_last_signal(df)
-            except Exception as e:
-                self.log_message(f"Error al obtener señal ({label}): {e}")
-
-        return self._normalize_signal_payload(payload)
+        try:
+            return runtime_get_strategy_signal_payload(
+                df,
+                module,
+                verbose=verbose,
+            )
+        except Exception as e:
+            self.log_message(f"Error al obtener señal ({label}): {e}")
+            return {"signal": "none", "reason": ""}
 
     def _get_strategy_signal_with_module(self, df: pd.DataFrame, module, strategy_key: str = "", verbose: bool = False) -> str:
         # esta funcion sirve para obtener estrategia senal con modulo.
@@ -3062,6 +3194,136 @@ class TradingBotGUI:
                     .tv-strategy-add button:hover {
                         background: #3a3a3a;
                     }
+                    .tv-backtest-panel {
+                        display: flex;
+                        flex-direction: column;
+                        gap: 10px;
+                        padding: 10px;
+                        color: #d0d0d0;
+                    }
+                    .tv-backtest-header {
+                        display: flex;
+                        flex-direction: column;
+                        gap: 2px;
+                    }
+                    .tv-backtest-title {
+                        font-size: 14px;
+                        font-weight: 700;
+                        color: #f0f0f0;
+                    }
+                    .tv-backtest-subtitle {
+                        font-size: 11px;
+                        color: #8e8e8e;
+                    }
+                    .tv-backtest-form {
+                        display: grid;
+                        grid-template-columns: 1fr 1fr;
+                        gap: 8px;
+                    }
+                    .tv-backtest-field {
+                        display: flex;
+                        flex-direction: column;
+                        gap: 4px;
+                    }
+                    .tv-backtest-field label {
+                        font-size: 11px;
+                        color: #9b9b9b;
+                    }
+                    .tv-backtest-field select,
+                    .tv-backtest-field input,
+                    .tv-backtest-readonly {
+                        background: #1a1a1a;
+                        border: 1px solid #333333;
+                        color: #f0f0f0;
+                        padding: 7px 8px;
+                        border-radius: 4px;
+                        font-size: 12px;
+                    }
+                    .tv-backtest-readonly {
+                        min-height: 32px;
+                        display: flex;
+                        align-items: center;
+                    }
+                    .tv-backtest-presets {
+                        grid-column: 1 / -1;
+                    }
+                    .tv-backtest-preset-list {
+                        display: flex;
+                        flex-wrap: wrap;
+                        gap: 6px;
+                    }
+                    .tv-backtest-preset-btn {
+                        background: #232323;
+                        color: #d9d9d9;
+                        border: 1px solid #343434;
+                        border-radius: 999px;
+                        padding: 5px 10px;
+                        font-size: 11px;
+                        cursor: pointer;
+                    }
+                    .tv-backtest-preset-btn.active {
+                        background: #163038;
+                        border-color: #245565;
+                        color: #b9ebff;
+                    }
+                    .tv-backtest-actions {
+                        display: flex;
+                        align-items: center;
+                        justify-content: space-between;
+                        gap: 8px;
+                    }
+                    #tv-backtest-run {
+                        background: #1f3a24;
+                        color: #d9f2de;
+                        border: 1px solid #2f5a35;
+                        border-radius: 4px;
+                        padding: 7px 12px;
+                        font-size: 12px;
+                        cursor: pointer;
+                    }
+                    #tv-backtest-run:disabled {
+                        opacity: 0.6;
+                        cursor: default;
+                    }
+                    .tv-backtest-status {
+                        font-size: 11px;
+                        color: #8f8f8f;
+                    }
+                    .tv-backtest-error {
+                        display: none;
+                        background: rgba(180, 40, 40, 0.14);
+                        border: 1px solid rgba(180, 40, 40, 0.4);
+                        color: #ff9a9a;
+                        border-radius: 6px;
+                        padding: 8px 10px;
+                        font-size: 11px;
+                    }
+                    .tv-backtest-results {
+                        display: grid;
+                        grid-template-columns: 1fr 1fr;
+                        gap: 8px;
+                    }
+                    .tv-backtest-card {
+                        background: #1f1f1f;
+                        border: 1px solid #2f2f2f;
+                        border-radius: 8px;
+                        padding: 10px;
+                        display: flex;
+                        flex-direction: column;
+                        gap: 4px;
+                    }
+                    .tv-backtest-card-label {
+                        font-size: 10px;
+                        color: #8f8f8f;
+                        text-transform: uppercase;
+                        letter-spacing: 0.05em;
+                    }
+                    .tv-backtest-card-value {
+                        font-size: 14px;
+                        font-weight: 700;
+                        color: #f0f0f0;
+                        font-variant-numeric: tabular-nums;
+                    }
                     .tv-confirm-overlay {
                         position: fixed;
                         inset: 0;
@@ -3571,6 +3833,7 @@ class TradingBotGUI:
             "strategy_data_options": self._get_strategy_data_scope_options(items),
             "strategy_data_selected": self._get_strategy_data_scope(items),
             "strategy_data_all_actives": bool(self.strategy_data_all_actives),
+            "backtest": self._get_backtest_payload(),
         })
 
         self.chart.run_script(f'''            ;(function() {{
@@ -3614,9 +3877,13 @@ class TradingBotGUI:
             const tabStrategies = document.createElement("div");
             tabStrategies.className = "tv-side-tab";
             tabStrategies.innerText = "Estrategias";
+            const tabBacktest = document.createElement("div");
+            tabBacktest.className = "tv-side-tab";
+            tabBacktest.innerText = "Backtest";
             legacyTabs.appendChild(tabObjects);
             legacyTabs.appendChild(tabData);
             legacyTabs.appendChild(tabStrategies);
+            legacyTabs.appendChild(tabBacktest);
 
             const strategyDataPanel = document.createElement("div");
             strategyDataPanel.className = "tv-strategy-data-panel";
@@ -3705,6 +3972,53 @@ class TradingBotGUI:
             strategyPanel.style.display = "none";
             strategyPanel.style.padding = "10px";
             strategyPanel.style.color = "#b0b0b0";
+
+            const backtestPanel = document.createElement("div");
+            backtestPanel.id = "tv-backtest-panel";
+            backtestPanel.className = "tv-backtest-panel";
+            backtestPanel.style.display = "none";
+            backtestPanel.innerHTML = `
+                <div class="tv-backtest-header">
+                    <div class="tv-backtest-title">Backtest</div>
+                    <div class="tv-backtest-subtitle">Simulación histórica sin tocar el motor live.</div>
+                </div>
+                <div class="tv-backtest-form">
+                    <div class="tv-backtest-field">
+                        <label>Estrategia</label>
+                        <select id="tv-backtest-strategy"></select>
+                    </div>
+                    <div class="tv-backtest-field">
+                        <label>Símbolo</label>
+                        <select id="tv-backtest-symbol"></select>
+                    </div>
+                    <div class="tv-backtest-field readonly">
+                        <label>Timeframe</label>
+                        <div class="tv-backtest-readonly" id="tv-backtest-timeframe">--</div>
+                    </div>
+                    <div class="tv-backtest-field tv-backtest-presets">
+                        <label>Ventana</label>
+                        <div class="tv-backtest-preset-list" id="tv-backtest-presets"></div>
+                    </div>
+                    <div class="tv-backtest-field">
+                        <label>Fecha inicio</label>
+                        <input id="tv-backtest-start" type="date" />
+                    </div>
+                    <div class="tv-backtest-field">
+                        <label>Fecha fin</label>
+                        <input id="tv-backtest-end" type="date" />
+                    </div>
+                    <div class="tv-backtest-field">
+                        <label>Balance inicial</label>
+                        <input id="tv-backtest-balance" type="number" min="0" step="0.01" />
+                    </div>
+                </div>
+                <div class="tv-backtest-actions">
+                    <button type="button" id="tv-backtest-run">Ejecutar backtest</button>
+                    <div class="tv-backtest-status" id="tv-backtest-status">Sin ejecución todavía.</div>
+                </div>
+                <div class="tv-backtest-error" id="tv-backtest-error"></div>
+                <div class="tv-backtest-results" id="tv-backtest-results"></div>
+            `;
 
             const strategyList = document.createElement("div");
             strategyList.id = "tv-strategy-list";
@@ -3865,30 +4179,47 @@ class TradingBotGUI:
             legacyPanel.appendChild(strategyDataPanel);
             legacyPanel.appendChild(dataWindow);
             legacyPanel.appendChild(strategyPanel);
+            legacyPanel.appendChild(backtestPanel);
 
             tabObjects.addEventListener("click", () => {{
                 tabObjects.classList.add("active");
                 tabData.classList.remove("active");
                 tabStrategies.classList.remove("active");
+                tabBacktest.classList.remove("active");
                 strategyDataPanel.style.display = "flex";
                 dataWindow.style.display = "none";
                 strategyPanel.style.display = "none";
+                backtestPanel.style.display = "none";
             }});
             tabData.addEventListener("click", () => {{
                 tabData.classList.add("active");
                 tabObjects.classList.remove("active");
                 tabStrategies.classList.remove("active");
+                tabBacktest.classList.remove("active");
                 strategyDataPanel.style.display = "none";
                 dataWindow.style.display = "flex";
                 strategyPanel.style.display = "none";
+                backtestPanel.style.display = "none";
             }});
             tabStrategies.addEventListener("click", () => {{
                 tabStrategies.classList.add("active");
                 tabObjects.classList.remove("active");
                 tabData.classList.remove("active");
+                tabBacktest.classList.remove("active");
                 strategyDataPanel.style.display = "none";
                 dataWindow.style.display = "none";
                 strategyPanel.style.display = "block";
+                backtestPanel.style.display = "none";
+            }});
+            tabBacktest.addEventListener("click", () => {{
+                tabBacktest.classList.add("active");
+                tabObjects.classList.remove("active");
+                tabData.classList.remove("active");
+                tabStrategies.classList.remove("active");
+                strategyDataPanel.style.display = "none";
+                dataWindow.style.display = "none";
+                strategyPanel.style.display = "none";
+                backtestPanel.style.display = "block";
             }});
 
             panel.appendChild(newsPanel);
@@ -4074,6 +4405,192 @@ class TradingBotGUI:
                     selector.selectedIndex = 0;
                 }}
                 selector.dataset.handler = handler;
+            }};
+
+            window.tvBacktest = window.tvBacktest || {{}};
+            window.tvBacktest.formatMoney = (value) => {{
+                const num = Number(value);
+                if (!Number.isFinite(num)) return "--";
+                return num.toLocaleString(undefined, {{
+                    minimumFractionDigits: 2,
+                    maximumFractionDigits: 2
+                }});
+            }};
+            window.tvBacktest.formatDate = (epoch) => {{
+                if (epoch === null || epoch === undefined) return "--";
+                const dt = new Date(Number(epoch) * 1000);
+                if (Number.isNaN(dt.getTime())) return "--";
+                return dt.toLocaleDateString();
+            }};
+            window.renderBacktestPanel = (data) => {{
+                const state = window.tvBacktest.state || (window.tvBacktest.state = {{ form: {{}} }});
+                const payloadData = data || {{}};
+                state.handler = payloadData.handler || payload.handler;
+                state.running = !!payloadData.running;
+                state.error = payloadData.error || "";
+                state.result = payloadData.result || null;
+                state.presets = payloadData.presets || {{}};
+                state.strategies = Array.isArray(payloadData.strategies) ? payloadData.strategies : [];
+                state.symbols = Array.isArray(payloadData.symbols) ? payloadData.symbols : [];
+                state.form = Object.assign({{}}, state.form || {{}}, payloadData.form || {{}});
+
+                const strategySel = document.getElementById("tv-backtest-strategy");
+                const symbolSel = document.getElementById("tv-backtest-symbol");
+                const timeframeEl = document.getElementById("tv-backtest-timeframe");
+                const presetsEl = document.getElementById("tv-backtest-presets");
+                const startEl = document.getElementById("tv-backtest-start");
+                const endEl = document.getElementById("tv-backtest-end");
+                const balanceEl = document.getElementById("tv-backtest-balance");
+                const runBtn = document.getElementById("tv-backtest-run");
+                const statusEl = document.getElementById("tv-backtest-status");
+                const errorEl = document.getElementById("tv-backtest-error");
+                const resultsEl = document.getElementById("tv-backtest-results");
+                if (!strategySel || !symbolSel || !timeframeEl || !presetsEl || !startEl || !endEl || !balanceEl || !runBtn || !statusEl || !errorEl || !resultsEl) return;
+
+                strategySel.innerHTML = "";
+                state.strategies.forEach((entry) => {{
+                    if (!entry || !entry.key) return;
+                    const option = document.createElement("option");
+                    option.value = entry.key;
+                    option.innerText = entry.label || entry.key;
+                    option.disabled = !!entry.disabled;
+                    strategySel.appendChild(option);
+                }});
+                const enabledStrategy = state.strategies.find((item) => item && item.key && !item.disabled);
+                const anyStrategy = state.strategies.find((item) => item && item.key);
+                const selectedStrategy = state.strategies.find((item) => item && item.key === state.form.strategy_key && !item.disabled);
+                state.form.strategy_key = selectedStrategy ? selectedStrategy.key : (enabledStrategy ? enabledStrategy.key : (anyStrategy ? anyStrategy.key : ""));
+                strategySel.value = state.form.strategy_key || "";
+
+                symbolSel.innerHTML = "";
+                state.symbols.forEach((symbol) => {{
+                    const option = document.createElement("option");
+                    option.value = symbol;
+                    option.innerText = symbol;
+                    symbolSel.appendChild(option);
+                }});
+                if (!state.symbols.includes(state.form.symbol)) {{
+                    state.form.symbol = state.symbols.length ? state.symbols[0] : "";
+                }}
+                symbolSel.value = state.form.symbol || "";
+
+                const updateTimeframe = () => {{
+                    const selected = state.strategies.find((item) => item && item.key === state.form.strategy_key);
+                    timeframeEl.innerText = selected && selected.timeframe ? selected.timeframe : (payloadData.timeframe || "--");
+                }};
+
+                const renderPresetButtons = () => {{
+                    presetsEl.innerHTML = "";
+                    Object.keys(state.presets || {{}}).forEach((key) => {{
+                        const range = state.presets[key] || {{}};
+                        const btn = document.createElement("button");
+                        btn.type = "button";
+                        btn.className = "tv-backtest-preset-btn" + ((state.form.preset || "").toUpperCase() === key ? " active" : "");
+                        btn.innerText = key;
+                        btn.addEventListener("click", () => {{
+                            state.form.preset = key;
+                            state.form.start_date = range.start || "";
+                            state.form.end_date = range.end || "";
+                            startEl.value = state.form.start_date || "";
+                            endEl.value = state.form.end_date || "";
+                            renderPresetButtons();
+                        }});
+                        presetsEl.appendChild(btn);
+                    }});
+                }};
+
+                if (!state.form.start_date || !state.form.end_date) {{
+                    const presetKey = (state.form.preset || "1M").toUpperCase();
+                    const range = state.presets[presetKey] || state.presets["1M"] || {{}};
+                    state.form.preset = range.start ? presetKey : "CUSTOM";
+                    state.form.start_date = state.form.start_date || range.start || "";
+                    state.form.end_date = state.form.end_date || range.end || "";
+                }}
+
+                startEl.value = state.form.start_date || "";
+                endEl.value = state.form.end_date || "";
+                balanceEl.value = state.form.initial_balance || "";
+                updateTimeframe();
+                renderPresetButtons();
+
+                strategySel.onchange = () => {{
+                    state.form.strategy_key = strategySel.value || "";
+                    updateTimeframe();
+                }};
+                symbolSel.onchange = () => {{
+                    state.form.symbol = symbolSel.value || "";
+                }};
+                startEl.onchange = () => {{
+                    state.form.start_date = startEl.value || "";
+                    state.form.preset = "CUSTOM";
+                    renderPresetButtons();
+                }};
+                endEl.onchange = () => {{
+                    state.form.end_date = endEl.value || "";
+                    state.form.preset = "CUSTOM";
+                    renderPresetButtons();
+                }};
+                balanceEl.onchange = () => {{
+                    state.form.initial_balance = balanceEl.value || "";
+                }};
+
+                runBtn.disabled = state.running || !state.form.strategy_key || !state.form.symbol;
+                runBtn.innerText = state.running ? "Ejecutando..." : "Ejecutar backtest";
+                runBtn.onclick = () => {{
+                    const request = {{
+                        strategy_key: state.form.strategy_key || "",
+                        symbol: state.form.symbol || "",
+                        preset: state.form.preset || "CUSTOM",
+                        start_date: startEl.value || "",
+                        end_date: endEl.value || "",
+                        initial_balance: balanceEl.value || "",
+                    }};
+                    if (window.callbackFunction && state.handler) {{
+                        window.callbackFunction(state.handler + "_~_backtest_run;;;" + encodeURIComponent(JSON.stringify(request)));
+                    }}
+                }};
+
+                errorEl.innerText = state.error || "";
+                errorEl.style.display = state.error ? "block" : "none";
+
+                if (state.running) {{
+                    statusEl.innerText = "Ejecutando backtest...";
+                }} else if (state.result && state.result.status === "success") {{
+                    statusEl.innerText = "Backtest completado";
+                }} else {{
+                    statusEl.innerText = "Sin ejecución todavía.";
+                }}
+
+                if (!state.result || state.result.status !== "success") {{
+                    resultsEl.innerHTML = "";
+                    return;
+                }}
+
+                const result = state.result;
+                const cards = [
+                    ["Balance final", window.tvBacktest.formatMoney(result.final_balance)],
+                    ["Profit total", window.tvBacktest.formatMoney(result.total_profit)],
+                    ["Retorno %", Number(result.total_return_pct || 0).toFixed(2) + "%"],
+                    ["Operaciones", String(result.closed_trades || 0)],
+                    ["Win rate", Number(result.win_rate || 0).toFixed(2) + "%"],
+                    ["Max DD", Number(result.max_drawdown || 0).toFixed(2) + "%"],
+                    ["Rango", window.tvBacktest.formatDate(result.start_date) + " - " + window.tvBacktest.formatDate(result.end_date)],
+                    ["TF", result.timeframe || "--"]
+                ];
+                resultsEl.innerHTML = "";
+                cards.forEach((item) => {{
+                    const card = document.createElement("div");
+                    card.className = "tv-backtest-card";
+                    const label = document.createElement("div");
+                    label.className = "tv-backtest-card-label";
+                    label.innerText = item[0];
+                    const value = document.createElement("div");
+                    value.className = "tv-backtest-card-value";
+                    value.innerText = item[1];
+                    card.appendChild(label);
+                    card.appendChild(value);
+                    resultsEl.appendChild(card);
+                }});
             }};
 
             window.tvEyeSvg = (isVisible) => {{
@@ -4328,6 +4845,9 @@ class TradingBotGUI:
                     handler: payload.handler,
                     active_count: payload.active_count || 0
                 }});
+            }}
+            if (window.renderBacktestPanel) {{
+                window.renderBacktestPanel(payload.backtest || {{}});
             }}
 
             window.tvDataWindow = window.tvDataWindow || {{}};
@@ -4705,6 +5225,10 @@ class TradingBotGUI:
             return
         if action == "strategy_toggle":
             self._toggle_strategy_run()
+            return
+        if action == "backtest_run" and args:
+            json_str = unquote(args[0]) if len(args) > 0 else ""
+            self._on_backtest_run(json_str)
             return
         if action == "strategy_builder_new":
             self._on_strategy_builder_new()

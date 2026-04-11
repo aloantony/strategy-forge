@@ -140,6 +140,6 @@ When reading `gui_charts.py`, treat these as the canonical architectural facts:
 
 ### Backtest integration (upcoming)
 
-- `backtest.py` is frozen and stable — do not touch it
+- `backtesting/runtime.py` is the active backtest engine and any GUI changes must stay compatible with it
 - Future GUI integration will add a "Backtest" tab to the side panel
 - Grace must ensure no current change precludes this by, for example, hardcoding assumptions about the number of side panel tabs

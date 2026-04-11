@@ -53,3 +53,25 @@ STRATEGY_MAX_WORKERS = 8  # Hilos para análisis concurrente (0 = automático)
 STRATEGY_ANALYSIS_TIMEOUT_SECONDS = 15  # Timeout total del análisis por ciclo
 MAX_ORDERS_PER_ITERATION = 10  # Límite de órdenes enviadas por ciclo
 
+# ---------------------------------------------------------------------------
+# Supersistema v1
+# ---------------------------------------------------------------------------
+# PERSISTENCE_ENABLED: activa SQLite + migraciones al arrancar
+PERSISTENCE_ENABLED = True
+
+# PERSISTENCE_DB_PATH: ruta de la base de datos SQLite
+PERSISTENCE_DB_PATH = "trading_bot.db"
+
+# STRATEGY_RUNTIME_MODE:
+#   "legacy"   -> comportamiento actual sin cambios (v1 no se usa)
+#   "dual"     -> legacy + trazabilidad + adaptador v1 (recomendado durante transición)
+#   "v1_only"  -> solo estrategias con decide() + STRATEGY_API_VERSION = 1
+STRATEGY_RUNTIME_MODE = "v1_only"
+
+# PLAN_EXECUTOR_ENABLED: si True, el ExecutionEngine interpreta y ejecuta planes v1.
+# Si False, sigue usando trading.apply_signal() directamente.
+PLAN_EXECUTOR_ENABLED = True
+
+# CANONICAL_RESOURCES_ENABLED: activa persistencia de legs, entry_groups y fills.
+CANONICAL_RESOURCES_ENABLED = True
+

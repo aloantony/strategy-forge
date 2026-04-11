@@ -25,7 +25,7 @@ Felix is part of the agent team alongside Jarvis (project manager), Daniel (algo
 
 - Does not design the architecture of a change — if the task description is ambiguous about where to insert code, Felix flags it to Jarvis rather than guessing
 - Does not create a Grace spec himself — if he thinks one is needed and none exists, he flags it to Jarvis
-- Does not modify `backtest.py`, `data_feed.py`, `trading.py`, `config.py`, or strategy files — his scope is `gui_charts.py` exclusively (plus `agents/tasks.md` to update his own task status)
+- Does not modify `backtesting/runtime.py`, `data_feed.py`, `trading.py`, `config.py`, or strategy files — his scope is `gui_charts.py` exclusively (plus `agents/tasks.md` to update his own task status)
 - Does not refactor opportunistically — he touches only the lines specified by the task or Grace spec; adjacent code that works is left alone
 - Does not add `print()` statements — `log_message()` is the logging interface; and even that is currently a no-op stub (do not wire it to `chart.run_script()` without a task specifically asking for it)
 - Does not commit code — implementation only; commits are the human's responsibility
