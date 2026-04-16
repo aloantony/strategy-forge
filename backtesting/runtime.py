@@ -8,12 +8,11 @@ from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from typing import Any
 
-import MetaTrader5 as mt5
 import pandas as pd
 
 import config
 import data_feed
-import trading
+from src.data.interface import IHistoricalDataSource
 from strategy_runtime import (
     TIMEFRAME_MAP,
     apply_strategy_processing,
@@ -24,14 +23,9 @@ from strategy_runtime import (
 )
 
 
-TIMEFRAME_MINUTES = {
-    mt5.TIMEFRAME_M1: 1,
-    mt5.TIMEFRAME_M5: 5,
-    mt5.TIMEFRAME_M15: 15,
-    mt5.TIMEFRAME_M30: 30,
-    mt5.TIMEFRAME_H1: 60,
-    mt5.TIMEFRAME_H4: 240,
-    mt5.TIMEFRAME_D1: 1440,
+_TIMEFRAME_STR_TO_MINUTES = {
+    "M1": 1, "M5": 5, "M15": 15, "M30": 30,
+    "H1": 60, "H4": 240, "D1": 1440,
 }
 
 
@@ -56,7 +50,8 @@ def _time_to_epoch(value) -> int | None:
 
 
 def _timeframe_to_minutes(timeframe_value: int) -> int:
-    return int(TIMEFRAME_MINUTES.get(timeframe_value, 1))
+    label = timeframe_label(timeframe_value) or "M1"
+    return int(_TIMEFRAME_STR_TO_MINUTES.get(label, 1))
 
 
 def _default_warmup_bars() -> int:
@@ -69,37 +64,19 @@ def _build_market_dataframe(
     start_date: datetime,
     end_date: datetime,
     warmup_bars: int,
+    data_source: IHistoricalDataSource,
 ) -> pd.DataFrame:
-    timeframe_minutes = _timeframe_to_minutes(timeframe_value)
+    tf_label = timeframe_label(timeframe_value) or "M1"
+    timeframe_minutes = _TIMEFRAME_STR_TO_MINUTES.get(tf_label, 1)
     warmup_minutes = max(1, warmup_bars) * timeframe_minutes
     warmup_start = start_date - timedelta(minutes=warmup_minutes)
 
-    rates = mt5.copy_rates_range(symbol, timeframe_value, warmup_start, end_date)
-    if rates is None or len(rates) == 0:
+    df = data_source.get_rates_df(symbol, tf_label, warmup_start, end_date)
+    if df is None or df.empty:
         raise RuntimeError(f"No se pudieron obtener datos para {symbol} en el rango especificado")
 
-    df = pd.DataFrame(rates)
-    if df.empty:
-        raise RuntimeError(f"No se recibieron velas para {symbol}")
-
-    df["time"] = pd.to_datetime(df["time"], unit="s", utc=True)
     df = df.sort_values("time").reset_index(drop=True)
     df = data_feed.add_source_columns(df, config.SOURCE_MODE)
-    df = data_feed.add_baseline_bands(df, config.MA_LENGTH, config.ATR_LENGTH, config.ATR_MULT)
-    df = data_feed.add_supertrend(
-        df,
-        atr_length=getattr(config, "SUPERTREND_ATR_LENGTH", config.ATR_LENGTH),
-        atr_mult=getattr(config, "SUPERTREND_MULT", 3.0),
-        source_col=getattr(config, "SUPERTREND_SOURCE", "close"),
-        use_hma=getattr(config, "SUPERTREND_USE_HMA", True),
-        hma_length=getattr(config, "HMA_LENGTH", 55),
-    )
-    df = data_feed.add_tci(
-        df,
-        fast_length=getattr(config, "TCI_FAST", 9),
-        slow_length=getattr(config, "TCI_SLOW", 21),
-        signal_length=getattr(config, "TCI_SIGNAL", 5),
-    )
     return df
 
 
@@ -117,6 +94,10 @@ class BacktestRequest:
     lot: float
     sl_points: float
     tp_points: float
+    spread_points: float = 0.0
+    slippage_points: float = 0.0
+    commission_per_lot: float = 0.0
+    data_provider: str = "mt5"
 
     @classmethod
     def from_dict(cls, raw: dict) -> "BacktestRequest":
@@ -159,11 +140,15 @@ class BacktestRequest:
             lot=float(raw.get("lot") or getattr(config, "LOT", 0.01) or 0.01),
             sl_points=float(raw.get("sl_points") or getattr(config, "SL_POINTS", 0.0) or 0.0),
             tp_points=float(raw.get("tp_points") or getattr(config, "TP_POINTS", 0.0) or 0.0),
+            spread_points=float(raw.get("spread_points") or 0.0),
+            slippage_points=float(raw.get("slippage_points") or 0.0),
+            commission_per_lot=float(raw.get("commission_per_lot") or 0.0),
+            data_provider=str(raw.get("data_provider") or "mt5"),
         )
 
 
 class BacktestEngine:
-    def __init__(self, request: BacktestRequest):
+    def __init__(self, request: BacktestRequest, data_source: IHistoricalDataSource):
         self.request = request
         self.symbol = request.symbol
         self.module = request.module
@@ -177,20 +162,16 @@ class BacktestEngine:
         self.max_drawdown = 0.0
         self.peak_equity = request.initial_balance
         self._position_seq = 0
+        self._data_source = data_source
 
-        self.symbol_info = mt5.symbol_info(self.symbol)
-        if self.symbol_info is None:
+        instrument_info = data_source.get_instrument_info(self.symbol)
+        if instrument_info is None:
             raise RuntimeError(f"No se pudo obtener información del símbolo {self.symbol}")
-
-        self.point = float(getattr(self.symbol_info, "point", 0.0) or 0.0)
-        self.tick_size = float(getattr(self.symbol_info, "trade_tick_size", 0.0) or 0.0)
-        self.tick_value = float(getattr(self.symbol_info, "trade_tick_value", 0.0) or 0.0)
-        if self.point <= 0:
-            self.point = self.tick_size
+        self.point = instrument_info.point
+        self.tick_size = instrument_info.tick_size
+        self.tick_value = instrument_info.tick_value
         if self.tick_size <= 0 or self.tick_value <= 0:
-            raise RuntimeError(
-                f"El símbolo {self.symbol} no expone trade_tick_size/trade_tick_value válidos"
-            )
+            raise RuntimeError(f"Symbol {self.symbol} has invalid tick metadata")
         self.value_per_price_unit_per_lot = self.tick_value / self.tick_size
 
     def _current_direction(self) -> int:
@@ -242,7 +223,7 @@ class BacktestEngine:
         )
 
     def _normalize_volume(self, requested_lot: float) -> tuple[float, str | None]:
-        return trading.normalize_volume(float(requested_lot or 0.0), self.symbol_info)
+        return (max(0.0, float(requested_lot or 0.0)), None)
 
     def _new_position(
         self,
@@ -304,7 +285,7 @@ class BacktestEngine:
                 "entry_time": _time_to_epoch(position["entry_time"]),
                 "exit_time": _time_to_epoch(candle_time),
                 "time": _time_to_epoch(candle_time),
-                "direction": position["type"],
+                "direction": position["direction"],
                 "entry_price": position["entry_price"],
                 "exit_price": float(exit_price),
                 "price": float(exit_price),
@@ -376,7 +357,7 @@ class BacktestEngine:
 
         direction = 1 if signal == "buy" else -1
         current_direction = self._current_direction()
-        entry_price = float(candle["open"])
+        raw_fill = float(candle["open"])
 
         if current_direction == direction:
             return
@@ -384,7 +365,7 @@ class BacktestEngine:
         if current_direction != 0:
             self._close_all_positions(
                 candle=candle,
-                exit_price=entry_price,
+                exit_price=raw_fill,
                 reason="REVERSAL",
             )
 
@@ -392,7 +373,9 @@ class BacktestEngine:
         if lot <= 0:
             return
 
+        cost_points = (self.request.spread_points + self.request.slippage_points) * self.point
         if direction == 1:
+            entry_price = raw_fill + cost_points
             sl = (
                 entry_price - (self.request.sl_points * self.point)
                 if self.request.sl_points > 0
@@ -404,6 +387,7 @@ class BacktestEngine:
                 else 0.0
             )
         else:
+            entry_price = raw_fill - cost_points
             sl = (
                 entry_price + (self.request.sl_points * self.point)
                 if self.request.sl_points > 0
@@ -414,6 +398,8 @@ class BacktestEngine:
                 if self.request.tp_points > 0
                 else 0.0
             )
+
+        self.balance -= self.request.commission_per_lot * lot
 
         self._new_position(
             candle=candle,
@@ -433,71 +419,42 @@ class BacktestEngine:
         if atr_value <= 0:
             return
 
+        sl_atr_mult = float(signal_payload.get("sl_atr_mult") or 1.0)
+        tp_atr_mult = float(signal_payload.get("tp_atr_mult") or 2.0)
+        pyramid_atr_mult = float(signal_payload.get("pyramid_atr_mult") or 0.5)
+
         dynamic_sizing = bool(signal_payload.get("dynamic_sizing"))
         volume_ratio = float(signal_payload.get("volume_ratio") or 0.0)
-        if dynamic_sizing and volume_ratio > 0:
-            raw_lot = trading.calculate_dynamic_lot(
-                self.symbol,
-                atr_value,
-                volume_ratio,
-                balance=self.balance,
-            )
-            requested_lot = raw_lot if raw_lot > 0 else self.request.lot
-        else:
-            requested_lot = self.request.lot
+        requested_lot = self.request.lot  # dynamic sizing deferred (no MT5 for symbol_info)
 
         lot, volume_note = self._normalize_volume(requested_lot)
         if lot <= 0:
             return
 
-        entry_price = float(candle["open"])
-        open_positions = [
-            {
-                "type": position["type"],
-                "volume": position["volume"],
-                "price_open": position["entry_price"],
-                "price_current": float(candle["close"]),
-                "profit": self._calculate_profit(
-                    position["entry_price"],
-                    float(candle["close"]),
-                    position["direction"],
-                    position["volume"],
-                ),
-                "sl": position["sl"],
-                "tp": position["tp"],
-                "time_open": _time_to_epoch(position["entry_time"]),
-            }
-            for position in self.open_positions
-        ]
+        raw_fill = float(candle["open"])
+        cost_points = (self.request.spread_points + self.request.slippage_points) * self.point
+        entry_price = raw_fill + cost_points  # BUY direction only
 
-        if open_positions:
+        if self.open_positions:
             most_recent = max(
                 self.open_positions,
                 key=lambda item: (_time_to_epoch(item["entry_time"]) or 0, item["id"]),
             )
             if most_recent["direction"] != 1:
                 return
-            pyramid_threshold = float(most_recent["entry_price"]) + (0.5 * atr_value)
+            pyramid_threshold = float(most_recent["entry_price"]) + (pyramid_atr_mult * atr_value)
             if entry_price < pyramid_threshold:
                 return
 
-        allowed, _aggregate_risk_pct = trading.check_aggregate_risk(
-            self.symbol,
-            lot,
-            atr_value,
-            self.balance,
-            open_positions,
-        )
-        if not allowed:
-            return
+        self.balance -= self.request.commission_per_lot * lot
 
         self._new_position(
             candle=candle,
             direction=1,
             volume=lot,
             entry_price=entry_price,
-            sl=entry_price - atr_value,
-            tp=entry_price + (2.0 * atr_value),
+            sl=entry_price - (sl_atr_mult * atr_value),
+            tp=entry_price + (tp_atr_mult * atr_value),
             signal="buy",
             signal_reason=str(signal_payload.get("reason") or ""),
             mode="advanced",
@@ -523,10 +480,35 @@ class BacktestEngine:
 
     def _build_success_result(self) -> dict:
         total_profit = self.balance - self.initial_balance
-        closed_trades = len(self.closed_trades)
-        winning_trades = sum(1 for trade in self.closed_trades if trade["profit"] > 0)
-        losing_trades = sum(1 for trade in self.closed_trades if trade["profit"] < 0)
-        win_rate = ((winning_trades / closed_trades) * 100.0) if closed_trades else 0.0
+        closed_count = len(self.closed_trades)
+        winning_trades = 0
+        losing_trades = 0
+        gross_wins = 0.0
+        gross_losses = 0.0
+        for t in self.closed_trades:
+            p = t["profit"]
+            if p > 0:
+                winning_trades += 1
+                gross_wins += p
+            elif p < 0:
+                losing_trades += 1
+                gross_losses -= p
+        win_rate = (winning_trades / closed_count * 100.0) if closed_count else 0.0
+
+        profit_factor = gross_wins / gross_losses if gross_losses > 0 else 0.0
+        avg_win = gross_wins / winning_trades if winning_trades > 0 else 0.0
+        avg_loss = gross_losses / losing_trades if losing_trades > 0 else 0.0
+        loss_rate = losing_trades / closed_count if closed_count > 0 else 0.0
+        expectancy = (win_rate / 100.0) * avg_win - loss_rate * avg_loss
+
+        drawdown_curve = []
+        running_peak = self.initial_balance
+        for point in self.equity_curve:
+            eq = point["equity"]
+            if eq > running_peak:
+                running_peak = eq
+            dd_pct = ((running_peak - eq) / running_peak * 100.0) if running_peak > 0 else 0.0
+            drawdown_curve.append({"time": point["time"], "drawdown_pct": round(dd_pct, 4)})
 
         return {
             "status": "success",
@@ -535,33 +517,36 @@ class BacktestEngine:
             "strategy_label": self.request.strategy_label,
             "symbol": self.symbol,
             "timeframe": self.timeframe_label,
+            "data_provider": self.request.data_provider,
             "start_date": _time_to_epoch(self.request.start_date),
             "end_date": _time_to_epoch(self.request.end_date),
             "initial_balance": self.initial_balance,
             "final_balance": self.balance,
             "total_profit": total_profit,
-            "total_return_pct": (
-                ((self.balance - self.initial_balance) / self.initial_balance) * 100.0
-            ),
-            "closed_trades": closed_trades,
+            "total_return_pct": (total_profit / self.initial_balance * 100.0),
+            "closed_trades": closed_count,
             "winning_trades": winning_trades,
             "losing_trades": losing_trades,
             "win_rate": win_rate,
             "max_drawdown": self.max_drawdown,
+            "profit_factor": round(profit_factor, 4),
+            "avg_win": round(avg_win, 4),
+            "avg_loss": round(avg_loss, 4),
+            "expectancy": round(expectancy, 4),
+            "cost_params": {
+                "spread_points": self.request.spread_points,
+                "slippage_points": self.request.slippage_points,
+                "commission_per_lot": self.request.commission_per_lot,
+            },
             "trades": self.closed_trades,
+            "equity_curve": self.equity_curve,
+            "drawdown_curve": drawdown_curve,
         }
 
-    def run(self) -> dict:
+    def run_with_df(self, base_df: pd.DataFrame) -> dict:
         try:
-            df = _build_market_dataframe(
-                self.symbol,
-                self.timeframe_value,
-                self.request.start_date,
-                self.request.end_date,
-                self.request.warmup_bars,
-            )
             strategy_df = apply_strategy_processing(
-                df,
+                base_df,
                 self.module,
                 enable_signals=bool(getattr(config, "ENABLE_SIGNALS", True)),
             )
@@ -634,7 +619,196 @@ class BacktestEngine:
 
         return self._build_success_result()
 
+    def run(self) -> dict:
+        try:
+            df = _build_market_dataframe(
+                self.symbol,
+                self.timeframe_value,
+                self.request.start_date,
+                self.request.end_date,
+                self.request.warmup_bars,
+                self._data_source,
+            )
+        except Exception as error:
+            return {"status": "error", "error": str(error)}
+        return self.run_with_df(df)
 
-def run_backtest(request: dict) -> dict:
-    engine = BacktestEngine(BacktestRequest.from_dict(request))
+
+def run_backtest(request: dict, data_source: IHistoricalDataSource = None) -> dict:
+    if data_source is None:
+        from src.data.mt5_historical_source import MT5HistoricalDataSource
+        data_source = MT5HistoricalDataSource()
+    engine = BacktestEngine(BacktestRequest.from_dict(request), data_source)
     return engine.run()
+
+
+def _empty_metrics(initial_balance: float) -> dict:
+    return {
+        "initial_balance":  initial_balance,
+        "final_balance":    initial_balance,
+        "total_profit":     0.0,
+        "total_return_pct": 0.0,
+        "closed_trades":    0,
+        "winning_trades":   0,
+        "losing_trades":    0,
+        "win_rate":         0.0,
+        "max_drawdown":     0.0,
+    }
+
+
+def _make_error_entry(strat: dict, tf_label: str, initial_balance: float, error: str) -> dict:
+    return {
+        "status":         "error",
+        "error":          error,
+        "strategy_key":   str(strat.get("strategy_key") or ""),
+        "strategy_label": str(strat.get("strategy_label") or strat.get("strategy_key") or ""),
+        "timeframe":      tf_label,
+        **_empty_metrics(initial_balance),
+    }
+
+
+def _extract_comparison_summary(result: dict, fallback_balance: float) -> dict:
+    if result.get("status") != "success":
+        return {
+            "status":         "error",
+            "error":          str(result.get("error") or ""),
+            "strategy_key":   str(result.get("strategy_key") or ""),
+            "strategy_label": str(result.get("strategy_label") or ""),
+            "timeframe":      str(result.get("timeframe") or ""),
+            **_empty_metrics(fallback_balance),
+        }
+    return {
+        "status":           "success",
+        "error":            "",
+        "strategy_key":     result["strategy_key"],
+        "strategy_label":   result["strategy_label"],
+        "timeframe":        result["timeframe"],
+        "initial_balance":  result["initial_balance"],
+        "final_balance":    result["final_balance"],
+        "total_profit":     result["total_profit"],
+        "total_return_pct": result["total_return_pct"],
+        "closed_trades":    result["closed_trades"],
+        "winning_trades":   result["winning_trades"],
+        "losing_trades":    result["losing_trades"],
+        "win_rate":         result["win_rate"],
+        "max_drawdown":     result["max_drawdown"],
+    }
+
+
+def run_backtest_comparison(request: dict, data_source: IHistoricalDataSource = None) -> dict:
+    if not isinstance(request, dict):
+        return {"status": "error", "error": "El request debe ser un dict"}
+    if data_source is None:
+        from src.data.mt5_historical_source import MT5HistoricalDataSource
+        data_source = MT5HistoricalDataSource()
+
+    symbol = str(request.get("symbol") or "").strip()
+    if not symbol:
+        return {"status": "error", "error": "Se requiere símbolo"}
+
+    try:
+        start_date = _as_utc_datetime(request["start_date"])
+        end_date   = _as_utc_datetime(request["end_date"])
+    except Exception as e:
+        return {"status": "error", "error": f"Fechas inválidas: {e}"}
+
+    if end_date < start_date:
+        return {"status": "error", "error": "La fecha fin no puede ser anterior a la fecha inicio"}
+
+    initial_balance = float(request.get("initial_balance") or 0.0)
+    if initial_balance <= 0:
+        return {"status": "error", "error": "El balance inicial debe ser mayor que cero"}
+
+    strategies_raw = list(request.get("strategies") or [])
+    if not strategies_raw:
+        return {"status": "error", "error": "Se requiere al menos una estrategia"}
+
+    warmup_bars = max(1, int(request.get("warmup_bars") or _default_warmup_bars()))
+    lot         = float(request.get("lot") or getattr(config, "LOT", 0.01) or 0.01)
+    sl_points   = float(request.get("sl_points") or getattr(config, "SL_POINTS", 0.0) or 0.0)
+    tp_points   = float(request.get("tp_points") or getattr(config, "TP_POINTS", 0.0) or 0.0)
+
+    default_tv = resolve_timeframe_value(request.get("timeframe")) or TIMEFRAME_MAP["M1"]
+
+    # Group strategies by timeframe_value
+    groups: dict = {}
+    for i, strat in enumerate(strategies_raw):
+        tv = int(strat.get("timeframe_value") or default_tv)
+        if tv not in groups:
+            groups[tv] = []
+        groups[tv].append((i, strat))
+
+    results_by_index: dict = {}
+
+    for tv, indexed_strats in groups.items():
+        try:
+            base_df = _build_market_dataframe(symbol, tv, start_date, end_date, warmup_bars, data_source)
+        except Exception as e:
+            for idx, strat in indexed_strats:
+                results_by_index[idx] = _make_error_entry(
+                    strat,
+                    timeframe_label(tv),
+                    initial_balance,
+                    f"Error descargando datos ({timeframe_label(tv)}): {e}",
+                )
+            continue
+
+        for idx, strat in indexed_strats:
+            module = strat.get("module")
+            if module is None:
+                results_by_index[idx] = _make_error_entry(
+                    strat, timeframe_label(tv), initial_balance,
+                    "La estrategia no tiene módulo cargado",
+                )
+                continue
+
+            strat_request = BacktestRequest(
+                strategy_key    = str(strat.get("strategy_key") or "strategy"),
+                strategy_label  = str(strat.get("strategy_label") or strat.get("strategy_key") or "Strategy"),
+                module          = module,
+                symbol          = symbol,
+                timeframe_value = tv,
+                start_date      = start_date,
+                end_date        = end_date,
+                initial_balance = initial_balance,
+                warmup_bars     = warmup_bars,
+                lot             = lot,
+                sl_points       = sl_points,
+                tp_points       = tp_points,
+            )
+
+            try:
+                engine = BacktestEngine(strat_request, data_source)
+                individual = engine.run_with_df(base_df)
+            except Exception as e:
+                results_by_index[idx] = _make_error_entry(
+                    strat, timeframe_label(tv), initial_balance, str(e)
+                )
+                continue
+
+            results_by_index[idx] = _extract_comparison_summary(individual, initial_balance)
+
+    results = [results_by_index[i] for i in range(len(strategies_raw))]
+
+    success_count = sum(1 for r in results if r["status"] == "success")
+    error_count   = sum(1 for r in results if r["status"] == "error")
+
+    if success_count == 0:
+        top_status = "error"
+        top_error  = "; ".join(r["error"] for r in results if r.get("error"))
+    elif error_count > 0:
+        top_status = "partial"
+        top_error  = f"{error_count} de {len(results)} estrategias fallaron"
+    else:
+        top_status = "success"
+        top_error  = ""
+
+    return {
+        "status":          top_status,
+        "error":           top_error,
+        "symbol":          symbol,
+        "start_date":      _time_to_epoch(start_date),
+        "end_date":        _time_to_epoch(end_date),
+        "initial_balance": initial_balance,
+        "strategies":      results,
+    }

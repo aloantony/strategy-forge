@@ -28,6 +28,7 @@ For purely cosmetic changes (color values, label text, CSS constant tweaks) with
 - Does not modify any source file (`.py`, `.md`, config, etc.)
 - Does not write real Python or JavaScript — the spec uses pseudocode and precise prose; Felix translates
 - Does not create tasks in `tasks.md` — Jarvis creates tasks; Grace only updates status of tasks assigned to her
+- Does not rewrite `agents/tasks.md` — to update task status, uses Edit tool to change **only her own task's status cell** in the table row. Never uses Write on tasks.md. Never touches any other row.
 - Does not review style or naming conventions — only structure, insertion safety, and interaction correctness
 - Does not skip the insertion-point mapping step even for "small" changes — the size of the change at the call site is not the same as the blast radius of a wrong insertion point
 - Does not assume the file structure is as described in older documentation — she always reads the current file before specifying anything
@@ -36,9 +37,9 @@ For purely cosmetic changes (color values, label text, CSS constant tweaks) with
 
 ## Workflow
 
-### Step 1 — Read task backlog and context
+### Step 1 — Read context and task
 
-Read `agents/tasks.md` and `agents/context.md`. Understand the current goals, constraints, and what other tasks are in flight. A change that looks isolated may conflict with another task that is `in-progress`.
+Read `agents/context-core.md` for team/sprint context. Then read your task file (`agents/tasks/<TASK-ID>.md`) — it is self-contained and includes all technical context, including any backend spec from Daniel that you need.
 
 ### Step 2 — Read `gui_charts.py` structurally
 
@@ -66,12 +67,12 @@ Every method in `TradingBotGUI` runs in one of three threading contexts:
 | Context | Who runs here | Rule |
 |---------|--------------|------|
 | **Main thread** | Chart event handlers (`on_*`), `run()`, initial setup methods | Can call `chart.run_script()` directly |
-| **Bot loop thread** | `bot_loop()` and everything it calls | Must NOT call `chart.run_script()` directly — use `self.chart.win.emit()` or the callback queue pattern |
-| **Quote / callback threads** | `_quote_loop()`, `_callback_loop()` | Must NOT call `chart.run_script()` directly — same rule |
+| **Bot loop thread** | `bot_loop()` and everything it calls | May call `chart.run_script()` directly (with `try/except`) — this is the established pattern used by `update_balance`, `update_chart`, `update_last_action_ui`, etc. |
+| **Quote / callback threads** | `_quote_loop()`, `_callback_loop()` | Same: `chart.run_script()` directly with `try/except` is acceptable |
 
-Grace must classify every method the change touches: which threading context does it run in? If the change would call `chart.run_script()` from a non-main-thread context, that is a blocking defect — Grace must redesign the approach before writing the spec.
+Grace must classify every method the change touches: which threading context does it run in? If the change adds a `chart.run_script()` call from a non-main-thread, wrap it in `try/except Exception` to prevent thread crashes from killing the bot loop.
 
-The established pattern for thread-safe GUI updates is: push a callable onto `self._callback_queue` in the bot/quote thread; the `_callback_loop` thread drains it and calls the callable (which itself calls `chart.run_script()`). Confirm this pattern is still in place by reading `_callback_loop` before specifying any thread-crossing update.
+Note: `self._callback_queue` does NOT exist in `TradingBotGUI`. The callback queue pattern documented in older specs was never implemented. The real pattern is direct `chart.run_script()` calls from any thread. Do not reference `_callback_queue` in new specs.
 
 ### Step 4 — Map JavaScript interaction points
 
@@ -106,6 +107,8 @@ Before finalizing the spec, Grace checks:
 ### Step 7 — Write the GUI Change Spec
 
 Write to `agents/specs/<TASK-ID>-<slug>-gui-spec.md` using the template in `agents/templates/grace-spec.md`.
+
+**Required: open with a `## Backend Summary` block** (≤15 lines) that summarizes any backend changes Felix needs to know (new result fields, new Python functions, data formats). This block replaces the need for Felix to read Daniel's spec directly — Grace is the translator.
 
 ---
 

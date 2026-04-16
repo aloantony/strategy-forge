@@ -4,6 +4,8 @@ Bot de trading principal para MetaTrader 5.
 
 import importlib
 import importlib.util
+import inspect
+import json
 import os
 import re
 import threading
@@ -195,12 +197,131 @@ def _resolve_strategy_magic_number(key: str, module, multi_mode: bool, magic_ove
     return int(candidate)
 
 
+def _validate_params_schema(raw_params) -> dict:
+    """Validates a PARAMS module attribute. Returns a validated dict or None."""
+    if raw_params is None:
+        return None
+
+    if not isinstance(raw_params, dict):
+        return None
+
+    validated = {}
+    for key, entry in raw_params.items():
+        if not isinstance(key, str) or not key.strip():
+            continue
+        if not isinstance(entry, dict):
+            continue
+
+        type_str = entry.get("type")
+        if type_str not in ("int", "float"):
+            continue
+
+        default = entry.get("default")
+        min_val = entry.get("min")
+        max_val = entry.get("max")
+        label = entry.get("label", key)
+
+        try:
+            if type_str == "int":
+                default = int(default)
+                min_val = int(min_val)
+                max_val = int(max_val)
+            else:
+                default = float(default)
+                min_val = float(min_val)
+                max_val = float(max_val)
+        except (TypeError, ValueError):
+            continue
+
+        if not (min_val <= default <= max_val):
+            continue
+
+        validated[key] = {
+            "label": str(label),
+            "type": type_str,
+            "default": default,
+            "min": min_val,
+            "max": max_val,
+        }
+
+    return validated
+
+
+def _load_strategy_params(module, strategy_key: str, strategies_dir: str) -> dict:
+    """Merges PARAMS schema defaults with .params.json overrides. Returns {key: value}."""
+    raw_params = getattr(module, "PARAMS", None)
+    schema = _validate_params_schema(raw_params)
+
+    if schema is None or len(schema) == 0:
+        return {}
+
+    merged = {key: entry["default"] for key, entry in schema.items()}
+
+    module_file = getattr(module, "__file__", None)
+    if module_file and module_file != "<string>" and not module_file.startswith("<"):
+        params_json_path = os.path.splitext(module_file)[0] + ".params.json"
+    else:
+        params_json_path = os.path.join(strategies_dir, strategy_key + ".params.json")
+
+    if os.path.isfile(params_json_path):
+        try:
+            with open(params_json_path, "r", encoding="utf-8") as f:
+                overrides = json.load(f)
+            if isinstance(overrides, dict):
+                for key, value in overrides.items():
+                    if key not in schema:
+                        continue
+                    type_str = schema[key]["type"]
+                    min_val = schema[key]["min"]
+                    max_val = schema[key]["max"]
+                    try:
+                        if type_str == "int":
+                            coerced = int(value)
+                        else:
+                            coerced = float(value)
+                    except (TypeError, ValueError):
+                        continue
+                    coerced = max(min_val, min(max_val, coerced))
+                    merged[key] = coerced
+        except (OSError, json.JSONDecodeError):
+            pass
+
+    return merged
+
+
+def _detect_params_kwarg(module) -> bool:
+    """Returns True if the strategy's signal function accepts a 'params' keyword argument."""
+    for fn_name in ("get_last_signal_payload", "get_last_signal"):
+        fn = getattr(module, fn_name, None)
+        if fn is None:
+            continue
+        try:
+            sig = inspect.signature(fn)
+        except (ValueError, TypeError):
+            continue
+        params_in_sig = sig.parameters
+        if "params" in params_in_sig:
+            return True
+        for p in params_in_sig.values():
+            if p.kind == inspect.Parameter.VAR_KEYWORD:
+                return True
+        return False
+
+    return False
+
+
 def load_active_strategies():
     raw_default_key = str(getattr(config, "STRATEGY_KEY", "") or "").strip()
     default_key = _slugify(raw_default_key) if raw_default_key else ""
     default_module_ref = str(getattr(config, "STRATEGY_MODULE", "") or "").strip()
     if default_key and not default_module_ref:
         default_module_ref = f"strategies.strategy_{default_key}"
+
+    strategy_dir_raw = getattr(config, "STRATEGY_DIR", "strategies")
+    if not os.path.isabs(strategy_dir_raw):
+        strategies_dir = os.path.join(os.path.dirname(__file__), strategy_dir_raw)
+    else:
+        strategies_dir = strategy_dir_raw
 
     active_raw = getattr(config, "ACTIVE_STRATEGIES", None)
     discovered_map = _discover_strategy_modules_from_dir()
@@ -274,6 +395,11 @@ def load_active_strategies():
         if timeframe_value is None:
             timeframe_value = _resolve_timeframe_value(getattr(config, "TIMEFRAME", None)) or mt5.TIMEFRAME_M1
 
+        raw_params = getattr(module, "PARAMS", None)
+        params_schema = _validate_params_schema(raw_params)
+        params_values = _load_strategy_params(module, key, strategies_dir)
+        accepts_params = _detect_params_kwarg(module)
+
         entries.append(
             {
                 "key": key,
@@ -283,6 +409,9 @@ def load_active_strategies():
                 "timeframe_value": timeframe_value,
                 "timeframe_label": _timeframe_label(timeframe_value) or "M1",
                 "magic_override": entry_dict.get("magic_number") if isinstance(item, dict) else None,
+                "params_schema": params_schema,
+                "params_values": params_values,
+                "accepts_params": accepts_params,
             }
         )
 
@@ -312,6 +441,11 @@ def load_active_strategies():
             raise RuntimeError(
                 f"No hay estrategias validas y fallo fallback por convención a '{fallback_key}': {last_error or 'sin detalle'}"
             )
+        raw_params_fb = getattr(module, "PARAMS", None)
+        params_schema_fb = _validate_params_schema(raw_params_fb)
+        params_values_fb = _load_strategy_params(module, fallback_key, strategies_dir)
+        accepts_params_fb = _detect_params_kwarg(module)
+
         entries = [
             {
                 "key": fallback_key,
@@ -321,6 +455,9 @@ def load_active_strategies():
                 "timeframe_value": mt5.TIMEFRAME_M1,
                 "timeframe_label": "M1",
                 "magic_override": None,
+                "params_schema": params_schema_fb,
+                "params_values": params_values_fb,
+                "accepts_params": accepts_params_fb,
             }
         ]
     multi_mode = len(entries) > 1
@@ -339,25 +476,27 @@ def load_active_strategies():
     return entries
 
 
-def _build_market_dataframe(timeframe_value: int, bars_needed: int) -> pd.DataFrame:
-    df = data_feed.get_rates_df(config.SYMBOL, timeframe_value, bars_needed)
-    df = data_feed.add_source_columns(df, config.SOURCE_MODE)
-    df = data_feed.add_baseline_bands(df, config.MA_LENGTH, config.ATR_LENGTH, config.ATR_MULT)
-    df = data_feed.add_supertrend(
-        df,
-        atr_length=getattr(config, "SUPERTREND_ATR_LENGTH", config.ATR_LENGTH),
-        atr_mult=getattr(config, "SUPERTREND_MULT", 3.0),
-        source_col=getattr(config, "SUPERTREND_SOURCE", "close"),
-        use_hma=getattr(config, "SUPERTREND_USE_HMA", True),
+def _make_mt5_data_feed():
+    from src.data.mt5_data_feed import MT5DataFeed
+    return MT5DataFeed(
+        source_mode=config.SOURCE_MODE,
+        ma_length=config.MA_LENGTH,
+        atr_length=config.ATR_LENGTH,
+        atr_mult=config.ATR_MULT,
+        supertrend_atr_length=getattr(config, "SUPERTREND_ATR_LENGTH", config.ATR_LENGTH),
+        supertrend_mult=getattr(config, "SUPERTREND_MULT", 3.0),
+        supertrend_source=getattr(config, "SUPERTREND_SOURCE", "close"),
+        supertrend_use_hma=getattr(config, "SUPERTREND_USE_HMA", True),
         hma_length=getattr(config, "HMA_LENGTH", 55),
+        tci_fast=getattr(config, "TCI_FAST", 9),
+        tci_slow=getattr(config, "TCI_SLOW", 21),
+        tci_signal=getattr(config, "TCI_SIGNAL", 5),
     )
-    df = data_feed.add_tci(
-        df,
-        fast_length=getattr(config, "TCI_FAST", 9),
-        slow_length=getattr(config, "TCI_SLOW", 21),
-        signal_length=getattr(config, "TCI_SIGNAL", 5),
-    )
-    return df
+
+
+def _build_market_dataframe(timeframe_value: int, bars_needed: int, data_feed_impl) -> pd.DataFrame:
+    timeframe_str = runtime_timeframe_label(timeframe_value) or "M1"
+    return data_feed_impl.get_enriched_df(config.SYMBOL, timeframe_str, bars_needed)
 
 
 def _apply_strategy_processing(df: pd.DataFrame, module) -> pd.DataFrame:
@@ -383,11 +522,23 @@ def _analyze_strategy(index: int, entry: dict, base_df: pd.DataFrame) -> dict:
             result["error"] = "No hay suficientes velas"
             return result
         strategy_df = _apply_strategy_processing(base_df, entry["module"])
-        signal_payload = runtime_get_strategy_signal_payload(
-            strategy_df,
-            entry["module"],
-            verbose=False,
-        )
+
+        params_values = entry.get("params_values") or {}
+        accepts_params = entry.get("accepts_params", False)
+
+        if accepts_params and params_values:
+            signal_payload = runtime_get_strategy_signal_payload(
+                strategy_df,
+                entry["module"],
+                verbose=False,
+                params=params_values,
+            )
+        else:
+            signal_payload = runtime_get_strategy_signal_payload(
+                strategy_df,
+                entry["module"],
+                verbose=False,
+            )
         result["df"] = strategy_df
         result["signal"] = signal_payload["signal"]
         result["reason"] = signal_payload["reason"]
@@ -521,6 +672,7 @@ def _run_v1_strategy_cycle(
         PlanValidationError,
         ExecutionEngine,
     )
+    from src.broker.mt5_adapter import MT5BrokerAdapter
 
     strategy_key = entry["key"]
     symbol = config.SYMBOL
@@ -637,7 +789,7 @@ def _run_v1_strategy_cycle(
                 return result
 
             engine = ExecutionEngine(
-                trading_module=trading,
+                broker=MT5BrokerAdapter(),
                 uow=UnitOfWork(_db_conn),
                 symbol=symbol,
                 magic_number=magic_number,
@@ -706,7 +858,9 @@ def _resolve_max_orders_per_iteration(strategy_count: int) -> int:
     return max(1, min(strategy_count, value))
 
 
-def run_bot_loop(strategy_entries: list):
+def run_bot_loop(strategy_entries: list, data_feed_impl=None):
+    if data_feed_impl is None:
+        data_feed_impl = _make_mt5_data_feed()
     max_workers = _resolve_max_workers(len(strategy_entries))
     sleep_seconds = max(1, int(getattr(config, "SLEEP_SECONDS", 10) or 10))
     analysis_timeout = _resolve_analysis_timeout()
@@ -725,7 +879,7 @@ def run_bot_loop(strategy_entries: list):
 
                 market_cache = {}
                 for timeframe_value in sorted({int(entry["timeframe_value"]) for entry in strategy_entries}):
-                    market_cache[timeframe_value] = _build_market_dataframe(timeframe_value, config.BARS_HISTORY)
+                    market_cache[timeframe_value] = _build_market_dataframe(timeframe_value, config.BARS_HISTORY, data_feed_impl)
 
                 # Fair scheduler: primero se analizan las estrategias que llevan mas tiempo sin correr.
                 scheduled_items = sorted(
@@ -827,11 +981,17 @@ def run_bot_loop(strategy_entries: list):
                     with ORDER_EXECUTION_LOCK:
                         if pyramiding and atr_value > 0 and signal == "buy":
                             if dynamic_sizing and volume_ratio > 0 and atr_value > 0:
-                                account = mt5.account_info()
+                                from src.broker.mt5_adapter import MT5BrokerAdapter as _Adapter
+                                _broker = _Adapter()
+                                account = _broker.get_account_info()
                                 balance = account.balance if account is not None else 0.0
-                                raw_lot = trading.calculate_dynamic_lot(
-                                    config.SYMBOL, atr_value, volume_ratio, balance=balance
-                                )
+                                instrument_info = _broker.get_instrument_info(config.SYMBOL)
+                                if instrument_info is not None and balance > 0:
+                                    raw_lot = trading.calculate_dynamic_lot(
+                                        atr_value, volume_ratio, instrument_info, balance
+                                    )
+                                else:
+                                    raw_lot = 0.0
                                 lot = raw_lot if raw_lot > 0 else config.LOT
                             else:
                                 lot = config.LOT

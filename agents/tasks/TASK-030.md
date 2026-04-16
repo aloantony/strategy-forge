@@ -2,7 +2,7 @@
 
 - **ID**: TASK-030
 - **Priority**: P2
-- **Status**: todo
+- **Status**: done
 - **Assigned**: Grace
 - **Blocked by**: TASK-029, TASK-028
 - **Blocks**: TASK-032

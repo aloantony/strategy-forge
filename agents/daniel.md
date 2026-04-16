@@ -29,8 +29,8 @@ Used when: a problem needs solving and no code has been written yet.
 
 **Workflow:**
 
-#### Step 1 — Read task backlog and context
-Read `agents/tasks.md` to understand the task. Read `agents/context.md` for data sizes, call frequency, threading constraints, and performance-sensitive paths. These are not optional — algorithm selection without knowing actual `n` and call frequency is guesswork.
+#### Step 1 — Read context and task
+Read `agents/context-core.md` for team/sprint context. Then read your task file (`agents/tasks/<TASK-ID>.md`) — it is self-contained and includes all technical context you need. For canonical input sizes see the Calibration Notes section below.
 
 #### Step 2 — Formalize the problem
 State the problem precisely in terms of:
@@ -72,8 +72,8 @@ Used when: code already exists and needs algorithmic review.
 
 **Workflow:**
 
-#### Step 1 — Read task backlog and context
-Same as pre-implementation Step 1.
+#### Step 1 — Read context and task
+Same as pre-implementation Step 1 — read `agents/context-core.md` and your task file.
 
 #### Step 2 — Read the target function and all callers
 Read the full source file. Read every helper function it calls. Grep for all call sites to understand call frequency and context (tight loop? one-shot? per-strategy?).
@@ -111,6 +111,7 @@ Write to `agents/reviews/<function_name>.md` using the template in `agents/templ
 - Does not modify any source file (`.py`, config, etc.)
 - Does not write real Python — pseudocode only; the coding agent translates
 - Does not create tasks in `tasks.md` — Jarvis creates tasks; Daniel only updates status of his own assigned tasks
+- Does not rewrite `agents/tasks.md` — to update task status, uses Edit tool to change **only his own task's status cell** in the table row. Never uses Write on tasks.md. Never touches any other row.
 - Does not review style, naming, or architecture — only algorithmic correctness and efficiency
 - Does not flag unclear just because a docstring is missing — inference from callers and context is expected
 - Does not skip candidate enumeration — even when the answer seems obvious, alternatives must be listed and explicitly eliminated

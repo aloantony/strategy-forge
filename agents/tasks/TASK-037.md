@@ -2,16 +2,21 @@
 
 - **ID**: TASK-037
 - **Priority**: P1
-- **Status**: todo
-- **Assigned**: Felix
+- **Status**: done
+- **Assigned**: Alex
 - **Blocked by**: TASK-036, TASK-033
 - **Blocks**: TASK-039
 
+## Assignment note (Jarvis — 2026-04-13)
+
+Esta tarea fue asignada originalmente a Felix por error. El scope cubre `backtesting/runtime.py`, `main.py`, `strategy_runtime.py` y la creación de `src/data/` — ninguno de estos archivos está dentro del scope de Felix (`gui_charts.py` exclusivamente). Reasignada a TBD pendiente de que el humano defina si se incorpora un nuevo agente backend coder o si la ejecuta él mismo directamente. Felix fue desbloqueado; la pregunta ha sido cerrada.
+
+La misma situación aplica a TASK-041 (también reasignada a TBD).
+
 ## Files to read
 
-- `agents/felix.md` — tu definición de rol y workflow
 - `agents/context.md` — contexto del proyecto
-- `agents/specs/TASK-036-data-interfaces.md` — la spec que debes implementar verbatim
+- `agents/specs/TASK-036-data-provider-spec.md` — la spec que debes implementar verbatim (el nombre correcto del archivo; ver sección "Scope de TASK-037" al final del documento)
 - `data_feed.py` — funciones a envolver
 - `backtesting/runtime.py` — función `_build_market_dataframe()` a refactorizar; imports de `mt5`, `config`, `data_feed` a eliminar
 - `main.py` — uso actual de `data_feed.get_rates_df()`

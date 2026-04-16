@@ -6,6 +6,7 @@ Persiste recursos canónicos (legs, entry_groups, fills) y eventos.
 
 import uuid
 from datetime import datetime, timezone
+from src.broker.interface import IBrokerAdapter
 
 
 def _now_utc() -> str:
@@ -21,7 +22,7 @@ class ExecutionEngine:
     Ejecuta un plan normalizado.
 
     Parámetros:
-    - trading_module: el módulo trading.py del proyecto
+    - broker: IBrokerAdapter — adaptador de broker (reemplaza trading_module)
     - uow: UnitOfWork de persistencia
     - symbol: símbolo a operar
     - magic_number: magic number de la estrategia
@@ -31,7 +32,7 @@ class ExecutionEngine:
 
     def __init__(
         self,
-        trading_module,
+        broker: IBrokerAdapter,
         uow,
         symbol: str,
         magic_number: int,
@@ -39,7 +40,7 @@ class ExecutionEngine:
         instance_id: str,
         mode: str = "live",
     ):
-        self._trading = trading_module
+        self._broker = broker
         self._uow = uow
         self._symbol = symbol
         self._magic = magic_number
@@ -170,7 +171,7 @@ class ExecutionEngine:
 
         order_type = 0 if side == "long" else 1  # ORDER_TYPE_BUY / SELL
 
-        result = self._trading._send_order(
+        result = self._broker.send_order(
             symbol=symbol,
             order_type=order_type,
             lot=volume,
@@ -182,10 +183,9 @@ class ExecutionEngine:
             signal_reason=reason,
         )
 
-        success = result is not None and getattr(result, "retcode", -1) == 10009
-
-        broker_order_id = str(getattr(result, "order", "")) if result else None
-        broker_deal_id = str(getattr(result, "deal", "")) if result else None
+        success = result.success
+        broker_order_id = result.order_id if result.order_id else None
+        broker_deal_id = result.deal_id if result.deal_id else None
         entry_price = resolved.get("entry_price", 0.0)
 
         # Persistir recursos canónicos si la orden fue exitosa
@@ -223,8 +223,8 @@ class ExecutionEngine:
                             leg_id=leg_id, entry_group_id=group_id,
                             payload={"side": side, "volume": volume, "sl": sl_price, "tp": tp_price})
         else:
-            retcode = getattr(result, "retcode", None) if result else None
-            comment = getattr(result, "comment", "") if result else ""
+            retcode = result.retcode
+            comment = result.comment
             return self._action_report(
                 action_id, norm_action.get("type", "open_position"), symbol,
                 "rejected_broker",
@@ -264,7 +264,7 @@ class ExecutionEngine:
         except Exception:
             legs_to_close = []
 
-        success = self._trading._close_position(
+        success = self._broker.close_position(
             symbol=symbol,
             magic=self._magic,
             strategy_key=self._strategy_key,
@@ -317,23 +317,12 @@ class ExecutionEngine:
             return self._action_report(action_id, "move_stop_loss", symbol,
                                        "rejected_technical", "No se pudo resolver el nuevo SL")
 
-        success = False
         try:
-            import MetaTrader5 as mt5
-            positions = mt5.positions_get(symbol=symbol, group=f"*{self._magic}*") or \
-                        [p for p in (mt5.positions_get(symbol=symbol) or []) if p.magic == self._magic]
-            for pos in positions:
-                request = {
-                    "action": mt5.TRADE_ACTION_SLTP,
-                    "position": pos.ticket,
-                    "symbol": symbol,
-                    "sl": new_sl,
-                    "tp": pos.tp,
-                    "magic": self._magic,
-                }
-                result = mt5.order_send(request)
-                if result and result.retcode == 10009:
-                    success = True
+            success = self._broker.modify_sl(
+                symbol=symbol,
+                magic=self._magic,
+                new_sl_price=new_sl,
+            )
         except Exception as exc:
             return self._action_report(action_id, "move_stop_loss", symbol, "error", str(exc))
 

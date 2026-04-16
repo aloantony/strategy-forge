@@ -1,7 +1,7 @@
 # Task Backlog — Índice
 
 _Mantenido por Jarvis. El detalle completo de cada tarea está en `agents/tasks/<TASK-ID>.md`._
-_Para actualizar el estado de tu tarea, edita tanto este índice como tu task file._
+_Para actualizar el estado de tu tarea, edita solo tu task file — Jarvis actualiza este índice._
 
 <!-- hook-permission: OFF -->
 <!-- jarvis-protocol: set OFF before editing this file; ask the human before restoring ON -->
@@ -10,30 +10,23 @@ _Para actualizar el estado de tu tarea, edita tanto este índice como tu task fi
 
 ## Active / Todo
 
-### Sprint: Backtest GUI — Mejoras visuales (TASK-027 a TASK-033)
+### Sprint: Dukascopy in Backtest GUI (TASK-049 a TASK-052)
 
 | ID | Status | Assigned | Blocked by | Blocks |
 |----|--------|----------|------------|--------|
-| [TASK-027](tasks/TASK-027.md) | todo | Daniel | — | TASK-028 |
-| [TASK-028](tasks/TASK-028.md) | todo | Grace | TASK-027 | TASK-031 |
-| [TASK-029](tasks/TASK-029.md) | todo | Daniel | — | TASK-030 |
-| [TASK-030](tasks/TASK-030.md) | todo | Grace | TASK-029, TASK-028 | TASK-032 |
-| [TASK-031](tasks/TASK-031.md) | todo | Felix | TASK-028 | TASK-033 |
-| [TASK-032](tasks/TASK-032.md) | todo | Felix | TASK-030, TASK-029 | — |
-| [TASK-033](tasks/TASK-033.md) | todo | Felix | TASK-031 | — |
+| [TASK-049](tasks/TASK-049.md) | done | Daniel | — | TASK-050, TASK-051 |
+| [TASK-050](tasks/TASK-050.md) | todo | Grace | TASK-049 | TASK-052 |
+| [TASK-051](tasks/TASK-051.md) | todo | Alex | TASK-049 | TASK-052 |
+| [TASK-052](tasks/TASK-052.md) | done | Felix | TASK-050, TASK-051 | — |
 
-### Siguiente sprint: Broker Abstraction (TASK-034 a TASK-039)
-
-_Comienza después de que el sprint de Backtest GUI esté completo, con la excepción de TASK-034 y TASK-036 que son specs (solo lectura de archivos existentes, sin escritura en runtime.py) y pueden iniciarse en paralelo al Backtest GUI sprint cuando Daniel tenga capacidad._
+### Sprint: GUI Polish (TASK-045 a TASK-048)
 
 | ID | Status | Assigned | Blocked by | Blocks |
 |----|--------|----------|------------|--------|
-| [TASK-034](tasks/TASK-034.md) | todo | Daniel | — | TASK-035, TASK-036, TASK-038 |
-| [TASK-035](tasks/TASK-035.md) | todo | Felix | TASK-034 | TASK-038 |
-| [TASK-036](tasks/TASK-036.md) | todo | Daniel | TASK-034 | TASK-037 |
-| [TASK-037](tasks/TASK-037.md) | todo | Felix | TASK-036, TASK-033 | TASK-039 |
-| [TASK-038](tasks/TASK-038.md) | todo | Grace | TASK-035 | TASK-039 |
-| [TASK-039](tasks/TASK-039.md) | todo | Felix | TASK-037, TASK-038 | — |
+| [TASK-045](tasks/TASK-045.md) | done | Grace | — | TASK-047, TASK-048 |
+| [TASK-046](tasks/TASK-046.md) | done | Felix | — | — |
+| [TASK-047](tasks/TASK-047.md) | done | Felix | TASK-045 | — |
+| [TASK-048](tasks/TASK-048.md) | done | Felix | TASK-045 | — |
 
 ---
 
@@ -41,6 +34,17 @@ _Comienza después de que el sprint de Backtest GUI esté completo, con la excep
 
 | ID | Assigned | Resumen |
 |----|----------|---------|
+| TASK-044 | Felix | Quick Params panel + main.py injection implementados |
+| TASK-043 | Grace | Spec GUI Quick Params (`agents/specs/TASK-043-quick-params-gui-spec.md`) |
+| TASK-042 | Daniel | Schema PARAMS + pseudocode para main.py y generator.py |
+| TASK-041 | Alex | DukascopyHistoricalDataSource implementado en `src/data/` |
+| TASK-040 | Daniel | Validación símbolo Dukascopy para DAX |
+| TASK-039 | Felix | Integración GUI broker adapter en `gui_charts.py` |
+| TASK-038 | Grace | Spec GUI broker adapter integration (`agents/specs/TASK-038-gui-broker-adapter-integration.md`) |
+| TASK-037 | Alex | MT5DataFeed, MT5HistoricalDataSource, desacoplamiento backtesting/runtime.py |
+| TASK-036 | Daniel | Spec data provider (`agents/specs/TASK-036-data-provider-spec.md`) |
+| TASK-035 | Felix | IBrokerAdapter wired in ExecutionEngine |
+| TASK-034 | Daniel | IBrokerAdapter spec (`agents/specs/TASK-034-ibroker-adapter-spec.md`) |
 | TASK-026 | Felix | Cambios GUI para piramidado implementados en `gui_charts.py` |
 | TASK-025 | Felix | Estrategia ADX+DI con piramidado y sizing dinámico integrada |
 | TASK-024 | Felix | Sizing dinámico y riesgo agregado implementados en `trading.py` |

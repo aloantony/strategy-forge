@@ -1,0 +1,50 @@
+{
+  "GER40": {
+    "description": "German DAX 40 Index",
+    "category": "index",
+    "providers": {
+      "mt5": "#Germany40",
+      "dukascopy": "deuidxeur",
+      "file": "GER40"
+    },
+    "instrument": {
+      "tick_size": 0.1,
+      "tick_value": 1.0,
+      "point": 0.1,
+      "digits": 1,
+      "volume_min": 0.01,
+      "volume_max": 100.0,
+      "volume_step": 0.01,
+      "volume_digits": 2,
+      "trade_stops_level": 0,
+      "trade_freeze_level": 0,
+      "trade_fillings": 1,
+      "filling_mode": 1,
+      "trade_exemode": 0
+    }
+  },
+  "EURUSD": {
+    "description": "Euro / US Dollar",
+    "category": "forex",
+    "providers": {
+      "mt5": "EURUSD",
+      "dukascopy": "EURUSD",
+      "file": "EURUSD"
+    },
+    "instrument": {
+      "tick_size": 0.00001,
+      "tick_value": 1.0,
+      "point": 0.00001,
+      "digits": 5,
+      "volume_min": 0.01,
+      "volume_max": 500.0,
+      "volume_step": 0.01,
+      "volume_digits": 2,
+      "trade_stops_level": 0,
+      "trade_freeze_level": 0,
+      "trade_fillings": 1,
+      "filling_mode": 1,
+      "trade_exemode": 0
+    }
+  }
+}

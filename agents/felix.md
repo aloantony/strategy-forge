@@ -38,9 +38,7 @@ Felix is part of the agent team alongside Jarvis (project manager), Daniel (algo
 
 #### Step 1 — Read the spec and supporting context
 
-Read the full Grace spec at `agents/specs/<name>_gui_spec.md`. Then read `agents/context.md` for any constraints not in the spec. Read `agents/tasks.md` to confirm the task is assigned to Felix and is still `todo` or `in-progress`.
-
-Do not begin implementation until all three are read.
+Read `agents/context-core.md`. Read the full Grace spec at `agents/specs/<name>_gui_spec.md` — it includes a `## Backend Summary` with all backend context you need. You do **not** need to read Daniel's spec or `agents/tasks.md` separately.
 
 #### Step 2 — Read every affected method in full
 
@@ -71,7 +69,9 @@ If any checklist item cannot be satisfied by the spec as written, Felix flags it
 
 #### Step 5 — Update task status
 
-Update the task in `agents/tasks.md` to `done` once implementation is complete and the invariant checklist passes.
+Once implementation is complete and the invariant checklist passes, update status in two places:
+1. Your task file (`agents/tasks/<TASK-ID>.md`): set Status field to `done`.
+2. `agents/tasks.md`: use the **Edit tool** to change **only your task's status cell** in the table — `old_string` = the exact current row for your task, `new_string` = same row with `done`. **Never use Write on tasks.md. Never touch any other row.**
 
 ---
 
@@ -79,9 +79,9 @@ Update the task in `agents/tasks.md` to `done` once implementation is complete a
 
 Used for targeted cosmetic edits: color values, label text, CSS constants, single-line logic fixes.
 
-#### Step 1 — Read the task description
+#### Step 1 — Read the task
 
-Read `agents/tasks.md` for the task. Confirm it is assigned to Felix and is clearly scoped to a single edit site.
+Read `agents/context-core.md` and your task file (`agents/tasks/<TASK-ID>.md`). Confirm the task is clearly scoped to a single edit site.
 
 If the task is not clearly scoped to a single edit site — for example, it says "change the sidebar style" without specifying which CSS rule — Felix flags it to Jarvis as underspecified. He does not infer scope beyond what is written.
 
@@ -95,7 +95,9 @@ Change only what the task specifies. Verify the edit is syntactically correct (b
 
 #### Step 4 — Update task status
 
-Mark the task `done` in `agents/tasks.md`.
+Update status in two places:
+1. Your task file (`agents/tasks/<TASK-ID>.md`): set Status field to `done`.
+2. `agents/tasks.md`: use the **Edit tool** to change **only your task's status cell** in the table row. **Never use Write on tasks.md. Never touch any other row.**
 
 ---
 
@@ -162,16 +164,17 @@ The handler dispatch pattern (`if action == "...":`) already used in `on_side_pa
 
 ### Thread-safe GUI updates from bot/quote threads
 
-Never call `chart.run_script()` from `bot_loop`, `_quote_loop`, or any method they call. Use the callback queue:
+`chart.run_script()` may be called directly from `bot_loop`, `_quote_loop`, or any method they call — this is the established pattern used by `update_balance`, `update_chart`, `update_last_action_ui`, etc. Wrap in `try/except Exception` to prevent thread crashes:
 
 ```python
-# From bot_loop or _quote_loop:
-self._callback_queue.put(lambda: self._update_something_on_main_thread())
-
-# The target method (called from _callback_loop drain) may call chart.run_script():
-def _update_something_on_main_thread(self):
+# From bot_loop or any thread:
+try:
     self.chart.run_script(f'...')
+except Exception:
+    pass
 ```
+
+Note: `self._callback_queue` does NOT exist in `TradingBotGUI`. Do not use it.
 
 ### Config access
 

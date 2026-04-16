@@ -2,7 +2,7 @@
 
 - **ID**: TASK-034
 - **Priority**: P1
-- **Status**: todo
+- **Status**: done
 - **Assigned**: Daniel
 - **Blocked by**: —
 - **Blocks**: TASK-035, TASK-036, TASK-038

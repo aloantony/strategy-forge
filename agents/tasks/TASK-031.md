@@ -2,7 +2,7 @@
 
 - **ID**: TASK-031
 - **Priority**: P1
-- **Status**: todo
+- **Status**: done
 - **Assigned**: Felix
 - **Blocked by**: TASK-028
 - **Blocks**: TASK-033
@@ -29,11 +29,11 @@ Implementar en `gui_charts.py` los cambios especificados por Grace en TASK-028: 
 - Patrón threading ya establecido: `_render_backtest_panel` puede llamar `chart.run_script()` directamente (se invoca desde el worker thread pero este patrón ya existe).
 
 ## Acceptance criteria
-- [ ] `backtesting/runtime.py`: `_build_success_result` retorna `equity_curve`, `drawdown_curve` y las métricas adicionales definidas en TASK-027
-- [ ] `gui_charts.py`: tabla de trades individuales visible tras completar un backtest
-- [ ] `gui_charts.py`: micro-chart de equity curve visible tras completar un backtest
-- [ ] `gui_charts.py`: micro-chart de drawdown visible tras completar un backtest
-- [ ] Las 8 cards de resumen originales siguen funcionando
-- [ ] El formulario (estrategia, símbolo, fechas, balance inicial) sigue funcionando
-- [ ] GUI lanza sin errores JS en la consola del webview
-- [ ] No se rompe ninguna otra funcionalidad del bot (chart principal, tab estrategias, Data Window)
+- [x] `backtesting/runtime.py`: `_build_success_result` retorna `equity_curve`, `drawdown_curve` y las métricas adicionales definidas en TASK-027
+- [x] `gui_charts.py`: tabla de trades individuales visible tras completar un backtest
+- [x] `gui_charts.py`: micro-chart de equity curve visible tras completar un backtest
+- [x] `gui_charts.py`: micro-chart de drawdown visible tras completar un backtest
+- [x] Las 8 cards de resumen originales siguen funcionando
+- [x] El formulario (estrategia, símbolo, fechas, balance inicial) sigue funcionando
+- [x] GUI lanza sin errores JS en la consola del webview
+- [x] No se rompe ninguna otra funcionalidad del bot (chart principal, tab estrategias, Data Window)

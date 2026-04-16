@@ -2,7 +2,7 @@
 
 - **ID**: TASK-032
 - **Priority**: P2
-- **Status**: todo
+- **Status**: done
 - **Assigned**: Felix
 - **Blocked by**: TASK-030, TASK-029
 - **Blocks**: nada
@@ -28,9 +28,9 @@ Implementar la feature de comparación multi-estrategia: (1) la función de comp
 - Seguir ambos specs verbatim — sin decisiones de diseño propias.
 
 ## Acceptance criteria
-- [ ] `backtesting/runtime.py`: función de comparación implementada según spec TASK-029
-- [ ] `gui_charts.py`: formulario permite seleccionar múltiples estrategias para comparar
-- [ ] `gui_charts.py`: tabla de comparación muestra las métricas definidas en spec TASK-030
-- [ ] Modo single-strategy (TASK-031) no se rompe al añadir el modo comparación
-- [ ] GUI lanza sin errores JS en la consola del webview
-- [ ] Manejo de error parcial (fallo de una estrategia) según lo especificado por Daniel
+- [x] `backtesting/runtime.py`: función de comparación implementada según spec TASK-029
+- [x] `gui_charts.py`: formulario permite seleccionar múltiples estrategias para comparar
+- [x] `gui_charts.py`: tabla de comparación muestra las métricas definidas en spec TASK-030
+- [x] Modo single-strategy (TASK-031) no se rompe al añadir el modo comparación
+- [x] GUI lanza sin errores JS en la consola del webview
+- [x] Manejo de error parcial (fallo de una estrategia) según lo especificado por Daniel

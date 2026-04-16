@@ -6,18 +6,31 @@ from __future__ import annotations
 
 from typing import Any
 
-import MetaTrader5 as mt5
+try:
+    import MetaTrader5 as mt5
+    _TF_M1  = mt5.TIMEFRAME_M1   # = 1
+    _TF_M5  = mt5.TIMEFRAME_M5   # = 5
+    _TF_M15 = mt5.TIMEFRAME_M15  # = 15
+    _TF_M30 = mt5.TIMEFRAME_M30  # = 30
+    _TF_H1  = mt5.TIMEFRAME_H1   # = 16385
+    _TF_H4  = mt5.TIMEFRAME_H4   # = 16388
+    _TF_D1  = mt5.TIMEFRAME_D1   # = 16408
+except ImportError:
+    mt5 = None
+    _TF_M1  = 1
+    _TF_M5  = 5
+    _TF_M15 = 15
+    _TF_M30 = 30
+    _TF_H1  = 16385
+    _TF_H4  = 16388
+    _TF_D1  = 16408
+
 import pandas as pd
 
 
 TIMEFRAME_MAP = {
-    "M1": mt5.TIMEFRAME_M1,
-    "M5": mt5.TIMEFRAME_M5,
-    "M15": mt5.TIMEFRAME_M15,
-    "M30": mt5.TIMEFRAME_M30,
-    "H1": mt5.TIMEFRAME_H1,
-    "H4": mt5.TIMEFRAME_H4,
-    "D1": mt5.TIMEFRAME_D1,
+    "M1": _TF_M1, "M5": _TF_M5, "M15": _TF_M15, "M30": _TF_M30,
+    "H1": _TF_H1, "H4": _TF_H4, "D1": _TF_D1,
 }
 
 
@@ -91,6 +104,9 @@ def normalize_signal_payload(payload) -> dict:
     atr_value = 0.0
     dynamic_sizing = False
     volume_ratio = 0.0
+    sl_atr_mult = 1.0
+    tp_atr_mult = 2.0
+    pyramid_atr_mult = 0.5
 
     if isinstance(payload, dict):
         signal_raw = (
@@ -125,6 +141,24 @@ def normalize_signal_payload(payload) -> dict:
             volume_ratio = float(volume_ratio_raw) if volume_ratio_raw is not None else 0.0
         except (TypeError, ValueError):
             volume_ratio = 0.0
+
+        sl_atr_mult_raw = payload.get("sl_atr_mult", 1.0)
+        try:
+            sl_atr_mult = float(sl_atr_mult_raw) if sl_atr_mult_raw is not None else 1.0
+        except (TypeError, ValueError):
+            sl_atr_mult = 1.0
+
+        tp_atr_mult_raw = payload.get("tp_atr_mult", 2.0)
+        try:
+            tp_atr_mult = float(tp_atr_mult_raw) if tp_atr_mult_raw is not None else 2.0
+        except (TypeError, ValueError):
+            tp_atr_mult = 2.0
+
+        pyramid_atr_mult_raw = payload.get("pyramid_atr_mult", 0.5)
+        try:
+            pyramid_atr_mult = float(pyramid_atr_mult_raw) if pyramid_atr_mult_raw is not None else 0.5
+        except (TypeError, ValueError):
+            pyramid_atr_mult = 0.5
     elif isinstance(payload, (tuple, list)):
         if len(payload) > 0:
             signal_raw = payload[0]
@@ -142,6 +176,9 @@ def normalize_signal_payload(payload) -> dict:
         "atr_value": atr_value,
         "dynamic_sizing": dynamic_sizing,
         "volume_ratio": volume_ratio,
+        "sl_atr_mult": sl_atr_mult,
+        "tp_atr_mult": tp_atr_mult,
+        "pyramid_atr_mult": pyramid_atr_mult,
     }
 
 
@@ -149,6 +186,7 @@ def get_strategy_signal_payload(
     df: pd.DataFrame,
     module,
     verbose: bool = False,
+    params=None,
 ) -> dict:
     if module is None:
         return {
@@ -163,14 +201,26 @@ def get_strategy_signal_payload(
     payload = None
     if hasattr(module, "get_last_signal_payload"):
         try:
-            payload = module.get_last_signal_payload(df, verbose=verbose)
+            if params is not None:
+                payload = module.get_last_signal_payload(df, verbose=verbose, params=params)
+            else:
+                payload = module.get_last_signal_payload(df, verbose=verbose)
         except TypeError:
-            payload = module.get_last_signal_payload(df)
+            try:
+                payload = module.get_last_signal_payload(df, verbose=verbose)
+            except TypeError:
+                payload = module.get_last_signal_payload(df)
 
     if payload is None and hasattr(module, "get_last_signal"):
         try:
-            payload = module.get_last_signal(df, verbose=verbose)
+            if params is not None:
+                payload = module.get_last_signal(df, verbose=verbose, params=params)
+            else:
+                payload = module.get_last_signal(df, verbose=verbose)
         except TypeError:
-            payload = module.get_last_signal(df)
+            try:
+                payload = module.get_last_signal(df, verbose=verbose)
+            except TypeError:
+                payload = module.get_last_signal(df)
 
     return normalize_signal_payload(payload)

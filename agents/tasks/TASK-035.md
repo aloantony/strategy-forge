@@ -2,7 +2,7 @@
 
 - **ID**: TASK-035
 - **Priority**: P1
-- **Status**: todo
+- **Status**: done
 - **Assigned**: Felix
 - **Blocked by**: TASK-034
 - **Blocks**: TASK-038

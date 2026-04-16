@@ -1,6 +1,6 @@
 # Project Context
 
-_Last updated by Jarvis: 2026-04-11 (decisiones estrategicas: supersistema v1 es la direccion definitiva; broker abstraction es prioridad inmediata; sprint de Broker Abstraction planificado TASK-034 a TASK-039)_
+_Last updated by Jarvis: 2026-04-15 (sprint Dukascopy-in-Backtest-GUI agregado TASK-049 a TASK-052; Known Issues limpiados)_
 
 ---
 
@@ -40,7 +40,7 @@ These rules exist to prevent token bloat across all agent files. Violating them 
 2. Tell the user directly in your terminal output what is missing and why it blocks you.
 3. Ask the user explicitly for permission or the missing information before continuing.
 
-This applies to all agents (Daniel, Grace, Felix, and any future agents). When in doubt, escalate — never assume.
+This applies to all agents (Daniel, Grace, Felix, Alex, and any future agents). When in doubt, escalate — never assume.
 
 ---
 
@@ -52,6 +52,7 @@ This applies to all agents (Daniel, Grace, Felix, and any future agents). When i
 | **Daniel** | Algorithm specialist — pre-implementation algorithm selection (primary) and post-implementation review; enumerates candidates, selects and justifies the winner, produces pseudocode spec the coding agent implements verbatim; flags unclear problem statements to Jarvis before any algorithm work begins. **Jarvis must route through Daniel** for: (1) any backtesting feature work, (2) any new algorithm or indicator implementation | `agents/daniel.md` |
 | **Grace** | GUI architect — pre-implementation planning specialist for `gui_charts.py`; maps safe insertion points, defines the threading zone for each change, documents JS/Python interaction patterns, and writes the change spec that Felix implements. **Jarvis must route through Grace** for: (1) any new UI panel, tab, or major section, (2) any `chart.run_script()` JS injection change, (3) any method addition/removal on `TradingBotGUI`, (4) any change touching the bot loop or threading, (5) backtest GUI integration | `agents/grace.md` |
 | **Felix** | GUI coder — implements changes to `gui_charts.py` following Grace's spec (spec-driven mode) or direct task descriptions (direct mode for single-site cosmetic edits). Enforces established coding patterns: IIFE wrappers, JSON payload crossing, callback-queue threading, `getattr(config, ...)` access. Does not make architectural decisions | `agents/felix.md` |
+| **Alex** | Backend coder — implements non-GUI, non-algorithm work: data layer, broker adapters, runtime wiring, `src/` modules, `backtesting/` internals, tests. Does not touch `gui_charts.py` (Felix/Grace scope). Does not do algorithm selection (Daniel scope) | `agents/alex.md` |
 
 ---
 
@@ -83,17 +84,26 @@ This applies to all agents (Daniel, Grace, Felix, and any future agents). When i
 
 ## Current Goals
 
-**Sprint activo: Backtest GUI** (TASK-027 a TASK-033) — todos `todo`, ninguno iniciado. Enriquecer el tab Backtest con cinco features:
+**Sprint activo: GUI Polish** (TASK-045 a TASK-048) — todos `todo`, ninguno iniciado. Mejorar la calidad visual e interactiva del GUI sin cambiar la paleta de colores ni la arquitectura de threading:
 
-1. **Tabla de trades individuales** — cada trade con hora entrada/salida, precios, P&L y razon de cierre
-2. **Curva de equity** — micro-chart SVG/Canvas inline en el side panel
-3. **Analisis de drawdown** — micro-chart de drawdown a lo largo del tiempo
-4. **Comparacion de estrategias** — ejecutar N backtests con mismo simbolo/rango y comparar metricas en tabla
-5. **Export a CSV** — boton para descargar la lista de trades del ultimo backtest
+1. **TASK-045 (Grace)** — Spec completa del sprint: inventario de botones interactivos, cambio quirúrgico del tab switcher (Opción B fade), spinner en botón de backtest, arquitectura del sistema de toast notifications, e insertion points exactos para Felix
+2. **TASK-046 (Felix)** — Scroll fix directo: `overflow-y: auto` + scrollbar webkit en `.tv-backtest-panel` y verificar `#tv-strategy-panel` — no depende de TASK-045
+3. **TASK-047 (Felix)** — Micro-interacciones y animaciones: transitions CSS, scale en `:active`, hover box-shadow, tab fade-in, spinner — depende de TASK-045
+4. **TASK-048 (Felix)** — Toast notifications: HTML container, CSS animaciones, JS `window.tvShowToast()`, Python `show_toast()` thread-safe, integración en 3 puntos del bot-loop — depende de TASK-045
 
-El tab Backtest ya existe y funciona (formulario, ejecucion en thread background, 8 cards de resumen). El backend `backtesting/runtime.py` ya calcula `equity_curve` internamente pero no la expone en el resultado. El sprint comienza con Daniel extendiendo el resultado del engine antes de que Grace pueda escribir la spec de la GUI.
+Decisiones tomadas en el plan del sprint:
+- Fade de tabs: Opción B (JS mínimo con `requestAnimationFrame` + CSS transition)
+- Scroll fix routing: directo a Felix (cambio CSS localizado, sin spec de Grace)
+- Spinner en botón de backtest: incluido en TASK-047
+- Toast eventos: los 3 (trade abierto, trade cerrado, señal detectada)
+- Indicador deslizante de tab y flash de señal en fila: NOT incluidos en este sprint
 
-**Siguiente sprint: Broker Abstraction** (TASK-034 a TASK-039). TASK-034 (spec de `IBrokerAdapter`, Daniel) puede arrancar en paralelo al sprint de Backtest GUI — no escribe ningun archivo de runtime. El resto espera a que el sprint de Backtest GUI este completo (para evitar conflictos en `backtesting/runtime.py`).
+**Siguiente sprint: Dukascopy-in-Backtest-GUI** (TASK-049 a TASK-052) — todos `todo`. Exponer la selección de fuente de datos (MT5 vs Dukascopy) en el formulario de backtest del GUI:
+
+1. **TASK-049 (Daniel)** — Spec: cómo exponer la selección de fuente de datos, qué parámetros requiere cada fuente, mapeo de símbolo canónico
+2. **TASK-050 (Grace)** — Spec GUI: selector de fuente de datos en el formulario de backtest de `gui_charts.py`
+3. **TASK-051 (Alex)** — Wiring: conectar la fuente seleccionada a la llamada de `backtesting/runtime.py` en `gui_charts.py`
+4. **TASK-052 (Felix)** — Implementación GUI: spec de Grace en `gui_charts.py`
 
 ---
 
@@ -119,20 +129,24 @@ gui_charts.py  <->  main.py (trading loop, strategy runner)
                        |- data_feed.py       -> OHLCV + derived columns
                        |- strategies/        -> pluggable modules (ThreadPoolExecutor)
                        |- trading.py         -> order placement via apply_signal()
-                       `- src/               -> supersistema v1 (runtime, persistence, broker abstraction WIP)
+                       `- src/               -> supersistema v1 (runtime, persistence, broker abstraction)
 ```
 
 ### Supersistema v1 (`src/`) — estado actual
 
 - `src/runtime/adapter.py` — `LegacyStrategyAdapter`: envuelve modulos legacy al contrato v1 `decide(context, state)`
-- `src/runtime/execution_engine.py` — `ExecutionEngine`: ejecuta planes normalizados; actualmente acoplado a `trading_module` concreto (a resolver en TASK-035)
+- `src/runtime/execution_engine.py` — `ExecutionEngine`: ejecuta planes normalizados; actualmente acoplado a `trading_module` concreto (a resolver en TASK-035, completado)
 - `src/runtime/plan_interpreter.py` — interpreta planes v1
 - `src/runtime/context_builder.py` — construye el contexto de decision
 - `src/runtime/state_store.py` — persiste estado de estrategia por instancia
 - `src/persistence/` — SQLite + migraciones + DAL
-- `strategy_runtime.py` (raiz) — helpers compartidos runtime/backtest; importa `MetaTrader5 as mt5` al nivel de modulo (a aislar en TASK-037)
+- `src/data/interface.py` — `IDataFeed`, `IHistoricalDataSource` (creados en TASK-037)
+- `src/data/mt5_data_feed.py` — `MT5DataFeed(IDataFeed)` (creado en TASK-037)
+- `src/data/mt5_historical_source.py` — `MT5HistoricalDataSource(IHistoricalDataSource)` (creado en TASK-037)
+- `src/data/dukascopy_historical_source.py` — `DukascopyHistoricalDataSource(IHistoricalDataSource)` (creado en TASK-041)
+- `strategy_runtime.py` (raiz) — helpers compartidos runtime/backtest; import de mt5 aislado (resuelto en TASK-037)
 
-### Broker Abstraction — Arquitectura objetivo (TASK-034 a TASK-039)
+### Broker Abstraction — Arquitectura objetivo (TASK-034 a TASK-039, completo)
 
 ```
 IBrokerAdapter (src/broker/interface.py)
@@ -142,18 +156,18 @@ IDataFeed (src/data/interface.py)
     `-- MT5DataFeed (src/data/mt5_data_feed.py) -> data_feed.py
 
 IHistoricalDataSource (src/data/interface.py)
-    `-- MT5HistoricalDataSource (src/data/mt5_historical_source.py) -> mt5.copy_rates_range + data_feed
+    `-- MT5HistoricalDataSource (src/data/mt5_historical_source.py)
+    `-- DukascopyHistoricalDataSource (src/data/dukascopy_historical_source.py)
 ```
 
-`ExecutionEngine.__init__` cambiara de `trading_module` a `broker: IBrokerAdapter`.
-`backtesting/runtime.py` recibira `data_source: IHistoricalDataSource` inyectado en lugar de llamar `mt5.copy_rates_range()` directamente.
+`backtesting/runtime.py` recibe `data_source: IHistoricalDataSource` inyectado — ya no llama `mt5.copy_rates_range()` directamente.
 
 ### Key file sizes / risk notes
 
 - `gui_charts.py` is **~6613 lines** — all edits must be **targeted and surgical**; route non-trivial changes through Grace before assigning to Felix
-- `backtesting/runtime.py` is the current backtest engine used by the GUI; sera modificado por Backtest GUI sprint (TASK-031/032) y luego por Broker Abstraction (TASK-037) — no solapar
-- `trading.py`: `apply_signal()` is the sole public API for order execution; `_close_position()` and `_send_order()` are private helpers — `ExecutionEngine` los llama directamente hoy (acoplamiento a resolver en TASK-035)
-- `strategy_runtime.py` (raiz): importa `MetaTrader5 as mt5` a nivel de modulo; impide imports en entornos sin MT5 instalado (a aislar en TASK-037)
+- `backtesting/runtime.py` is the current backtest engine used by the GUI
+- `trading.py`: `apply_signal()` is the sole public API for order execution; `_close_position()` and `_send_order()` are private helpers
+- `data_feed.py`: still active as a legacy wrapper; `MT5DataFeed` wraps it — do not modify
 
 ### GUI architecture (`gui_charts.py`)
 
@@ -174,9 +188,9 @@ The file contains a single class `TradingBotGUI` with ~90 methods. No sub-classe
 
 **Threading model**:
 - Main thread: chart event handlers, `run()`, initial setup
-- Bot-loop thread: `bot_loop()` and everything it calls — must NOT call `chart.run_script()` directly
-- Quote thread: `_quote_loop()` — same restriction
-- Callback thread: `_callback_loop()` — drains `self._callback_queue`; callables placed here may call `chart.run_script()`
+- Bot-loop thread: `bot_loop()` and everything it calls — may call `chart.run_script()` directly (wrap in `try/except`); this is the established pattern
+- Quote thread: `_quote_loop()` — same: direct `chart.run_script()` with `try/except`
+- Note: `self._callback_queue` does NOT exist in `TradingBotGUI`; older specs referencing it are stale
 
 **JS embedding**: `chart.run_script(f"...")` with f-string escaping (`{{` / `}}` for literal JS braces). The safe pattern for structured data is `json.dumps({...})` + `const payload = {payload}` inside the f-string.
 
@@ -209,35 +223,34 @@ A technical user can bypass the Builder by dropping a hand-crafted `.py` file in
 
 - **Supersistema v1 es definitivo** (2026-04-11): `src/` no es experimental. Es el runtime futuro de `main.py` y `gui_charts.py`.
 - **Broker abstraction es prioridad inmediata** (2026-04-11): `IBrokerAdapter` + `IDataFeed` + `IHistoricalDataSource` seran las interfaces que desacoplan el sistema de MT5.
-- **Secuencia de sprints** (2026-04-11): terminar Backtest GUI (TASK-027 a TASK-033) antes de que Felix toque `backtesting/runtime.py` en el sprint de Broker Abstraction (TASK-037). TASK-034 (spec pura, Daniel) puede correr en paralelo con el sprint activo.
 - **GUI is the product**: All user-facing features go in `gui_charts.py`. `main.py` is a secondary headless runner.
 - **Strategies are isolated modules**: they never import from `config`, `trading`, or `gui_charts`.
 - **Symbol prefix is broker-dependent**: `#Germany40` on FxPro, `DE40` on others — never hardcode new broker-specific prefixes.
 - **backtesting/runtime.py** is the active backtest path in this codebase.
-- **Branch status**: current branch is `supersistema-v1` — needs merge to `main`.
 - **Downsampling de equity_curve** (2026-04-11): no hay downsampling. 1 punto por vela procesada.
 - **Modelo fill/SL/TP** (2026-04-11): senal en vela N -> ejecucion en vela N+1; fill al open si hay gap; SL tiene prioridad sobre TP cuando ambos se tocan en la misma vela.
 - **Indicadores en motor de backtest** (2026-04-11): `backtesting/runtime.py` eliminara `add_baseline_bands`, `add_supertrend`, `add_tci` del DataFrame de datos. El motor solo entrega OHLCV + `add_source_columns`; preparacion de indicadores es responsabilidad de la estrategia via `prepare_dataframe(df)`.
+- **Branch status**: `supersistema-v1` fue mergeado a `main` (commit `3b68212`).
 
 ---
 
-## Estado del Backtest GUI (inicio del sprint)
+## Estado del Backtest GUI (post-sprint)
 
-- `backtesting/runtime.py` — `BacktestEngine` construye `self.equity_curve` (lista de `{"time": epoch, "equity": float, "balance": float}`) durante la ejecucion pero `_build_success_result` NO la incluye en el dict de retorno. El campo `"trades"` (lista completa de trades individuales) SI esta en el resultado actual (~linea 551). El campo expuesto como `"closed_trades"` es solo el conteo numerico; la lista completa ya esta bajo `"trades"`.
+- `backtesting/runtime.py` — `BacktestEngine` construye `self.equity_curve` y la incluye en el resultado. El campo `"trades"` (lista completa) esta en el resultado. El campo `"closed_trades"` es solo el conteo numerico.
 - La GUI actualmente muestra 8 cards de resumen. El JSON payload llega completo a JS via `window.renderBacktestPanel(payload)`.
-- Los sub-charts del bot en vivo (`equity_chart`, `tci_chart`) son lightweight_charts sub-charts. La curva de equity del backtest NO puede usar ese mecanismo — el tab Backtest es un panel HTML dentro del side panel; debe usar SVG o Canvas inline.
+- Los sub-charts del bot en vivo (`equity_chart`, `tci_chart`) son lightweight_charts sub-charts. La curva de equity del backtest usa SVG o Canvas inline en el panel HTML del Backtest tab.
+- `backtesting/runtime.py` recibe `data_source: IHistoricalDataSource` — ya no llama a MT5 directamente.
 
 ## Estado de sprints anteriores
 
 - **Cleanup sprint** (TASK-001 a TASK-013): completo.
 - **Strategy Builder sprint** (TASK-014 a TASK-018): completo.
 - **Primera Estrategia externa sprint** (TASK-019 a TASK-026): completo. ADX+DI, piramidado y sizing dinamico implementados.
-- **Supersistema v1 sprint** (rama `supersistema-v1`, commit `ec309f0`): completo. `src/runtime/`, `src/persistence/`, `strategy_runtime.py` implementados. Pendiente: merge a `main`.
+- **Supersistema v1 sprint** (rama `supersistema-v1`, mergeado en commit `3b68212`): completo.
+- **Backtest GUI sprint** (TASK-027 a TASK-033): completo. Equity curve, comparacion de backtests y mejoras visuales implementados.
+- **Broker Abstraction sprint** (TASK-034 a TASK-041): completo. `IBrokerAdapter`, `IDataFeed`, `IHistoricalDataSource`, `MT5BrokerAdapter`, `MT5DataFeed`, `MT5HistoricalDataSource`, `DukascopyHistoricalDataSource` implementados. `backtesting/runtime.py` desacoplado de MT5 directo.
+- **Strategy Quick Params sprint** (TASK-042 a TASK-044): completo. Schema PARAMS, merge logic, params injection en main.py, Quick Params panel GUI implementados.
 
 ## Known Issues / Blockers
 
-- La rama `supersistema-v1` necesita merge a `main` antes de iniciar el sprint de Broker Abstraction.
-- `strategy_runtime.py` (raiz) importa `MetaTrader5 as mt5` al nivel de modulo — impide su uso en entornos sin MT5 instalado (tests, CI). Resuelto en TASK-037.
-- `ExecutionEngine` llama a `self._trading._send_order()` y `self._trading._close_position()` que son funciones privadas de `trading.py` — acoplamiento directo a resolver en TASK-035.
-
----
+- `ExecutionEngine` llama a `self._trading._send_order()` y `self._trading._close_position()` que son funciones privadas de `trading.py` — acoplamiento directo. No es bloqueante para los sprints activos; a resolver cuando se migre la GUI al supersistema v1.

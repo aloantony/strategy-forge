@@ -118,6 +118,7 @@ def render_strategy_source(config: dict) -> str:
         _emit_docstring(display_name, description, timeframe),
         "import pandas as pd",
         _emit_module_constants(timeframe, magic_number, indicators),
+        _emit_params_block(indicators),
         _emit_strategy_object_tree_items(indicators),
         _emit_data_window_fields(indicators),
         _emit_helper_functions(indicators),
@@ -554,6 +555,94 @@ def _emit_module_constants(timeframe: str, magic_number: int, indicators: list) 
             period = int(p["period"])
             lines.append(f"ADX_DI_{period}_PERIOD = {period}")
         # VWAP, HMA, SUPERTREND, TCI: no user params → no constants
+
+    return "\n".join(lines)
+
+
+def _emit_params_block(indicators: list) -> str:
+    """Emit a PARAMS module-level dict for editable indicator parameters.
+
+    Returns empty string if no non-pre-computed indicators have params.
+    """
+    entries = []
+
+    for ind in indicators:
+        if ind["pre_computed"]:
+            continue
+        ind_id = ind["id"]
+        p = ind["params"]
+
+        if ind_id == "EMA":
+            period = int(p["period"])
+            entries.append((
+                f"ema_{period}_period",
+                f"EMA {period} Period",
+                "int", period, 2, 500,
+            ))
+        elif ind_id == "SMA":
+            period = int(p["period"])
+            entries.append((
+                f"sma_{period}_period",
+                f"SMA {period} Period",
+                "int", period, 2, 500,
+            ))
+        elif ind_id == "RSI":
+            period = int(p["period"])
+            entries.append((
+                f"rsi_{period}_period",
+                f"RSI {period} Period",
+                "int", period, 2, 200,
+            ))
+        elif ind_id == "BB":
+            period = int(p["period"])
+            mult = float(p["multiplier"])
+            entries.append((
+                f"bb_{period}_period",
+                f"BB {period} Period",
+                "int", period, 2, 500,
+            ))
+            entries.append((
+                f"bb_{period}_mult",
+                f"BB {period} Mult",
+                "float", mult, 0.1, 10.0,
+            ))
+        elif ind_id == "DONCHIAN":
+            period = int(p["period"])
+            entries.append((
+                f"donchian_{period}_period",
+                f"Donchian {period} Period",
+                "int", period, 2, 500,
+            ))
+        elif ind_id == "ATR":
+            period = int(p["period"])
+            entries.append((
+                f"atr_{period}_period",
+                f"ATR {period} Period",
+                "int", period, 1, 200,
+            ))
+        elif ind_id == "VOLUME_RATIO":
+            lookback = int(p["lookback"])
+            entries.append((
+                f"volume_ratio_{lookback}_lookback",
+                f"Volume Ratio {lookback} Lookback",
+                "int", lookback, 2, 500,
+            ))
+        elif ind_id == "ADX_DI":
+            period = int(p["period"])
+            entries.append((
+                f"adx_di_{period}_period",
+                f"ADX/DI {period} Period",
+                "int", period, 2, 200,
+            ))
+        # VWAP, HMA, SUPERTREND, TCI: no user-editable params → no entries
+
+    if not entries:
+        return ""
+
+    lines = ["PARAMS = {"]
+    for (key, label, type_str, default, min_val, max_val) in entries:
+        lines.append(f'    "{key}": {{"label": "{label}", "type": "{type_str}", "default": {default!r}, "min": {min_val!r}, "max": {max_val!r}}},')
+    lines.append("}")
 
     return "\n".join(lines)
 

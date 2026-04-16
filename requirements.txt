@@ -3,3 +3,4 @@ pandas
 matplotlib
 customtkinter
 lightweight-charts
+dukascopy-python>=4.0.1

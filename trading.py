@@ -7,6 +7,7 @@ from datetime import datetime, timedelta, timezone
 import math
 import re
 import config
+from src.broker.interface import InstrumentInfo
 
 _FILLING_NAME = {
     getattr(mt5, "ORDER_FILLING_FOK", 0): "FOK",
@@ -835,29 +836,17 @@ def apply_signal(
 
 
 def calculate_dynamic_lot(
-    symbol: str,
     atr_value: float,
     volume_ratio: float,
-    balance: float = None,
+    instrument_info: InstrumentInfo,
+    balance: float,
 ) -> float:
     # calcula el lot dinamico basado en riesgo fijo fraccional. Retorna lot sin normalizar; el caller debe pasar por normalize_volume().
-    if atr_value <= 0 or volume_ratio <= 0:
+    if atr_value <= 0 or volume_ratio <= 0 or balance <= 0:
         return 0.0
 
-    if balance is None:
-        account = mt5.account_info()
-        if account is None:
-            return 0.0
-        balance = account.balance
-    if balance <= 0:
-        return 0.0
-
-    symbol_info = mt5.symbol_info(symbol)
-    if symbol_info is None:
-        return 0.0
-
-    tick_size = getattr(symbol_info, "trade_tick_size", 0.0) or 0.0
-    tick_value = getattr(symbol_info, "trade_tick_value", 0.0) or 0.0
+    tick_size = instrument_info.tick_size
+    tick_value = instrument_info.tick_value
     if tick_size <= 0 or tick_value <= 0:
         return 0.0
 
@@ -871,11 +860,11 @@ def calculate_dynamic_lot(
 
 
 def check_aggregate_risk(
-    symbol: str,
     new_lot: float,
     atr_value: float,
     balance: float,
     open_positions: list,
+    instrument_info: InstrumentInfo,
 ) -> tuple:
     # verifica que el riesgo agregado (posiciones actuales + nueva entrada) no supere el 3% del balance.
     AGGREGATE_RISK_LIMIT = 0.03
@@ -883,12 +872,8 @@ def check_aggregate_risk(
     if balance <= 0:
         return (False, 0.0)
 
-    symbol_info = mt5.symbol_info(symbol)
-    if symbol_info is None:
-        return (False, 0.0)
-
-    tick_size = getattr(symbol_info, "trade_tick_size", 0.0) or 0.0
-    tick_value = getattr(symbol_info, "trade_tick_value", 0.0) or 0.0
+    tick_size = instrument_info.tick_size
+    tick_value = instrument_info.tick_value
     if tick_size <= 0 or tick_value <= 0:
         return (False, 0.0)
 

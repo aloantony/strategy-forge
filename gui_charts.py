@@ -30,7 +30,9 @@ import config
 import mt5_connection
 import data_feed
 import trading
-from backtesting import run_backtest
+from src.broker.mt5_adapter import MT5BrokerAdapter
+from backtesting import run_backtest, run_backtest_comparison
+from src.data.factory import build_data_source, resolve_symbol_for_request
 from strategy_runtime import (
     apply_strategy_processing as runtime_apply_strategy_processing,
     get_strategy_signal_payload as runtime_get_strategy_signal_payload,
@@ -149,13 +151,18 @@ class TradingBotGUI:
         self.builder_preview_entry = None
         self._strategy_builder_module_cache = None
         self.backtest_thread = None
+        self.comparison_thread = None
         self.backtest_state = {
             "running": False,
             "error": "",
             "result": None,
             "form": {},
+            "comparison_running": False,
+            "comparison_result":  None,
+            "comparison_error":   "",
         }
         self._init_strategy_registry()
+        self._broker = MT5BrokerAdapter()
 
         _patch_lightweight_charts_js_worker()
         
@@ -683,6 +690,9 @@ class TradingBotGUI:
             json_path = os.path.join(strategy_dir, f"strategy_{entry['key']}.json")
             has_config = os.path.isfile(json_path)
 
+            params_schema = entry.get("params_schema")
+            has_params = isinstance(params_schema, dict) and len(params_schema) > 0
+
             payload.append({
                 "key": entry["key"],
                 "label": entry["label"],
@@ -693,6 +703,7 @@ class TradingBotGUI:
                 "status": " | ".join(status_parts),
                 "last_run": entry.get("last_run_at") or "",
                 "has_config": has_config,
+                "has_params": has_params,
             })
         return payload
 
@@ -764,6 +775,10 @@ class TradingBotGUI:
         end_date = str(form.get("end_date") or presets[preset]["end"])
         initial_balance = str(form.get("initial_balance") or self._get_backtest_default_balance())
 
+        data_source = str(form.get("data_source") or "mt5").lower()
+        if data_source not in ("mt5", "dukascopy"):
+            data_source = "mt5"
+
         form = {
             "strategy_key": strategy_key,
             "symbol": symbol,
@@ -771,6 +786,7 @@ class TradingBotGUI:
             "start_date": start_date,
             "end_date": end_date,
             "initial_balance": initial_balance,
+            "data_source": data_source,
         }
         self.backtest_state["form"] = form
         return form
@@ -790,6 +806,7 @@ class TradingBotGUI:
             "strategies": self._get_backtest_strategy_options(),
             "symbols": self._get_backtest_symbol_options(),
             "presets": self._get_backtest_preset_ranges(),
+            "comparison_running": bool(self.backtest_state.get("comparison_running")),
         }
 
     def _render_backtest_panel(self):
@@ -798,15 +815,42 @@ class TradingBotGUI:
             return
         payload = self._get_backtest_payload()
         payload["handler"] = handler
-        payload_json = json.dumps(payload, ensure_ascii=False)
+
+        result_raw = payload.get("result") or {}
+        equity_curve = result_raw.get("equity_curve") or []
+        drawdown_curve = result_raw.get("drawdown_curve") or []
+        initial_balance = float(result_raw.get("initial_balance") or 10000.0)
+
+        result_for_panel = {k: v for k, v in result_raw.items()
+                            if k not in ("equity_curve", "drawdown_curve")}
+        panel_payload = dict(payload)
+        panel_payload["result"] = result_for_panel if result_raw else None
+
+        panel_json = json.dumps(panel_payload, ensure_ascii=False)
         self.chart.run_script(f'''
             ;(function() {{
-                const payload = {payload_json};
+                const payload = {panel_json};
                 if (window.renderBacktestPanel) {{
                     window.renderBacktestPanel(payload);
                 }}
             }})();
         ''')
+
+        if equity_curve or drawdown_curve:
+            charts_data = {
+                "equity_curve": equity_curve,
+                "drawdown_curve": drawdown_curve,
+                "initial_balance": initial_balance,
+            }
+            charts_json = json.dumps(charts_data, ensure_ascii=False)
+            self.chart.run_script(f'''
+                ;(function() {{
+                    const chartsData = {charts_json};
+                    if (window.renderBacktestCharts) {{
+                        window.renderBacktestCharts(chartsData);
+                    }}
+                }})();
+            ''')
 
     def _parse_backtest_date(self, value: str, *, end_of_day: bool = False) -> datetime:
         text = str(value or "").strip()
@@ -818,9 +862,9 @@ class TradingBotGUI:
         local_tz = datetime.now().astimezone().tzinfo or timezone.utc
         return base.replace(tzinfo=local_tz).astimezone(timezone.utc)
 
-    def _run_backtest_worker(self, request: dict):
+    def _run_backtest_worker(self, request: dict, data_source=None):
         try:
-            result = run_backtest(request)
+            result = run_backtest(request, data_source=data_source)
         except Exception as error:
             result = {"status": "error", "error": str(error)}
 
@@ -890,6 +934,19 @@ class TradingBotGUI:
             self._render_backtest_panel()
             return
 
+        source_name = str(payload.get("data_source") or "mt5").lower()
+        if source_name not in ("mt5", "dukascopy"):
+            source_name = "mt5"
+
+        try:
+            data_source = build_data_source(source_name, symbol)
+        except ValueError as e:
+            self.backtest_state["error"] = str(e)
+            self._render_backtest_panel()
+            return
+
+        request_symbol = resolve_symbol_for_request(source_name, symbol)
+
         self.backtest_state["form"] = {
             "strategy_key": entry["key"],
             "symbol": symbol,
@@ -897,6 +954,7 @@ class TradingBotGUI:
             "start_date": str(payload.get("start_date") or ""),
             "end_date": str(payload.get("end_date") or ""),
             "initial_balance": f"{initial_balance:.2f}",
+            "data_source": source_name,
         }
         self.backtest_state["running"] = True
         self.backtest_state["error"] = ""
@@ -905,7 +963,8 @@ class TradingBotGUI:
             "strategy_key": entry["key"],
             "strategy_label": entry["label"],
             "module": entry.get("module_obj"),
-            "symbol": symbol,
+            "symbol": request_symbol,
+            "data_provider": source_name,
             "timeframe_value": entry.get("timeframe_value"),
             "start_date": start_date,
             "end_date": end_date,
@@ -918,10 +977,199 @@ class TradingBotGUI:
         self._render_backtest_panel()
         self.backtest_thread = threading.Thread(
             target=self._run_backtest_worker,
-            args=(request,),
+            args=(request, data_source),
             daemon=True,
         )
         self.backtest_thread.start()
+
+    def _on_backtest_compare(self, json_str: str):
+        json_str = (json_str or "").strip()
+        if not json_str:
+            self.backtest_state["comparison_error"] = "Payload de comparación vacío"
+            self._render_backtest_comparison_panel()
+            return
+
+        if self.backtest_state.get("comparison_running"):
+            self.backtest_state["comparison_error"] = "Ya hay una comparación en ejecución"
+            self._render_backtest_comparison_panel()
+            return
+
+        try:
+            payload = json.loads(json_str)
+        except Exception as error:
+            self.backtest_state["comparison_error"] = f"Payload de comparación inválido: {error}"
+            self._render_backtest_comparison_panel()
+            return
+
+        strategy_keys = list(payload.get("strategy_keys") or [])
+        if len(strategy_keys) < 2:
+            self.backtest_state["comparison_error"] = "Se requieren al menos 2 estrategias para comparar"
+            self._render_backtest_comparison_panel()
+            return
+
+        strategies = []
+        for key in strategy_keys:
+            entry = self._get_strategy_entry(key)
+            if not entry:
+                self.backtest_state["comparison_error"] = f"Estrategia no encontrada: {key}"
+                self._render_backtest_comparison_panel()
+                return
+            if entry.get("module_obj") is None and not self._load_strategy_entry(entry):
+                self.backtest_state["comparison_error"] = (
+                    entry.get("last_error") or f"No se pudo cargar: {key}"
+                )
+                self._render_backtest_comparison_panel()
+                return
+            strategies.append({
+                "strategy_key":    entry["key"],
+                "strategy_label":  entry["label"],
+                "module":          entry.get("module_obj"),
+                "timeframe_value": entry.get("timeframe_value"),
+            })
+
+        symbol = str(payload.get("symbol") or "").strip()
+        if not symbol:
+            self.backtest_state["comparison_error"] = "Debe seleccionar un símbolo"
+            self._render_backtest_comparison_panel()
+            return
+
+        try:
+            initial_balance = float(payload.get("initial_balance") or 0.0)
+        except Exception:
+            initial_balance = 0.0
+        if initial_balance <= 0:
+            self.backtest_state["comparison_error"] = "El balance inicial debe ser mayor que cero"
+            self._render_backtest_comparison_panel()
+            return
+
+        try:
+            start_date = self._parse_backtest_date(payload.get("start_date"), end_of_day=False)
+            end_date   = self._parse_backtest_date(payload.get("end_date"), end_of_day=True)
+        except Exception as error:
+            self.backtest_state["comparison_error"] = str(error)
+            self._render_backtest_comparison_panel()
+            return
+
+        if end_date < start_date:
+            self.backtest_state["comparison_error"] = "La fecha fin no puede ser anterior a la fecha inicio"
+            self._render_backtest_comparison_panel()
+            return
+
+        source_name = str(payload.get("data_source") or "mt5").lower()
+        if source_name not in ("mt5", "dukascopy"):
+            source_name = "mt5"
+
+        try:
+            data_source = build_data_source(source_name, symbol)
+        except ValueError as e:
+            self.backtest_state["comparison_error"] = str(e)
+            self._render_backtest_comparison_panel()
+            return
+
+        request_symbol = resolve_symbol_for_request(source_name, symbol)
+
+        request = {
+            "symbol":          request_symbol,
+            "data_provider":   source_name,
+            "start_date":      start_date,
+            "end_date":        end_date,
+            "initial_balance": initial_balance,
+            "strategies":      strategies,
+            "warmup_bars":     max(int(getattr(config, "BARS_HISTORY", 500) or 500), 500),
+            "lot":             float(getattr(config, "LOT", 0.01) or 0.01),
+            "sl_points":       float(getattr(config, "SL_POINTS", 0.0) or 0.0),
+            "tp_points":       float(getattr(config, "TP_POINTS", 0.0) or 0.0),
+        }
+        self.backtest_state["comparison_running"] = True
+        self.backtest_state["comparison_error"]   = ""
+        self._render_backtest_comparison_panel()
+
+        self.comparison_thread = threading.Thread(
+            target=self._run_backtest_comparison_worker,
+            args=(request, data_source),
+            daemon=True,
+        )
+        self.comparison_thread.start()
+
+    def _run_backtest_comparison_worker(self, request: dict, data_source=None):
+        try:
+            result = run_backtest_comparison(request, data_source=data_source)
+        except Exception as error:
+            result = {"status": "error", "error": str(error)}
+
+        self.backtest_state["comparison_running"] = False
+        if result.get("status") in ("success", "partial"):
+            self.backtest_state["comparison_error"]  = result.get("error") or ""
+            self.backtest_state["comparison_result"] = result
+        else:
+            self.backtest_state["comparison_error"]  = str(result.get("error") or "Error al ejecutar comparación")
+            self.backtest_state["comparison_result"] = None
+        self._render_backtest_comparison_panel()
+
+    def _on_backtest_export_csv(self):
+        import csv
+        result = self.backtest_state.get("result")
+        if not result or result.get("status") != "success":
+            self.backtest_state["error"] = "No hay resultado de backtest disponible para exportar"
+            self._render_backtest_panel()
+            return
+        trades = result.get("trades") or []
+        form = self.backtest_state.get("form") or {}
+        strategy_key = str(form.get("strategy_key") or "backtest").replace("/", "-").replace("\\", "-")
+        symbol = str(form.get("symbol") or "unknown").replace("/", "-").replace("\\", "-")
+        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+        filename = f"backtest_{strategy_key}_{symbol}_{timestamp}.csv"
+        filepath = Path.home() / "Downloads" / filename
+        columns = ["id", "entry_time", "exit_time", "direction", "entry_price", "exit_price",
+                   "volume", "profit", "reason", "signal", "signal_reason", "mode"]
+        try:
+            with open(filepath, "w", newline="", encoding="utf-8") as f:
+                writer = csv.DictWriter(f, fieldnames=columns, extrasaction="ignore")
+                writer.writeheader()
+                for i, trade in enumerate(trades):
+                    writer.writerow({
+                        "id": i + 1,
+                        "entry_time": str(trade.get("entry_time") or ""),
+                        "exit_time": str(trade.get("exit_time") or ""),
+                        "direction": trade.get("direction", ""),
+                        "entry_price": trade.get("entry_price", ""),
+                        "exit_price": trade.get("exit_price", ""),
+                        "volume": trade.get("volume", ""),
+                        "profit": trade.get("profit", ""),
+                        "reason": trade.get("reason", ""),
+                        "signal": trade.get("signal", ""),
+                        "signal_reason": trade.get("signal_reason", ""),
+                        "mode": trade.get("mode", ""),
+                    })
+            status_msg = json.dumps(f"CSV exportado: {filename}")
+            self.chart.run_script(f'''
+                ;(function() {{
+                    const statusEl = document.getElementById("tv-backtest-status");
+                    if (statusEl) statusEl.innerText = {status_msg};
+                }})();
+            ''')
+        except Exception as e:
+            self.backtest_state["error"] = f"Error al exportar CSV: {e}"
+            self._render_backtest_panel()
+
+    def _render_backtest_comparison_panel(self):
+        handler = getattr(self, "side_panel_handler", None)
+        if not handler or not getattr(self, "chart", None):
+            return
+        payload = {
+            "comparison_running": bool(self.backtest_state.get("comparison_running")),
+            "comparison_result":  self.backtest_state.get("comparison_result"),
+            "comparison_error":   str(self.backtest_state.get("comparison_error") or ""),
+        }
+        payload_json = json.dumps(payload, ensure_ascii=False)
+        self.chart.run_script(f'''
+            ;(function() {{
+                const data = {payload_json};
+                if (window.renderBacktestComparison) {{
+                    window.renderBacktestComparison(data);
+                }}
+            }})();
+        ''')
 
     def _get_side_panel_icons(self):
         # esta funcion sirve para obtener los iconos del panel lateral.
@@ -1924,22 +2172,40 @@ class TradingBotGUI:
                 window.renderBuilderButtons = (data) => {
                     const strategies = data.strategies || [];
                     strategies.forEach((strategy) => {
-                        if (!strategy.has_config) return;
                         const row = document.querySelector(`.tv-strategy-item[data-key="${strategy.key}"]`);
                         if (!row) return;
-                        if (row.querySelector(".tv-builder-edit-btn")) return;
-                        const editBtn = document.createElement("button");
-                        editBtn.type = "button";
-                        editBtn.className = "tv-builder-edit-btn";
-                        editBtn.innerText = "Editar";
-                        editBtn.addEventListener("click", (e) => {
-                            e.stopPropagation();
-                            const handler = (data && data.handler) ? data.handler : "";
-                            const key = encodeURIComponent(String(strategy.key || ""));
-                            window.callbackFunction(handler + "_~_strategy_builder_open;;;" + key);
-                        });
-                        const right = row.querySelector(".tv-strategy-right");
-                        if (right) right.appendChild(editBtn);
+
+                        // "Editar" button — Builder-generated only
+                        if (strategy.has_config && !row.querySelector(".tv-builder-edit-btn")) {
+                            const editBtn = document.createElement("button");
+                            editBtn.type = "button";
+                            editBtn.className = "tv-builder-edit-btn";
+                            editBtn.innerText = "Editar";
+                            editBtn.addEventListener("click", (e) => {
+                                e.stopPropagation();
+                                const handler = (data && data.handler) ? data.handler : "";
+                                const key = encodeURIComponent(String(strategy.key || ""));
+                                window.callbackFunction(handler + "_~_strategy_builder_open;;;" + key);
+                            });
+                            const right = row.querySelector(".tv-strategy-right");
+                            if (right) right.appendChild(editBtn);
+                        }
+
+                        // "Params" button — any strategy with non-empty PARAMS
+                        if (strategy.has_params && !row.querySelector(".tv-params-btn")) {
+                            const paramsBtn = document.createElement("button");
+                            paramsBtn.type = "button";
+                            paramsBtn.className = "tv-params-btn";
+                            paramsBtn.innerText = "Params";
+                            paramsBtn.addEventListener("click", (e) => {
+                                e.stopPropagation();
+                                const handler = (data && data.handler) ? data.handler : "";
+                                const key = encodeURIComponent(String(strategy.key || ""));
+                                window.callbackFunction(handler + "_~_strategy_params_open;;;" + key);
+                            });
+                            const right = row.querySelector(".tv-strategy-right");
+                            if (right) right.appendChild(paramsBtn);
+                        }
                     });
                 };
 
@@ -2321,6 +2587,132 @@ class TradingBotGUI:
                     const json = JSON.stringify(config);
                     window.callbackFunction(state._handler + "_~_strategy_builder_save;;;" + encodeURIComponent(json));
                 });
+
+                // --- Quick Params panel CSS ---
+                const paramsStyle = document.createElement("style");
+                paramsStyle.textContent = `
+                    #tv-params-overlay { position: fixed; top: 0; left: 0; right: 0; bottom: 0; background: rgba(0,0,0,0.55); z-index: 9000; display: flex; align-items: center; justify-content: center; }
+                    #tv-params-panel { background: #1e2230; border: 1px solid #333; border-radius: 6px; padding: 20px; min-width: 320px; max-width: 480px; max-height: 80vh; overflow-y: auto; color: #d1d4dc; font-family: inherit; font-size: 13px; }
+                    #tv-params-panel h3 { margin: 0 0 14px 0; font-size: 14px; color: #e0e3ea; }
+                    .tv-params-row { display: flex; align-items: center; justify-content: space-between; margin-bottom: 10px; gap: 8px; }
+                    .tv-params-row label { flex: 1; color: #9aa0ab; }
+                    .tv-params-row input[type="number"] { width: 110px; background: #131722; border: 1px solid #444; border-radius: 3px; color: #d1d4dc; padding: 4px 6px; font-size: 13px; }
+                    #tv-params-actions { display: flex; gap: 8px; margin-top: 16px; justify-content: flex-end; }
+                    #tv-params-actions button { padding: 6px 16px; border-radius: 4px; border: none; cursor: pointer; font-size: 13px; }
+                    #tv-params-save-btn { background: #2962ff; color: #fff; }
+                    #tv-params-cancel-btn { background: #2a2e39; color: #9aa0ab; }
+                    #tv-params-message { font-size: 12px; color: #26a69a; margin-top: 8px; min-height: 16px; }
+                    .tv-params-btn { margin-left: 4px; padding: 2px 8px; font-size: 11px; background: #1a3a5e; color: #90b0e0; border: 1px solid #2962ff44; border-radius: 3px; cursor: pointer; }
+                    .tv-params-btn:hover { background: #2962ff; color: #fff; }
+                `;
+                document.head.appendChild(paramsStyle);
+
+                // --- openParamsPanel(payload) ---
+                window.openParamsPanel = (payload) => {
+                    const existing = document.getElementById("tv-params-overlay");
+                    if (existing) existing.remove();
+
+                    const overlay = document.createElement("div");
+                    overlay.id = "tv-params-overlay";
+
+                    const panel = document.createElement("div");
+                    panel.id = "tv-params-panel";
+
+                    const title = document.createElement("h3");
+                    title.innerText = "Parámetros: " + (payload.label || payload.key);
+                    panel.appendChild(title);
+
+                    const schema = payload.schema || {};
+                    const values = payload.values || {};
+
+                    Object.keys(schema).forEach((paramKey) => {
+                        const def = schema[paramKey];
+                        const currentVal = (paramKey in values) ? values[paramKey] : def.default;
+
+                        const row = document.createElement("div");
+                        row.className = "tv-params-row";
+
+                        const lbl = document.createElement("label");
+                        lbl.innerText = def.label || paramKey;
+                        lbl.htmlFor = "tv-param-" + paramKey;
+
+                        const inp = document.createElement("input");
+                        inp.type = "number";
+                        inp.id = "tv-param-" + paramKey;
+                        inp.dataset.paramKey = paramKey;
+                        inp.dataset.paramType = def.type;
+                        inp.min = String(def.min);
+                        inp.max = String(def.max);
+                        inp.step = (def.type === "int") ? "1" : "any";
+                        inp.value = String(currentVal);
+
+                        row.appendChild(lbl);
+                        row.appendChild(inp);
+                        panel.appendChild(row);
+                    });
+
+                    const msgEl = document.createElement("div");
+                    msgEl.id = "tv-params-message";
+                    panel.appendChild(msgEl);
+
+                    const actions = document.createElement("div");
+                    actions.id = "tv-params-actions";
+
+                    const cancelBtn = document.createElement("button");
+                    cancelBtn.id = "tv-params-cancel-btn";
+                    cancelBtn.innerText = "Cancelar";
+                    cancelBtn.addEventListener("click", () => {
+                        if (window.closeParamsPanel) window.closeParamsPanel();
+                    });
+
+                    const saveBtn = document.createElement("button");
+                    saveBtn.id = "tv-params-save-btn";
+                    saveBtn.innerText = "Guardar";
+                    saveBtn.addEventListener("click", () => {
+                        const overrides = {};
+                        panel.querySelectorAll("input[data-param-key]").forEach((inp) => {
+                            const k = inp.dataset.paramKey;
+                            const t = inp.dataset.paramType;
+                            let v = parseFloat(inp.value);
+                            if (isNaN(v)) return;
+                            const minV = parseFloat(inp.min);
+                            const maxV = parseFloat(inp.max);
+                            if (!isNaN(minV) && v < minV) v = minV;
+                            if (!isNaN(maxV) && v > maxV) v = maxV;
+                            if (t === "int") v = Math.round(v);
+                            overrides[k] = v;
+                        });
+                        const handler = payload.handler || "";
+                        const encodedKey = encodeURIComponent(String(payload.key || ""));
+                        const overridesJson = encodeURIComponent(JSON.stringify(overrides));
+                        window.callbackFunction(handler + "_~_strategy_params_save;;;" + encodedKey + ";;;" + overridesJson);
+                    });
+
+                    actions.appendChild(cancelBtn);
+                    actions.appendChild(saveBtn);
+                    panel.appendChild(actions);
+
+                    overlay.appendChild(panel);
+                    document.body.appendChild(overlay);
+
+                    overlay.addEventListener("click", (e) => {
+                        if (e.target === overlay) {
+                            if (window.closeParamsPanel) window.closeParamsPanel();
+                        }
+                    });
+                };
+
+                // --- closeParamsPanel() ---
+                window.closeParamsPanel = () => {
+                    const overlay = document.getElementById("tv-params-overlay");
+                    if (overlay) overlay.remove();
+                };
+
+                // --- setParamsMessage(msg) ---
+                window.setParamsMessage = (msg) => {
+                    const msgEl = document.getElementById("tv-params-message");
+                    if (msgEl) msgEl.innerText = msg || "";
+                };
 
             })();
         ''')
@@ -2821,6 +3213,53 @@ class TradingBotGUI:
                     .tv-side-content::-webkit-scrollbar-thumb:active {
                         background: linear-gradient(180deg, #8a8a8a 0%, #767676 100%);
                     }
+                    #tv-strategy-panel {
+                        overflow-y: auto;
+                        scrollbar-width: thin;
+                        scrollbar-color: #5a5a5a #1b1b1b;
+                    }
+                    #tv-strategy-panel::-webkit-scrollbar {
+                        width: 10px;
+                    }
+                    #tv-strategy-panel::-webkit-scrollbar-track {
+                        background: #1b1b1b;
+                        border-left: 1px solid #2f2f2f;
+                        border-radius: 8px;
+                    }
+                    #tv-strategy-panel::-webkit-scrollbar-thumb {
+                        background: linear-gradient(180deg, #6a6a6a 0%, #585858 100%);
+                        border: 2px solid #1b1b1b;
+                        border-radius: 8px;
+                    }
+                    #tv-strategy-panel::-webkit-scrollbar-thumb:hover {
+                        background: linear-gradient(180deg, #7a7a7a 0%, #666666 100%);
+                    }
+                    #tv-strategy-panel::-webkit-scrollbar-thumb:active {
+                        background: linear-gradient(180deg, #8a8a8a 0%, #767676 100%);
+                    }
+                    .tv-backtest-panel {
+                        scrollbar-width: thin;
+                        scrollbar-color: #5a5a5a #1b1b1b;
+                    }
+                    .tv-backtest-panel::-webkit-scrollbar {
+                        width: 10px;
+                    }
+                    .tv-backtest-panel::-webkit-scrollbar-track {
+                        background: #1b1b1b;
+                        border-left: 1px solid #2f2f2f;
+                        border-radius: 8px;
+                    }
+                    .tv-backtest-panel::-webkit-scrollbar-thumb {
+                        background: linear-gradient(180deg, #6a6a6a 0%, #585858 100%);
+                        border: 2px solid #1b1b1b;
+                        border-radius: 8px;
+                    }
+                    .tv-backtest-panel::-webkit-scrollbar-thumb:hover {
+                        background: linear-gradient(180deg, #7a7a7a 0%, #666666 100%);
+                    }
+                    .tv-backtest-panel::-webkit-scrollbar-thumb:active {
+                        background: linear-gradient(180deg, #8a8a8a 0%, #767676 100%);
+                    }
                     .tv-section-title {
                         font-size: 13px;
                         font-weight: 600;
@@ -3200,6 +3639,7 @@ class TradingBotGUI:
                         gap: 10px;
                         padding: 10px;
                         color: #d0d0d0;
+                        overflow-y: auto;
                     }
                     .tv-backtest-header {
                         display: flex;
@@ -3285,6 +3725,17 @@ class TradingBotGUI:
                         opacity: 0.6;
                         cursor: default;
                     }
+                    .tv-backtest-export-btn {
+                        background: #1a2a3a;
+                        color: #9abfe0;
+                        border: 1px solid #2a4a6a;
+                        border-radius: 4px;
+                        padding: 7px 12px;
+                        font-size: 12px;
+                        cursor: pointer;
+                        margin-top: 8px;
+                        width: 100%;
+                    }
                     .tv-backtest-status {
                         font-size: 11px;
                         color: #8f8f8f;
@@ -3323,6 +3774,152 @@ class TradingBotGUI:
                         font-weight: 700;
                         color: #f0f0f0;
                         font-variant-numeric: tabular-nums;
+                    }
+                    .tv-backtest-section {{
+                        display: flex;
+                        flex-direction: column;
+                        gap: 6px;
+                    }}
+                    .tv-backtest-section-title {{
+                        font-size: 11px;
+                        color: #8f8f8f;
+                        text-transform: uppercase;
+                        letter-spacing: 0.05em;
+                    }}
+                    .tv-backtest-microchart {{
+                        width: 100%;
+                        height: 60px;
+                        display: block;
+                        border-radius: 4px;
+                        background: #1a1a1a;
+                        overflow: visible;
+                    }}
+                    .tv-backtest-trades-wrapper {{
+                        overflow-x: auto;
+                        max-height: 220px;
+                        overflow-y: auto;
+                    }}
+                    .tv-backtest-trades-table {{
+                        width: 100%;
+                        border-collapse: collapse;
+                        font-size: 10px;
+                        color: #c0c0c0;
+                        min-width: 420px;
+                    }}
+                    .tv-backtest-trades-table th {{
+                        font-size: 9px;
+                        color: #8f8f8f;
+                        text-transform: uppercase;
+                        letter-spacing: 0.04em;
+                        padding: 4px 5px;
+                        background: #1a1a1a;
+                        position: sticky;
+                        top: 0;
+                        z-index: 1;
+                        border-bottom: 1px solid #2f2f2f;
+                        white-space: nowrap;
+                    }}
+                    .tv-backtest-trades-table td {{
+                        padding: 4px 5px;
+                        border-bottom: 1px solid #252525;
+                        white-space: nowrap;
+                        font-variant-numeric: tabular-nums;
+                    }}
+                    .tv-backtest-trades-table tr:hover td {{
+                        background: #1f1f1f;
+                    }}
+                    .tv-backtest-trade-win {{
+                        color: #5cb85c;
+                    }}
+                    .tv-backtest-trade-loss {{
+                        color: #d9534f;
+                    }}
+                    .tv-backtest-mode-toggle {
+                        display: flex;
+                        gap: 4px;
+                        margin-bottom: 6px;
+                    }
+                    .tv-backtest-mode-btn {
+                        flex: 1;
+                        font-size: 11px;
+                        padding: 4px 0;
+                        background: #1e1e1e;
+                        color: #8f8f8f;
+                        border: 1px solid #333;
+                        border-radius: 3px;
+                        cursor: pointer;
+                    }
+                    .tv-backtest-mode-btn.active {
+                        background: #2962ff;
+                        color: #ffffff;
+                        border-color: #2962ff;
+                    }
+                    .tv-backtest-strategy-checks {
+                        max-height: 110px;
+                        overflow-y: auto;
+                        display: flex;
+                        flex-direction: column;
+                        gap: 4px;
+                        padding: 4px 0;
+                    }
+                    .tv-backtest-strategy-check-row {
+                        display: flex;
+                        align-items: center;
+                        gap: 6px;
+                        font-size: 12px;
+                        color: #c0c0c0;
+                        cursor: pointer;
+                    }
+                    .tv-backtest-strategy-check-row input[type="checkbox"] {
+                        accent-color: #2962ff;
+                        cursor: pointer;
+                    }
+                    .tv-backtest-strategy-check-row.disabled {
+                        opacity: 0.4;
+                        cursor: not-allowed;
+                    }
+                    .tv-backtest-comparison-wrapper {
+                        overflow-x: auto;
+                        margin-top: 8px;
+                    }
+                    .tv-backtest-comparison-table {
+                        width: 100%;
+                        border-collapse: collapse;
+                        font-size: 10px;
+                        color: #c0c0c0;
+                        min-width: 260px;
+                    }
+                    .tv-backtest-comparison-table th {
+                        font-size: 9px;
+                        color: #8f8f8f;
+                        text-transform: uppercase;
+                        letter-spacing: 0.04em;
+                        padding: 4px 4px;
+                        background: #1a1a1a;
+                        position: sticky;
+                        top: 0;
+                        z-index: 1;
+                        border-bottom: 1px solid #2f2f2f;
+                        white-space: nowrap;
+                    }
+                    .tv-backtest-comparison-table td {
+                        padding: 4px 4px;
+                        border-bottom: 1px solid #252525;
+                        white-space: nowrap;
+                        font-variant-numeric: tabular-nums;
+                    }
+                    .tv-backtest-comparison-table tr:hover td {
+                        background: #1f1f1f;
+                    }
+                    .tv-backtest-comparison-table td.cmp-win {
+                        color: #5cb85c;
+                    }
+                    .tv-backtest-comparison-table td.cmp-loss {
+                        color: #d9534f;
+                    }
+                    .tv-backtest-comparison-table td.cmp-error {
+                        color: #d9534f;
+                        font-style: italic;
                     }
                     .tv-confirm-overlay {
                         position: fixed;
@@ -3567,9 +4164,332 @@ class TradingBotGUI:
                         align-items: center;
                         color: var(--tv-text-secondary);
                     }
+
+                    /* ---- Micro-interacciones: transiciones globales ---- */
+                    .tv-strategy-toggle,
+                    .tv-strategy-enable,
+                    .tv-strategy-run,
+                    .tv-tool-btn,
+                    .tv-period-btn,
+                    .tv-side-tab,
+                    .tv-backtest-preset-btn,
+                    .tv-backtest-mode-btn,
+                    .tv-confirm-btn,
+                    .tv-params-btn,
+                    #tv-params-save-btn,
+                    #tv-params-cancel-btn,
+                    .tv-builder-cancel-btn,
+                    .tv-builder-save-btn,
+                    .tv-builder-new-btn,
+                    .tv-builder-add-cond-btn,
+                    .tv-builder-add-group-btn,
+                    .tv-builder-indicator-picker button,
+                    .tv-strategy-data-all-btn,
+                    .tv-backtest-export-btn,
+                    #tv-backtest-run {
+                        transition: background 0.14s ease, border-color 0.14s ease,
+                                    color 0.14s ease, box-shadow 0.14s ease,
+                                    transform 0.10s ease, opacity 0.14s ease;
+                    }
+
+                    /* ---- Escala en :active (feedback táctil) ---- */
+                    .tv-strategy-toggle:active,
+                    .tv-strategy-enable:active,
+                    .tv-strategy-run:active,
+                    .tv-tool-btn:active,
+                    .tv-eye:active,
+                    .tv-side-tab:active,
+                    .tv-backtest-preset-btn:active,
+                    .tv-backtest-mode-btn:active,
+                    .tv-confirm-btn:active,
+                    .tv-params-btn:active,
+                    #tv-params-save-btn:active,
+                    #tv-params-cancel-btn:active,
+                    .tv-builder-cancel-btn:active,
+                    .tv-builder-save-btn:active,
+                    .tv-builder-new-btn:active,
+                    .tv-builder-add-cond-btn:active,
+                    .tv-builder-add-group-btn:active,
+                    .tv-builder-indicator-picker button:active,
+                    .tv-strategy-data-all-btn:active,
+                    .tv-backtest-export-btn:active,
+                    #tv-backtest-run:active {
+                        transform: scale(0.97);
+                    }
+
+                    /* ---- Box-shadow en hover para botones primarios ---- */
+                    #tv-backtest-run:hover:not(:disabled),
+                    .tv-strategy-run:hover:not(.running),
+                    .tv-confirm-btn.confirm:hover,
+                    #tv-params-save-btn:hover,
+                    .tv-builder-save-btn:hover {
+                        box-shadow: 0 0 0 2px rgba(38, 166, 154, 0.30);
+                    }
+
+                    /* ---- Tab fade-in ---- */
+                    @keyframes tvTabFadeIn {
+                        from { opacity: 0; transform: translateY(4px); }
+                        to   { opacity: 1; transform: translateY(0); }
+                    }
+                    .tv-tab-fade-in {
+                        animation: tvTabFadeIn 0.18s ease forwards;
+                    }
+
+                    /* ---- Spinner en #tv-backtest-run cuando está disabled (running) ---- */
+                    #tv-backtest-run {
+                        position: relative;
+                        padding-right: 28px;   /* espacio para el spinner */
+                    }
+                    #tv-backtest-run:not(:disabled) {
+                        padding-right: 12px;   /* restaurar padding normal cuando no corre */
+                    }
+                    @keyframes tvSpinner {
+                        to { transform: rotate(360deg); }
+                    }
+                    #tv-backtest-run:disabled::after {
+                        content: '';
+                        position: absolute;
+                        right: 8px;
+                        top: 50%;
+                        width: 10px;
+                        height: 10px;
+                        margin-top: -5px;
+                        border: 2px solid rgba(217, 242, 222, 0.3);
+                        border-top-color: #d9f2de;
+                        border-radius: 50%;
+                        animation: tvSpinner 0.75s linear infinite;
+                        box-sizing: border-box;
+                    }
+
+                    /* ---- Toast notification system ---- */
+                    #tv-toast-container {
+                        position: fixed;
+                        bottom: 42px;   /* encima del #tv-bottom-bar (32px) + margen */
+                        right: 50px;    /* a la izquierda del #tv-side-toolbar (40px) + margen */
+                        z-index: 9999;
+                        display: flex;
+                        flex-direction: column-reverse;
+                        gap: 8px;
+                        pointer-events: none;
+                        max-width: 300px;
+                        width: 300px;
+                    }
+                    .tv-toast {
+                        background: #1e1e1e;
+                        border-radius: 6px;
+                        border-left: 3px solid #4a90d9;
+                        padding: 8px 12px;
+                        font-size: 12px;
+                        color: #e0e0e0;
+                        box-shadow: 0 4px 16px rgba(0,0,0,0.45);
+                        pointer-events: auto;
+                        animation: tvToastIn 0.22s ease forwards;
+                        will-change: transform, opacity;
+                        line-height: 1.4;
+                        word-break: break-word;
+                    }
+                    .tv-toast--success { border-left-color: #26a69a; }
+                    .tv-toast--warn    { border-left-color: #e6a817; }
+                    .tv-toast--error   { border-left-color: #ef5350; }
+                    .tv-toast--info    { border-left-color: #4a90d9; }
+
+                    @keyframes tvToastIn {
+                        from { opacity: 0; transform: translateX(110%); }
+                        to   { opacity: 1; transform: translateX(0); }
+                    }
+                    @keyframes tvToastOut {
+                        from { opacity: 1; transform: translateX(0);    max-height: 80px; margin-bottom: 0; }
+                        to   { opacity: 0; transform: translateX(110%); max-height: 0;    margin-bottom: -8px; }
+                    }
+                    .tv-toast--dismissing {
+                        animation: tvToastOut 0.25s ease forwards;
+                        pointer-events: none;
+                    }
                 `;
                 document.head.appendChild(style);
             }
+        ''')
+        self.chart.run_script('''
+            ;(function() {
+                if (window.tvShowToast) return;
+
+                const MAX_TOASTS = 4;
+
+                function _dismissToast(toast) {
+                    if (toast._dismissed) return;
+                    toast._dismissed = true;
+                    toast.classList.add('tv-toast--dismissing');
+                    toast.addEventListener('animationend', function() {
+                        if (toast.parentElement) toast.parentElement.removeChild(toast);
+                    }, { once: true });
+                }
+
+                window.tvShowToast = function(message, type, duration) {
+                    type = type || 'info';
+                    duration = (typeof duration === 'number') ? duration : 3500;
+
+                    const container = document.getElementById('tv-toast-container');
+                    if (!container) return;
+
+                    const visibleToasts = container.querySelectorAll('.tv-toast:not(.tv-toast--dismissing)');
+                    if (visibleToasts.length >= MAX_TOASTS) {
+                        const oldest = container.lastElementChild;
+                        if (oldest) _dismissToast(oldest);
+                    }
+
+                    const toast = document.createElement('div');
+                    toast.className = 'tv-toast tv-toast--' + type;
+                    toast.textContent = message;
+                    container.appendChild(toast);
+
+                    const timer = setTimeout(function() { _dismissToast(toast); }, duration);
+                    toast._dismissTimer = timer;
+
+                    toast.addEventListener('click', function() {
+                        clearTimeout(toast._dismissTimer);
+                        _dismissToast(toast);
+                    });
+                };
+            })();
+        ''')
+        self.chart.run_script('''
+            window.renderBacktestCharts = (data) => {
+                const equityCurve   = Array.isArray(data.equity_curve)   ? data.equity_curve   : [];
+                const drawdownCurve = Array.isArray(data.drawdown_curve) ? data.drawdown_curve : [];
+                const initialBal    = Number(data.initial_balance || 10000);
+
+                const equitySection   = document.getElementById("tv-backtest-equity-section");
+                const drawdownSection = document.getElementById("tv-backtest-drawdown-section");
+                const equitySvg       = document.getElementById("tv-backtest-equity-svg");
+                const drawdownSvg     = document.getElementById("tv-backtest-drawdown-svg");
+
+                const downsample = (arr, maxPts) => {
+                    if (arr.length <= maxPts) return arr;
+                    const step = Math.floor(arr.length / maxPts);
+                    return arr.filter((_, i) => i % step === 0);
+                };
+
+                const toPoints = (samples, getVal) => {
+                    if (samples.length < 2) return [];
+                    const vals = samples.map(getVal);
+                    const minV = Math.min(...vals);
+                    const maxV = Math.max(...vals);
+                    const rangeV = maxV - minV || 1;
+                    const W = 280, H = 60, PAD = 4;
+                    return samples.map((_, i) => {
+                        const x = (i / (samples.length - 1)) * W;
+                        const y = PAD + (1 - (vals[i] - minV) / rangeV) * (H - 2 * PAD);
+                        return x.toFixed(1) + "," + y.toFixed(1);
+                    });
+                };
+
+                if (equitySvg && equityCurve.length >= 2) {
+                    const samples   = downsample(equityCurve, 300);
+                    const pts       = toPoints(samples, p => p.equity);
+                    const finalEq   = samples[samples.length - 1].equity;
+                    const lineColor = finalEq >= initialBal ? "#26a69a" : "#ef5350";
+                    equitySvg.innerHTML = "";
+                    const poly = document.createElementNS("http://www.w3.org/2000/svg", "polyline");
+                    poly.setAttribute("points", pts.join(" "));
+                    poly.setAttribute("fill", "none");
+                    poly.setAttribute("stroke", lineColor);
+                    poly.setAttribute("stroke-width", "1.5");
+                    poly.setAttribute("stroke-linejoin", "round");
+                    poly.setAttribute("stroke-linecap", "round");
+                    equitySvg.appendChild(poly);
+                    if (equitySection) equitySection.style.display = "";
+                }
+
+                if (drawdownSvg && drawdownCurve.length >= 2) {
+                    const samples = downsample(drawdownCurve, 300);
+                    const pts     = toPoints(samples, p => p.drawdown_pct);
+                    const W = 280, PAD = 4;
+                    const pathD = "M 0," + PAD + " L " + pts.join(" L ") + " L " + W + "," + PAD + " Z";
+                    drawdownSvg.innerHTML = "";
+                    const pathEl = document.createElementNS("http://www.w3.org/2000/svg", "path");
+                    pathEl.setAttribute("d", pathD);
+                    pathEl.setAttribute("fill", "rgba(239,83,80,0.25)");
+                    pathEl.setAttribute("stroke", "#ef5350");
+                    pathEl.setAttribute("stroke-width", "1.2");
+                    pathEl.setAttribute("stroke-linejoin", "round");
+                    drawdownSvg.appendChild(pathEl);
+                    if (drawdownSection) drawdownSection.style.display = "";
+                }
+            };
+        ''')
+        self.chart.run_script('''
+            window.renderBacktestComparison = (data) => {
+                const cmpEl    = document.getElementById("tv-backtest-comparison-results");
+                const tbody    = document.getElementById("tv-backtest-comparison-tbody");
+                const statusEl = document.getElementById("tv-backtest-status");
+                const errorEl  = document.getElementById("tv-backtest-error");
+                if (!cmpEl || !tbody) return;
+
+                const running = !!data.comparison_running;
+                const err     = data.comparison_error || "";
+                const result  = data.comparison_result || null;
+
+                if (statusEl) {
+                    if (running) statusEl.innerText = "Comparando estrategias...";
+                    else if (result) statusEl.innerText = "Comparación completada";
+                    else statusEl.innerText = "Sin ejecución todavía.";
+                }
+                if (errorEl) {
+                    errorEl.innerText = err;
+                    errorEl.style.display = err ? "block" : "none";
+                }
+
+                ["tv-backtest-results", "tv-backtest-extra-cards",
+                 "tv-backtest-equity-section", "tv-backtest-drawdown-section",
+                 "tv-backtest-trades-section"].forEach(id => {
+                    const el = document.getElementById(id);
+                    if (el) el.style.display = "none";
+                });
+
+                if (!result || !Array.isArray(result.strategies) || result.strategies.length === 0) {
+                    cmpEl.style.display = "none";
+                    return;
+                }
+
+                tbody.innerHTML = "";
+                result.strategies.forEach(entry => {
+                    const tr = document.createElement("tr");
+                    if (entry.status === "error") {
+                        const td0 = document.createElement("td");
+                        td0.innerText = entry.strategy_label || entry.strategy_key || "?";
+                        const td1 = document.createElement("td");
+                        td1.colSpan = 5;
+                        td1.className = "cmp-error";
+                        td1.innerText = "Error: " + (entry.error || "desconocido");
+                        tr.appendChild(td0);
+                        tr.appendChild(td1);
+                    } else {
+                        const retPct  = Number(entry.total_return_pct || 0);
+                        const pf      = Number(entry.profit_factor    || 0);
+                        const maxDD   = Number(entry.max_drawdown     || 0);
+                        const winRate = Number(entry.win_rate         || 0);
+                        const ops     = Number(entry.closed_trades    || 0);
+
+                        const cells = [
+                            {text: entry.strategy_label || entry.strategy_key || "?", cls: ""},
+                            {text: String(ops),                                         cls: ""},
+                            {text: winRate.toFixed(1) + "%",                            cls: winRate >= 50 ? "cmp-win" : "cmp-loss"},
+                            {text: maxDD.toFixed(2) + "%",                              cls: maxDD > 10 ? "cmp-loss" : ""},
+                            {text: (retPct >= 0 ? "+" : "") + retPct.toFixed(2) + "%", cls: retPct >= 0 ? "cmp-win" : "cmp-loss"},
+                            {text: pf > 0 ? pf.toFixed(2) : "--",                       cls: pf >= 1 ? "cmp-win" : (pf > 0 ? "cmp-loss" : "")},
+                        ];
+                        cells.forEach(c => {
+                            const td = document.createElement("td");
+                            td.innerText = c.text;
+                            if (c.cls) td.className = c.cls;
+                            tr.appendChild(td);
+                        });
+                    }
+                    tbody.appendChild(tr);
+                });
+
+                cmpEl.style.display = "";
+            };
         ''')
 
     def _style_quote_widgets(self):
@@ -3653,7 +4573,7 @@ class TradingBotGUI:
         if side not in ("buy", "sell"):
             return
         try:
-            market_open, market_status = trading.is_market_open(config.SYMBOL)
+            market_open, market_status = self._broker.is_market_open(config.SYMBOL)
             if not market_open:
                 self.log_message(f"Mercado cerrado ({market_status})")
                 return
@@ -3661,7 +4581,7 @@ class TradingBotGUI:
             timeframe_value = self._strategy_timeframe_value(selected_entry, fallback=config.TIMEFRAME)
             strategy_key = selected_entry.get("key", "") if isinstance(selected_entry, dict) else ""
             strategy_label = selected_entry.get("label", "") if isinstance(selected_entry, dict) else ""
-            action_info = trading.apply_signal(
+            action_info = self._broker.apply_signal(
                 config.SYMBOL,
                 side,
                 config.LOT,
@@ -3984,12 +4904,24 @@ class TradingBotGUI:
                 </div>
                 <div class="tv-backtest-form">
                     <div class="tv-backtest-field">
+                        <div class="tv-backtest-mode-toggle">
+                            <button type="button" class="tv-backtest-mode-btn active" id="tv-backtest-mode-single">Individual</button>
+                            <button type="button" class="tv-backtest-mode-btn" id="tv-backtest-mode-compare">Comparar</button>
+                        </div>
                         <label>Estrategia</label>
                         <select id="tv-backtest-strategy"></select>
+                        <div class="tv-backtest-strategy-checks" id="tv-backtest-strategy-checks" style="display:none;"></div>
                     </div>
                     <div class="tv-backtest-field">
                         <label>Símbolo</label>
                         <select id="tv-backtest-symbol"></select>
+                    </div>
+                    <div class="tv-backtest-field">
+                        <label>Fuente de datos</label>
+                        <select id="tv-backtest-datasource">
+                            <option value="mt5">MT5</option>
+                            <option value="dukascopy">Dukascopy</option>
+                        </select>
                     </div>
                     <div class="tv-backtest-field readonly">
                         <label>Timeframe</label>
@@ -4014,10 +4946,60 @@ class TradingBotGUI:
                 </div>
                 <div class="tv-backtest-actions">
                     <button type="button" id="tv-backtest-run">Ejecutar backtest</button>
+                    <button type="button" id="tv-backtest-compare-btn" style="display:none;">Comparar estrategias</button>
                     <div class="tv-backtest-status" id="tv-backtest-status">Sin ejecución todavía.</div>
                 </div>
                 <div class="tv-backtest-error" id="tv-backtest-error"></div>
                 <div class="tv-backtest-results" id="tv-backtest-results"></div>
+                <div class="tv-backtest-results" id="tv-backtest-extra-cards" style="display:none;"></div>
+                <div class="tv-backtest-section" id="tv-backtest-equity-section" style="display:none;">
+                    <div class="tv-backtest-section-title">Curva de equity</div>
+                    <svg class="tv-backtest-microchart" id="tv-backtest-equity-svg"
+                         viewBox="0 0 280 60" preserveAspectRatio="none"></svg>
+                </div>
+                <div class="tv-backtest-section" id="tv-backtest-drawdown-section" style="display:none;">
+                    <div class="tv-backtest-section-title">Drawdown</div>
+                    <svg class="tv-backtest-microchart" id="tv-backtest-drawdown-svg"
+                         viewBox="0 0 280 60" preserveAspectRatio="none"></svg>
+                </div>
+                <div class="tv-backtest-section" id="tv-backtest-trades-section" style="display:none;">
+                    <div class="tv-backtest-section-title">Trades</div>
+                    <div class="tv-backtest-trades-wrapper">
+                        <table class="tv-backtest-trades-table" id="tv-backtest-trades-table">
+                            <thead>
+                                <tr>
+                                    <th>#</th>
+                                    <th>Tipo</th>
+                                    <th>Hora ent.</th>
+                                    <th>Hora sal.</th>
+                                    <th>P. ent.</th>
+                                    <th>P. sal.</th>
+                                    <th>P&amp;L</th>
+                                    <th>Razón</th>
+                                </tr>
+                            </thead>
+                            <tbody id="tv-backtest-trades-tbody"></tbody>
+                        </table>
+                    </div>
+                </div>
+                <div class="tv-backtest-section" id="tv-backtest-comparison-results" style="display:none;">
+                    <div class="tv-backtest-section-title">Comparación de estrategias</div>
+                    <div class="tv-backtest-comparison-wrapper">
+                        <table class="tv-backtest-comparison-table" id="tv-backtest-comparison-table">
+                            <thead>
+                                <tr>
+                                    <th>Estrategia</th>
+                                    <th>Ops</th>
+                                    <th>Win%</th>
+                                    <th>Max DD%</th>
+                                    <th>Ret%</th>
+                                    <th>PF</th>
+                                </tr>
+                            </thead>
+                            <tbody id="tv-backtest-comparison-tbody"></tbody>
+                        </table>
+                    </div>
+                </div>
             `;
 
             const strategyList = document.createElement("div");
@@ -4187,6 +5169,7 @@ class TradingBotGUI:
                 tabStrategies.classList.remove("active");
                 tabBacktest.classList.remove("active");
                 strategyDataPanel.style.display = "flex";
+                requestAnimationFrame(function() {{ strategyDataPanel.classList.remove('tv-tab-fade-in'); void strategyDataPanel.offsetWidth; strategyDataPanel.classList.add('tv-tab-fade-in'); }});
                 dataWindow.style.display = "none";
                 strategyPanel.style.display = "none";
                 backtestPanel.style.display = "none";
@@ -4198,6 +5181,7 @@ class TradingBotGUI:
                 tabBacktest.classList.remove("active");
                 strategyDataPanel.style.display = "none";
                 dataWindow.style.display = "flex";
+                requestAnimationFrame(function() {{ dataWindow.classList.remove('tv-tab-fade-in'); void dataWindow.offsetWidth; dataWindow.classList.add('tv-tab-fade-in'); }});
                 strategyPanel.style.display = "none";
                 backtestPanel.style.display = "none";
             }});
@@ -4209,6 +5193,7 @@ class TradingBotGUI:
                 strategyDataPanel.style.display = "none";
                 dataWindow.style.display = "none";
                 strategyPanel.style.display = "block";
+                requestAnimationFrame(function() {{ strategyPanel.classList.remove('tv-tab-fade-in'); void strategyPanel.offsetWidth; strategyPanel.classList.add('tv-tab-fade-in'); }});
                 backtestPanel.style.display = "none";
             }});
             tabBacktest.addEventListener("click", () => {{
@@ -4220,6 +5205,7 @@ class TradingBotGUI:
                 dataWindow.style.display = "none";
                 strategyPanel.style.display = "none";
                 backtestPanel.style.display = "block";
+                requestAnimationFrame(function() {{ backtestPanel.classList.remove('tv-tab-fade-in'); void backtestPanel.offsetWidth; backtestPanel.classList.add('tv-tab-fade-in'); }});
             }});
 
             panel.appendChild(newsPanel);
@@ -4303,6 +5289,13 @@ class TradingBotGUI:
                         }}
                     }}
                 }});
+            }}
+
+            let toastContainer = document.getElementById('tv-toast-container');
+            if (!toastContainer) {{
+                toastContainer = document.createElement('div');
+                toastContainer.id = 'tv-toast-container';
+                document.body.appendChild(toastContainer);
             }}
 
             window.tvShowConfirm = (message, onConfirm, options) => {{
@@ -4422,11 +5415,20 @@ class TradingBotGUI:
                 if (Number.isNaN(dt.getTime())) return "--";
                 return dt.toLocaleDateString();
             }};
+            window.tvBacktest.formatDateTime = (epoch) => {{
+                if (epoch === null || epoch === undefined) return "--";
+                const dt = new Date(Number(epoch) * 1000);
+                if (Number.isNaN(dt.getTime())) return "--";
+                const dateStr = dt.toLocaleDateString(undefined, {{ month: "2-digit", day: "2-digit" }});
+                const timeStr = dt.toLocaleTimeString(undefined, {{ hour: "2-digit", minute: "2-digit", hour12: false }});
+                return dateStr + " " + timeStr;
+            }};
             window.renderBacktestPanel = (data) => {{
                 const state = window.tvBacktest.state || (window.tvBacktest.state = {{ form: {{}} }});
                 const payloadData = data || {{}};
                 state.handler = payloadData.handler || payload.handler;
                 state.running = !!payloadData.running;
+                state.comparison_running = !!payloadData.comparison_running;
                 state.error = payloadData.error || "";
                 state.result = payloadData.result || null;
                 state.presets = payloadData.presets || {{}};
@@ -4441,11 +5443,12 @@ class TradingBotGUI:
                 const startEl = document.getElementById("tv-backtest-start");
                 const endEl = document.getElementById("tv-backtest-end");
                 const balanceEl = document.getElementById("tv-backtest-balance");
+                const datasourceSel = document.getElementById("tv-backtest-datasource");
                 const runBtn = document.getElementById("tv-backtest-run");
                 const statusEl = document.getElementById("tv-backtest-status");
                 const errorEl = document.getElementById("tv-backtest-error");
                 const resultsEl = document.getElementById("tv-backtest-results");
-                if (!strategySel || !symbolSel || !timeframeEl || !presetsEl || !startEl || !endEl || !balanceEl || !runBtn || !statusEl || !errorEl || !resultsEl) return;
+                if (!strategySel || !symbolSel || !datasourceSel || !timeframeEl || !presetsEl || !startEl || !endEl || !balanceEl || !runBtn || !statusEl || !errorEl || !resultsEl) return;
 
                 strategySel.innerHTML = "";
                 state.strategies.forEach((entry) => {{
@@ -4510,6 +5513,7 @@ class TradingBotGUI:
                 startEl.value = state.form.start_date || "";
                 endEl.value = state.form.end_date || "";
                 balanceEl.value = state.form.initial_balance || "";
+                datasourceSel.value = state.form.data_source || "mt5";
                 updateTimeframe();
                 renderPresetButtons();
 
@@ -4519,6 +5523,9 @@ class TradingBotGUI:
                 }};
                 symbolSel.onchange = () => {{
                     state.form.symbol = symbolSel.value || "";
+                }};
+                datasourceSel.onchange = () => {{
+                    state.form.data_source = datasourceSel.value || "mt5";
                 }};
                 startEl.onchange = () => {{
                     state.form.start_date = startEl.value || "";
@@ -4544,6 +5551,7 @@ class TradingBotGUI:
                         start_date: startEl.value || "",
                         end_date: endEl.value || "",
                         initial_balance: balanceEl.value || "",
+                        data_source: datasourceSel.value || "mt5",
                     }};
                     if (window.callbackFunction && state.handler) {{
                         window.callbackFunction(state.handler + "_~_backtest_run;;;" + encodeURIComponent(JSON.stringify(request)));
@@ -4591,6 +5599,188 @@ class TradingBotGUI:
                     card.appendChild(value);
                     resultsEl.appendChild(card);
                 }});
+
+                const exportBtn = document.createElement("button");
+                exportBtn.type = "button";
+                exportBtn.className = "tv-backtest-export-btn";
+                exportBtn.innerText = "Exportar CSV";
+                exportBtn.onclick = () => {{
+                    if (window.callbackFunction && state.handler) {{
+                        window.callbackFunction(state.handler + "_~_backtest_export_csv");
+                    }}
+                }};
+                resultsEl.appendChild(exportBtn);
+
+                const extraCardsEl = document.getElementById("tv-backtest-extra-cards");
+                const equitySection = document.getElementById("tv-backtest-equity-section");
+                const drawdownSection = document.getElementById("tv-backtest-drawdown-section");
+                const tradesSection = document.getElementById("tv-backtest-trades-section");
+
+                if (extraCardsEl) extraCardsEl.style.display = "none";
+                if (equitySection) equitySection.style.display = "none";
+                if (drawdownSection) drawdownSection.style.display = "none";
+                if (tradesSection) tradesSection.style.display = "none";
+
+                if (extraCardsEl) {{
+                    const extraCards = [
+                        ["Profit Factor", Number(result.profit_factor || 0).toFixed(2)],
+                        ["Avg Win", window.tvBacktest.formatMoney(result.avg_win)],
+                        ["Avg Loss", window.tvBacktest.formatMoney(result.avg_loss)],
+                        ["Expectancy", window.tvBacktest.formatMoney(result.expectancy)],
+                    ];
+                    extraCardsEl.innerHTML = "";
+                    extraCards.forEach((item) => {{
+                        const card = document.createElement("div");
+                        card.className = "tv-backtest-card";
+                        const labelEl = document.createElement("div");
+                        labelEl.className = "tv-backtest-card-label";
+                        labelEl.innerText = item[0];
+                        const valueEl = document.createElement("div");
+                        valueEl.className = "tv-backtest-card-value";
+                        valueEl.innerText = item[1];
+                        card.appendChild(labelEl);
+                        card.appendChild(valueEl);
+                        extraCardsEl.appendChild(card);
+                    }});
+                    extraCardsEl.style.display = "";
+                }}
+
+                const trades = Array.isArray(result.trades) ? result.trades : [];
+                if (tradesSection && trades.length > 0) {{
+                    const tbody = document.getElementById("tv-backtest-trades-tbody");
+                    if (tbody) {{
+                        tbody.innerHTML = "";
+                        trades.forEach((trade, idx) => {{
+                            const pnl = Number(trade.profit || 0);
+                            const pnlClass = pnl > 0 ? "tv-backtest-trade-win" : pnl < 0 ? "tv-backtest-trade-loss" : "";
+                            const tipo = trade.direction === 1 ? "BUY" : "SELL";
+                            const entryTime = window.tvBacktest.formatDateTime(trade.entry_time);
+                            const exitTime = window.tvBacktest.formatDateTime(trade.exit_time);
+                            const entryPx = Number(trade.entry_price || 0).toFixed(2);
+                            const exitPx = Number(trade.exit_price || 0).toFixed(2);
+                            const pnlText = (pnl >= 0 ? "+" : "") + pnl.toFixed(2);
+                            const reason = String(trade.reason || "");
+
+                            const row = document.createElement("tr");
+                            const cellData = [
+                                String(idx + 1),
+                                tipo,
+                                entryTime,
+                                exitTime,
+                                entryPx,
+                                exitPx,
+                                pnlText,
+                                reason,
+                            ];
+                            cellData.forEach((text, colIdx) => {{
+                                const td = document.createElement("td");
+                                if (colIdx === 6) td.className = pnlClass;
+                                td.innerText = text;
+                                row.appendChild(td);
+                            }});
+                            tbody.appendChild(row);
+                        }});
+                    }}
+                    tradesSection.style.display = "";
+                }}
+
+                // --- Mode toggle setup ---
+                const modeSingleBtn  = document.getElementById("tv-backtest-mode-single");
+                const modeCompareBtn = document.getElementById("tv-backtest-mode-compare");
+                const checksEl       = document.getElementById("tv-backtest-strategy-checks");
+                const compareBtn     = document.getElementById("tv-backtest-compare-btn");
+                const runBtn_ref     = document.getElementById("tv-backtest-run");
+
+                if (!state.backtest_mode) state.backtest_mode = "single";
+
+                const applyMode = (mode) => {{
+                    state.backtest_mode = mode;
+                    const isCompare = mode === "compare";
+                    if (modeSingleBtn)  modeSingleBtn.classList.toggle("active", !isCompare);
+                    if (modeCompareBtn) modeCompareBtn.classList.toggle("active", isCompare);
+                    if (strategySel)    strategySel.style.display  = isCompare ? "none" : "";
+                    if (checksEl)       checksEl.style.display      = isCompare ? "" : "none";
+                    if (runBtn_ref)     runBtn_ref.style.display     = isCompare ? "none" : "";
+                    if (compareBtn)     compareBtn.style.display     = isCompare ? "" : "none";
+                    const singleResultIds = [
+                        "tv-backtest-results", "tv-backtest-extra-cards",
+                        "tv-backtest-equity-section", "tv-backtest-drawdown-section",
+                        "tv-backtest-trades-section"
+                    ];
+                    singleResultIds.forEach(id => {{
+                        const el = document.getElementById(id);
+                        if (el) el.style.display = isCompare ? "none" : "";
+                    }});
+                    const cmpEl = document.getElementById("tv-backtest-comparison-results");
+                    if (cmpEl) cmpEl.style.display = isCompare ? "" : "none";
+                }};
+
+                if (modeSingleBtn && !modeSingleBtn.dataset.modeBound) {{
+                    modeSingleBtn.dataset.modeBound = "1";
+                    modeSingleBtn.addEventListener("click", () => applyMode("single"));
+                }}
+                if (modeCompareBtn && !modeCompareBtn.dataset.modeBound) {{
+                    modeCompareBtn.dataset.modeBound = "1";
+                    modeCompareBtn.addEventListener("click", () => applyMode("compare"));
+                }}
+
+                if (checksEl) {{
+                    const checkedKeys = new Set();
+                    checksEl.querySelectorAll("input[type='checkbox']:checked").forEach(cb => checkedKeys.add(cb.value));
+                    checksEl.innerHTML = "";
+                    state.strategies.forEach(entry => {{
+                        if (!entry || !entry.key) return;
+                        const row = document.createElement("div");
+                        row.className = "tv-backtest-strategy-check-row" + (entry.disabled ? " disabled" : "");
+                        const cb = document.createElement("input");
+                        cb.type = "checkbox";
+                        cb.value = entry.key;
+                        cb.disabled = !!entry.disabled;
+                        cb.checked = checkedKeys.has(entry.key);
+                        const lbl = document.createElement("label");
+                        lbl.innerText = entry.label || entry.key;
+                        row.appendChild(cb);
+                        row.appendChild(lbl);
+                        row.addEventListener("click", () => {{ if (!entry.disabled) cb.checked = !cb.checked; }});
+                        cb.addEventListener("click", e => e.stopPropagation());
+                        checksEl.appendChild(row);
+                    }});
+                }}
+
+                if (compareBtn && !compareBtn.dataset.compareBound) {{
+                    compareBtn.dataset.compareBound = "1";
+                    compareBtn.addEventListener("click", () => {{
+                        if (!checksEl) return;
+                        const selectedKeys = [];
+                        checksEl.querySelectorAll("input[type='checkbox']:checked").forEach(cb => {{
+                            if (!cb.disabled) selectedKeys.push(cb.value);
+                        }});
+                        if (selectedKeys.length < 2) {{
+                            const statusEl = document.getElementById("tv-backtest-status");
+                            if (statusEl) statusEl.innerText = "Selecciona al menos 2 estrategias para comparar";
+                            return;
+                        }}
+                        if (state.comparison_running) {{
+                            const statusEl = document.getElementById("tv-backtest-status");
+                            if (statusEl) statusEl.innerText = "Comparación en ejecución...";
+                            return;
+                        }}
+                        const request = {{
+                            strategy_keys:   selectedKeys,
+                            symbol:          state.form.symbol || "",
+                            preset:          state.form.preset || "CUSTOM",
+                            start_date:      (document.getElementById("tv-backtest-start") || {{}}).value || "",
+                            end_date:        (document.getElementById("tv-backtest-end") || {{}}).value || "",
+                            initial_balance: (document.getElementById("tv-backtest-balance") || {{}}).value || "",
+                            data_source:     (document.getElementById("tv-backtest-datasource") || {{}}).value || "mt5",
+                        }};
+                        if (window.callbackFunction && state.handler) {{
+                            window.callbackFunction(state.handler + "_~_backtest_compare;;;" + encodeURIComponent(JSON.stringify(request)));
+                        }}
+                    }});
+                }}
+
+                applyMode(state.backtest_mode || "single");
             }};
 
             window.tvEyeSvg = (isVisible) => {{
@@ -5230,6 +6420,13 @@ class TradingBotGUI:
             json_str = unquote(args[0]) if len(args) > 0 else ""
             self._on_backtest_run(json_str)
             return
+        if action == "backtest_compare" and args:
+            json_str = unquote(args[0]) if len(args) > 0 else ""
+            self._on_backtest_compare(json_str)
+            return
+        if action == "backtest_export_csv":
+            self._on_backtest_export_csv()
+            return
         if action == "strategy_builder_new":
             self._on_strategy_builder_new()
             return
@@ -5248,6 +6445,104 @@ class TradingBotGUI:
             json_str = unquote(args[0]) if len(args) > 0 else ""
             self._on_strategy_builder_save(json_str)
             return
+        if action == "strategy_params_open" and args:
+            key = unquote(args[0]) if len(args) > 0 else ""
+            self._on_strategy_params_open(key)
+            return
+        if action == "strategy_params_save" and args:
+            key = unquote(args[0]) if len(args) > 0 else ""
+            overrides_json = unquote(args[1]) if len(args) > 1 else ""
+            self._on_strategy_params_save(key, overrides_json)
+            return
+
+    def _on_strategy_params_open(self, key: str):
+        # esta funcion sirve para abrir el panel de edición rápida de parámetros.
+        key = (key or "").strip()
+        entry = self._get_strategy_entry(key)
+        if not entry:
+            return
+        params_schema = entry.get("params_schema")
+        if not isinstance(params_schema, dict) or len(params_schema) == 0:
+            return
+        params_values = entry.get("params_values") or {}
+        payload = json.dumps({
+            "key": key,
+            "label": entry.get("label") or key,
+            "schema": params_schema,
+            "values": params_values,
+            "handler": self.side_panel_handler,
+        })
+        self.chart.run_script(f"""
+            ;(function() {{
+                const payload = {payload};
+                if (window.openParamsPanel) {{
+                    window.openParamsPanel(payload);
+                }}
+            }})();
+        """)
+
+    def _on_strategy_params_save(self, key: str, overrides_json: str):
+        # esta funcion sirve para guardar parámetros editados de estrategia.
+        key = (key or "").strip()
+        entry = self._get_strategy_entry(key)
+        if not entry:
+            return
+        params_schema = entry.get("params_schema")
+        if not isinstance(params_schema, dict) or len(params_schema) == 0:
+            return
+        overrides_json = (overrides_json or "").strip()
+        try:
+            overrides = json.loads(overrides_json)
+        except Exception:
+            overrides = {}
+        if not isinstance(overrides, dict):
+            overrides = {}
+        validated = {}
+        for param_key, value in overrides.items():
+            schema_entry = params_schema.get(param_key)
+            if not schema_entry:
+                continue
+            type_str = schema_entry.get("type", "float")
+            min_val = schema_entry.get("min")
+            max_val = schema_entry.get("max")
+            try:
+                if type_str == "int":
+                    coerced = int(round(float(value)))
+                else:
+                    coerced = float(value)
+            except (TypeError, ValueError):
+                continue
+            if min_val is not None:
+                coerced = max(min_val, coerced)
+            if max_val is not None:
+                coerced = min(max_val, coerced)
+            validated[param_key] = coerced
+        strategy_dir = self._get_strategy_dir()
+        module_obj = entry.get("module_obj")
+        module_file = getattr(module_obj, "__file__", None) if module_obj else None
+        if module_file and not module_file.startswith("<"):
+            params_json_path = os.path.splitext(module_file)[0] + ".params.json"
+        else:
+            params_json_path = os.path.join(strategy_dir, f"{key}.params.json")
+        try:
+            with open(params_json_path, "w", encoding="utf-8") as f:
+                json.dump(validated, f, indent=2)
+        except Exception as e:
+            self.log_message(f"Error guardando .params.json para {key}: {e}")
+            return
+        self._load_strategy_entry(entry)
+        # Actualizar params_values en el registry para que el panel refleje los nuevos valores
+        merged = {k: entry["params_schema"][k]["default"] for k in entry["params_schema"]}
+        merged.update(validated)
+        entry["params_values"] = merged
+        msg_escaped = json.dumps("Parámetros guardados. Se aplicarán en el próximo ciclo.")
+        self.chart.run_script(f"""
+            ;(function() {{
+                if (window.setParamsMessage) {{
+                    window.setParamsMessage({msg_escaped});
+                }}
+            }})();
+        """)
 
     def _toggle_strategy_run(self):
         # este boton enciende o apaga el motor que ejecuta las estrategias.
@@ -5770,7 +7065,16 @@ class TradingBotGUI:
     
     def log_message(self, message):
         pass
-    
+
+    def show_toast(self, msg: str, type: str = 'info') -> None:
+        """Muestra un toast notification en la GUI. Thread-safe."""
+        try:
+            import json as _json
+            js = f"if (window.tvShowToast) window.tvShowToast({_json.dumps(str(msg))}, {_json.dumps(str(type))});"
+            self.chart.run_script(js)
+        except Exception:
+            pass
+
     def init_mt5(self):
         # esta funcion sirve para iniciar mt5.
         """Inicializa la conexión con MT5."""
@@ -6485,6 +7789,23 @@ class TradingBotGUI:
         text_id = self.chart.topbar['action_text'].id
         self.chart.run_script(f'{icon_id}.style.color = "{color}"')
         self.chart.run_script(f'{text_id}.style.color = "{color}"')
+
+        try:
+            _icon, _color_unused, _summary = self._build_action_summary(action_info)
+            _actions = action_info.get("actions", []) if isinstance(action_info, dict) else []
+            _has_open  = any(a.get("kind") == "open"  for a in _actions if isinstance(a, dict))
+            _has_close = any(a.get("kind") == "close" for a in _actions if isinstance(a, dict))
+            _any_failed = any(a.get("success") is False for a in _actions if isinstance(a, dict))
+            if _any_failed:
+                self.show_toast(_summary, 'error')
+            elif _has_open and _has_close:
+                self.show_toast(_summary, 'info')
+            elif _has_open:
+                self.show_toast(_summary, 'success')
+            elif _has_close:
+                self.show_toast(_summary, 'warn')
+        except Exception:
+            pass
 
         # El tooltip ahora se gestiona desde los marcadores del gráfico
 
@@ -7442,7 +8763,7 @@ class TradingBotGUI:
                             break
                         continue
 
-                    market_open, market_status = trading.is_market_open(config.SYMBOL)
+                    market_open, market_status = self._broker.is_market_open(config.SYMBOL)
 
                     market_cache = {}
 
@@ -7486,22 +8807,32 @@ class TradingBotGUI:
                         if signal != "none" and market_open:
                             reason_txt = f" | motivo: {signal_reason}" if signal_reason else ""
                             self.log_message(f"[{entry['label']}] Senal detectada: {signal.upper()}{reason_txt}")
+                            _toast_msg = f"Señal {signal.upper()}"
+                            if signal_reason:
+                                _toast_msg += f": {signal_reason[:60]}"
+                            if entry.get('label'):
+                                _toast_msg += f"\n[{entry['label']}]"
+                            self.show_toast(_toast_msg, 'warn')
                             if pyramiding and atr_value > 0 and signal == "buy":
                                 if dynamic_sizing and volume_ratio > 0:
-                                    account = mt5.account_info()
+                                    account = self._broker.get_account_info()
                                     balance = account.balance if account is not None else 0.0
-                                    raw_lot = trading.calculate_dynamic_lot(
-                                        config.SYMBOL,
-                                        atr_value,
-                                        volume_ratio,
-                                        balance=balance,
-                                    )
+                                    instrument_info = self._broker.get_instrument_info(config.SYMBOL)
+                                    if instrument_info is not None and balance > 0:
+                                        raw_lot = trading.calculate_dynamic_lot(
+                                            atr_value,
+                                            volume_ratio,
+                                            instrument_info,
+                                            balance,
+                                        )
+                                    else:
+                                        raw_lot = 0.0
                                     lot = raw_lot if raw_lot > 0 else config.LOT
                                 else:
                                     balance = None
                                     lot = config.LOT
 
-                                action_info = trading.apply_pyramid_signal(
+                                action_info = self._broker.apply_pyramid_signal(
                                     config.SYMBOL,
                                     int(entry.get("magic_number") or config.MAGIC_NUMBER),
                                     atr_value,
@@ -7512,7 +8843,7 @@ class TradingBotGUI:
                                     balance=balance if dynamic_sizing else None,
                                 )
                             else:
-                                action_info = trading.apply_signal(
+                                action_info = self._broker.apply_signal(
                                     config.SYMBOL,
                                     signal,
                                     config.LOT,
