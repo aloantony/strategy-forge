@@ -4,7 +4,7 @@
     "category": "index",
     "providers": {
       "mt5": "#Germany40",
-      "dukascopy": "deuidxeur",
+      "dukascopy": "E_DAAX",
       "file": "GER40"
     },
     "instrument": {
@@ -28,7 +28,7 @@
     "category": "forex",
     "providers": {
       "mt5": "EURUSD",
-      "dukascopy": "EURUSD",
+      "dukascopy": "EUR/USD",
       "file": "EURUSD"
     },
     "instrument": {

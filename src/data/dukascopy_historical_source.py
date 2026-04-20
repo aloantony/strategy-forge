@@ -19,8 +19,8 @@ logger = logging.getLogger(__name__)
 _SYMBOLS_JSON = os.path.join(os.path.dirname(__file__), "symbols.json")
 
 _TIMEFRAME_MAP = {
-    "M1": "m1", "M5": "m5", "M15": "m15", "M30": "m30",
-    "H1": "h1", "H4": "h4", "D1": "d1",
+    "M1": "1MIN", "M5": "5MIN", "M15": "15MIN", "M30": "30MIN",
+    "H1": "1HOUR", "H4": "4HOUR", "D1": "1DAY",
 }
 
 
@@ -80,9 +80,10 @@ class DukascopyHistoricalDataSource(IHistoricalDataSource):
 
         df = dukascopy_fetch(
             instrument=dk_symbol,
+            interval=dk_timeframe,
+            offer_side="bid",
             start=start,
             end=end,
-            timeframe=dk_timeframe,
         )
 
         if df is None or df.empty:
