@@ -791,6 +791,14 @@ class TradingBotGUI:
         self.backtest_state["form"] = form
         return form
 
+    @staticmethod
+    def _check_dukascopy_available() -> bool:
+        try:
+            from dukascopy_python import fetch  # noqa: F401
+            return True
+        except ImportError:
+            return False
+
     def _get_backtest_payload(self):
         form = self._get_backtest_form_state()
         entry = self._get_strategy_entry(form.get("strategy_key", ""))
@@ -807,6 +815,7 @@ class TradingBotGUI:
             "symbols": self._get_backtest_symbol_options(),
             "presets": self._get_backtest_preset_ranges(),
             "comparison_running": bool(self.backtest_state.get("comparison_running")),
+            "dukascopy_available": self._check_dukascopy_available(),
         }
 
     def _render_backtest_panel(self):
@@ -4922,6 +4931,10 @@ class TradingBotGUI:
                             <option value="mt5">MT5</option>
                             <option value="dukascopy">Dukascopy</option>
                         </select>
+                        <div id="tv-backtest-dukascopy-warn" style="display:none; margin-top:5px; font-size:11px; color:#e6a817; line-height:1.4;">
+                            Paquete no instalado. Ejecuta:<br>
+                            <code style="user-select:all; color:#f0c060;">pip install "dukascopy-python&gt;=4.0.1"</code>
+                        </div>
                     </div>
                     <div class="tv-backtest-field readonly">
                         <label>Timeframe</label>
@@ -5432,9 +5445,10 @@ class TradingBotGUI:
                 state.error = payloadData.error || "";
                 state.result = payloadData.result || null;
                 state.presets = payloadData.presets || {{}};
+                state.dukascopy_available = !!payloadData.dukascopy_available;
                 state.strategies = Array.isArray(payloadData.strategies) ? payloadData.strategies : [];
                 state.symbols = Array.isArray(payloadData.symbols) ? payloadData.symbols : [];
-                state.form = Object.assign({{}}, state.form || {{}}, payloadData.form || {{}});
+                state.form = Object.assign({{}}, payloadData.form || {{}}, state.form || {{}});
 
                 const strategySel = document.getElementById("tv-backtest-strategy");
                 const symbolSel = document.getElementById("tv-backtest-symbol");
@@ -5524,9 +5538,17 @@ class TradingBotGUI:
                 symbolSel.onchange = () => {{
                     state.form.symbol = symbolSel.value || "";
                 }};
+                const dukascopyWarn = document.getElementById("tv-backtest-dukascopy-warn");
+                const updateDukascopyWarn = () => {{
+                    const isDukascopy = (datasourceSel.value === "dukascopy");
+                    const notAvail = isDukascopy && !state.dukascopy_available;
+                    if (dukascopyWarn) dukascopyWarn.style.display = notAvail ? "block" : "none";
+                }};
                 datasourceSel.onchange = () => {{
                     state.form.data_source = datasourceSel.value || "mt5";
+                    updateDukascopyWarn();
                 }};
+                updateDukascopyWarn();
                 startEl.onchange = () => {{
                     state.form.start_date = startEl.value || "";
                     state.form.preset = "CUSTOM";

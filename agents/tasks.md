@@ -10,13 +10,21 @@ _Para actualizar el estado de tu tarea, edita solo tu task file — Jarvis actua
 
 ## Active / Todo
 
+### Sprint: ExecutionEngine Broker Decoupling (TASK-053 a TASK-055)
+
+| ID | Status | Assigned | Blocked by | Blocks |
+|----|--------|----------|------------|--------|
+| [TASK-053](tasks/TASK-053.md) | done | Daniel | — | TASK-054 |
+| [TASK-054](tasks/TASK-054.md) | todo | Alex | TASK-053 | TASK-055 |
+| [TASK-055](tasks/TASK-055.md) | done | Daniel | TASK-054 | — |
+
 ### Sprint: Dukascopy in Backtest GUI (TASK-049 a TASK-052)
 
 | ID | Status | Assigned | Blocked by | Blocks |
 |----|--------|----------|------------|--------|
 | [TASK-049](tasks/TASK-049.md) | done | Daniel | — | TASK-050, TASK-051 |
-| [TASK-050](tasks/TASK-050.md) | todo | Grace | TASK-049 | TASK-052 |
-| [TASK-051](tasks/TASK-051.md) | todo | Alex | TASK-049 | TASK-052 |
+| [TASK-050](tasks/TASK-050.md) | done | Grace | TASK-049 | TASK-052 |
+| [TASK-051](tasks/TASK-051.md) | done | Alex | TASK-049 | TASK-052 |
 | [TASK-052](tasks/TASK-052.md) | done | Felix | TASK-050, TASK-051 | — |
 
 ### Sprint: GUI Polish (TASK-045 a TASK-048)

@@ -83,6 +83,15 @@ class IBrokerAdapter(ABC):
     ) -> bool:
         ...
 
+    @abstractmethod
+    def modify_tp(
+        self,
+        symbol: str,
+        magic: int,
+        new_tp_price: float,
+    ) -> bool:
+        ...
+
     # ------------------------------------------------------------------
     # Señales de alto nivel (usadas por main.py y gui_charts.py)
     # ------------------------------------------------------------------

@@ -331,10 +331,27 @@ class ExecutionEngine:
         return self._action_report(action_id, "move_stop_loss", symbol, status, msg)
 
     def _execute_move_tp(self, norm_action: dict, plan_id: str, action_id: str) -> dict:
-        # Similar a move_sl
         symbol = norm_action.get("symbol", self._symbol)
-        return self._action_report(action_id, "move_take_profit", symbol,
-                                   "not_supported", "move_take_profit: implementación pendiente v1.1")
+        resolved = norm_action.get("resolved", {})
+        new_tp = resolved.get("new_tp_price")
+
+        if new_tp is None:
+            return self._action_report(action_id, "move_take_profit", symbol,
+                                       "rejected_technical", "No se pudo resolver el nuevo TP")
+
+        try:
+            success = self._broker.modify_tp(
+                symbol=symbol,
+                magic=self._magic,
+                new_tp_price=new_tp,
+            )
+        except Exception as exc:
+            return self._action_report(action_id, "move_take_profit", symbol,
+                                       "error", str(exc))
+
+        status = "executed" if success else "rejected_broker"
+        msg    = f"TP movido a {new_tp:.5f}" if success else "Error moviendo TP"
+        return self._action_report(action_id, "move_take_profit", symbol, status, msg)
 
     # ------------------------------------------------------------------
     # Helpers de persistencia

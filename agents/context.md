@@ -1,6 +1,6 @@
 # Project Context
 
-_Last updated by Jarvis: 2026-04-15 (sprint Dukascopy-in-Backtest-GUI agregado TASK-049 a TASK-052; Known Issues limpiados)_
+_Last updated by Jarvis: 2026-04-20 (sprint ExecutionEngine Broker Decoupling TASK-053 a TASK-055 planificado)_
 
 ---
 
@@ -84,26 +84,19 @@ This applies to all agents (Daniel, Grace, Felix, Alex, and any future agents). 
 
 ## Current Goals
 
-**Sprint activo: GUI Polish** (TASK-045 a TASK-048) — todos `todo`, ninguno iniciado. Mejorar la calidad visual e interactiva del GUI sin cambiar la paleta de colores ni la arquitectura de threading:
+**Sprint activo: ExecutionEngine Broker Decoupling** (TASK-053 a TASK-055). Eliminar el acoplamiento de `MT5BrokerAdapter` a los métodos privados `trading._send_order()` y `trading._close_position()`, de modo que el adaptador sea autónomo respecto a `trading.py` y el sistema sea escalable a nuevos brokers:
 
-1. **TASK-045 (Grace)** — Spec completa del sprint: inventario de botones interactivos, cambio quirúrgico del tab switcher (Opción B fade), spinner en botón de backtest, arquitectura del sistema de toast notifications, e insertion points exactos para Felix
-2. **TASK-046 (Felix)** — Scroll fix directo: `overflow-y: auto` + scrollbar webkit en `.tv-backtest-panel` y verificar `#tv-strategy-panel` — no depende de TASK-045
-3. **TASK-047 (Felix)** — Micro-interacciones y animaciones: transitions CSS, scale en `:active`, hover box-shadow, tab fade-in, spinner — depende de TASK-045
-4. **TASK-048 (Felix)** — Toast notifications: HTML container, CSS animaciones, JS `window.tvShowToast()`, Python `show_toast()` thread-safe, integración en 3 puntos del bot-loop — depende de TASK-045
+1. **TASK-053 (Daniel)** — Audit + spec: confirmar que `IBrokerAdapter` es completo, documentar el mapeo exacto de llamadas, especificar los MT5 API calls que reemplazan `_send_order` y `_close_position`. Adicionalmente, Daniel debe: (a) verificar si `IBrokerAdapter` ya declara `modify_tp` o hay que añadirlo, y especificar el MT5 API call correcto; (b) especificar el movimiento de `build_trade_comment` y sus helpers a `src/broker/comment.py`, incluyendo el shim de re-export en `trading.py`.
+2. **TASK-054 (Alex)** — Implementación: (a) reemplazar llamadas a `trading._send_order()` / `trading._close_position()` por llamadas MT5 directas; (b) implementar `modify_tp` en `MT5BrokerAdapter` (y en `IBrokerAdapter` si la interfaz aún no lo declara); (c) mover `build_trade_comment` y helpers a `src/broker/comment.py` y poner el shim en `trading.py`.
+3. **TASK-055 (Daniel)** — Review: verificar que ningún caller externo queda usando los métodos privados de `trading.py`; cerrar el sprint o reabrir TASK-054 si se detectan defectos.
 
-Decisiones tomadas en el plan del sprint:
-- Fade de tabs: Opción B (JS mínimo con `requestAnimationFrame` + CSS transition)
-- Scroll fix routing: directo a Felix (cambio CSS localizado, sin spec de Grace)
-- Spinner en botón de backtest: incluido en TASK-047
-- Toast eventos: los 3 (trade abierto, trade cerrado, señal detectada)
-- Indicador deslizante de tab y flash de señal en fila: NOT incluidos en este sprint
+Estado actual del acoplamiento (descubierto en la planificación del sprint):
+- `ExecutionEngine.__init__` YA recibe `broker: IBrokerAdapter` — la migración de la firma se completó en TASK-035.
+- El acoplamiento residual está en `MT5BrokerAdapter`: `send_order()` llama `trading._send_order()` y `close_position()` llama `trading._close_position()`.
+- `modify_sl()` en el adaptador ya usa `mt5.order_send` directamente — no tiene acoplamiento.
+- El wiring en `main.py` (`ExecutionEngine(broker=MT5BrokerAdapter(), ...)`) es correcto y no necesita cambios.
 
-**Siguiente sprint: Dukascopy-in-Backtest-GUI** (TASK-049 a TASK-052) — todos `todo`. Exponer la selección de fuente de datos (MT5 vs Dukascopy) en el formulario de backtest del GUI:
-
-1. **TASK-049 (Daniel)** — Spec: cómo exponer la selección de fuente de datos, qué parámetros requiere cada fuente, mapeo de símbolo canónico
-2. **TASK-050 (Grace)** — Spec GUI: selector de fuente de datos en el formulario de backtest de `gui_charts.py`
-3. **TASK-051 (Alex)** — Wiring: conectar la fuente seleccionada a la llamada de `backtesting/runtime.py` en `gui_charts.py`
-4. **TASK-052 (Felix)** — Implementación GUI: spec de Grace en `gui_charts.py`
+**Sprint anterior completado: Dukascopy-in-Backtest-GUI** (TASK-049 a TASK-052, todos `done`). El índice en `tasks.md` ha sido corregido — TASK-050 y TASK-051 estaban marcados `todo` por error; ahora reflejan `done`.
 
 ---
 
@@ -135,7 +128,7 @@ gui_charts.py  <->  main.py (trading loop, strategy runner)
 ### Supersistema v1 (`src/`) — estado actual
 
 - `src/runtime/adapter.py` — `LegacyStrategyAdapter`: envuelve modulos legacy al contrato v1 `decide(context, state)`
-- `src/runtime/execution_engine.py` — `ExecutionEngine`: ejecuta planes normalizados; actualmente acoplado a `trading_module` concreto (a resolver en TASK-035, completado)
+- `src/runtime/execution_engine.py` — `ExecutionEngine`: ejecuta planes normalizados; recibe `broker: IBrokerAdapter` (migración completada en TASK-035); llama solo métodos públicos de la interfaz
 - `src/runtime/plan_interpreter.py` — interpreta planes v1
 - `src/runtime/context_builder.py` — construye el contexto de decision
 - `src/runtime/state_store.py` — persiste estado de estrategia por instancia
@@ -253,4 +246,5 @@ A technical user can bypass the Builder by dropping a hand-crafted `.py` file in
 
 ## Known Issues / Blockers
 
-- `ExecutionEngine` llama a `self._trading._send_order()` y `self._trading._close_position()` que son funciones privadas de `trading.py` — acoplamiento directo. No es bloqueante para los sprints activos; a resolver cuando se migre la GUI al supersistema v1.
+- `MT5BrokerAdapter.send_order()` llama a `trading._send_order()` y `MT5BrokerAdapter.close_position()` llama a `trading._close_position()` — acoplamiento a métodos privados de `trading.py`. Es el objetivo del sprint activo (TASK-053 a TASK-055).
+- **Ningún bloqueo conocido en el sprint activo.** TASK-053 puede lanzarse inmediatamente.
