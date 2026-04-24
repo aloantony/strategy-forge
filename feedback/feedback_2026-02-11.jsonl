@@ -1,3 +1,0 @@
-{"subject": "Mensaje Prueba", "message": "Prueba.", "symbol": "#Germany40", "strategy": "baseline", "timeframe": "M1", "timestamp": "2026-02-11T12:27:54.439842Z"}
-{"subject": "asdf", "message": "asdf", "symbol": "#Germany40", "strategy": "baseline", "timeframe": "M1", "timestamp": "2026-02-11T12:35:45.350458Z"}
-{"subject": "Prueba", "message": "Mensaje prueba.", "symbol": "#Germany40", "strategy": "strategy_multi_metrics", "timeframe": "M1", "timestamp": "2026-02-11T13:34:53.071325Z"}

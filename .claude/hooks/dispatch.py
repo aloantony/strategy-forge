@@ -42,6 +42,27 @@ HOOK_PERMISSION_RE = re.compile(
 
 
 # ---------------------------------------------------------------------------
+# tasks.md sync helper
+# ---------------------------------------------------------------------------
+
+def _sync_status_in_tasks_md(task_id: str, new_status: str) -> None:
+    """Actualiza el status de task_id en tasks.md cuando el task file difiere."""
+    try:
+        text = TASKS_FILE.read_text(encoding="utf-8")
+        pattern = (
+            r"(\|\s*\[{id}\]\(tasks/{id}\.md\)\s*\|\s*)"
+            r"(?:todo|in-progress|done)"
+            r"(\s*\|)"
+        ).format(id=re.escape(task_id))
+        new_text = re.sub(pattern, r"\g<1>{}\2".format(new_status), text, count=1)
+        if new_text != text:
+            TASKS_FILE.write_text(new_text, encoding="utf-8")
+            print("[dispatch] Synced {} -> {} in tasks.md".format(task_id, new_status))
+    except Exception as e:
+        print("[dispatch] WARN: could not sync {} to tasks.md: {}".format(task_id, e))
+
+
+# ---------------------------------------------------------------------------
 # Parse tasks.md
 # ---------------------------------------------------------------------------
 
@@ -96,14 +117,23 @@ def parse_tasks(text):
         blocked_by = re.findall(r"TASK-\d+[a-z]*", blocked_raw)
         blocks     = re.findall(r"TASK-\d+[a-z]*", blocks_raw)
 
-        # Read title from the individual task file if it exists
+        # Read title and authoritative status from the individual task file if it exists
         task_file = PROJECT_ROOT / "agents" / "tasks" / "{}.md".format(task_id)
         title = task_id  # fallback
         if task_file.exists():
-            first_line = task_file.read_text(encoding="utf-8").splitlines()[0]
-            m2 = re.match(r"^#\s+TASK-\d+[a-z]*:\s*(.*)", first_line)
-            if m2:
-                title = m2.group(1).strip()
+            for i, line in enumerate(task_file.read_text(encoding="utf-8").splitlines()):
+                if i == 0:
+                    m2 = re.match(r"^#\s+TASK-\d+[a-z]*:\s*(.*)", line)
+                    if m2:
+                        title = m2.group(1).strip()
+                m_status = re.match(r"^\s*-\s*\*\*Status\*\*:\s*(\S+)", line)
+                if m_status:
+                    file_status = m_status.group(1).strip().lower()
+                    if file_status == "done" and status != "done":
+                        print("[dispatch] {} task file says done but tasks.md says {} — treating as done".format(task_id, status))
+                        status = "done"
+                        _sync_status_in_tasks_md(task_id, "done")
+                    break
 
         tasks.append({
             "id": task_id,
@@ -148,8 +178,27 @@ def pid_alive(pid):
         return False
 
 
-def clean_dead_processes(running):
-    return {k: v for k, v in running.items() if pid_alive(v.get("pid", 0))}
+def clean_completed_tasks(running, task_map):
+    """Remove entries only for tasks that are done or removed from the backlog.
+
+    running.json is a 'dispatched but not finished' registry. Entries are kept
+    until the task is marked done in tasks.md — NOT based on launcher PID liveness.
+    The launcher PID (wt.exe / cmd.exe) dies seconds after opening the terminal,
+    so pid_alive() would wrongly evict entries for tasks still in progress.
+    """
+    cleaned = {}
+    for task_id, info in running.items():
+        status = task_map.get(task_id, {}).get("status", "")
+        if status == "done":
+            print("[dispatch] {} is done — removing from running.json".format(task_id))
+            continue
+        if task_id not in task_map:
+            print("[dispatch] {} not in tasks.md — removing from running.json".format(task_id))
+            continue
+        cleaned[task_id] = info
+        if not pid_alive(info.get("pid", 0)):
+            print("[dispatch] {} PID dead but task not done — keeping entry to prevent re-launch".format(task_id))
+    return cleaned
 
 
 # ---------------------------------------------------------------------------
@@ -177,12 +226,15 @@ def build_prompt(task):
         "Read {agent_file} for your complete role definition and workflow. "
         "{task_ref} "
         "Follow your role definition exactly. "
-        "Update Status to in-progress in both agents/tasks.md and your task file when you start, "
-        "and to done when all acceptance criteria are met."
+        "When updating task status (to in-progress or done): update ONLY your task file "
+        "agents/tasks/{task_id}.md — change the '- **Status**: ...' line using the Edit tool. "
+        "Do NOT edit agents/tasks.md — it is updated by Jarvis only. "
+        "Editing tasks.md from agent sessions causes file-conflict errors when multiple agents run in parallel."
     ).format(
         name=assigned.capitalize(),
         agent_file=agent_file,
         task_ref=task_ref,
+        task_id=task["id"],
     )
 
 
@@ -250,7 +302,8 @@ def main():
     tasks = parse_tasks(text)
     task_map = {t["id"]: t for t in tasks}
 
-    running = clean_dead_processes(load_running())
+    running = clean_completed_tasks(load_running(), task_map)
+    save_running(running)
     launched_any = False
 
     for task in tasks:

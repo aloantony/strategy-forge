@@ -14,7 +14,7 @@ FILE_PATH=$(echo "$INPUT" | python -c \
 echo "$(date -u +%Y-%m-%dT%H:%M:%SZ) hook fired | file=$FILE_PATH | pid=$$" >> "$LOG"
 
 FILE_PATH_NORM="${FILE_PATH//\\//}"
-if [[ "$FILE_PATH_NORM" == *"agents/tasks.md"* ]]; then
+if [[ "$FILE_PATH_NORM" == *"agents/tasks.md"* ]] || [[ "$FILE_PATH_NORM" =~ agents/tasks/TASK-[0-9]+ ]]; then
   if [[ -f "$TASKS_FILE" ]] && grep -qiE '<!--[[:space:]]*hook-permission[[:space:]]*:[[:space:]]*ON[[:space:]]*-->' "$TASKS_FILE"; then
     echo "$(date -u +%Y-%m-%dT%H:%M:%SZ) dispatching..." >> "$LOG"
     python "$SCRIPT_DIR/dispatch.py" >> "$LOG" 2>&1 &

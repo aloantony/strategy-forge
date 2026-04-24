@@ -1,0 +1,14 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(python -m pytest tests/test_persistence.py tests/test_runtime.py -v)",
+      "WebSearch",
+      "Bash(git:*)",
+      "Bash(grep -E '\\\\.\\(py|txt|md|json\\)$|^d')",
+      "Bash(grep -E '\\\\.py$|^d')",
+      "Bash(grep '\\\\.py$')",
+      "Bash(find C:RealProjectsTradingAgenttrading-agent -type f \\\\\\(-name *.py \\\\\\) -path */strategy_builder/* -o -path */src/*)",
+      "Bash(python *)"
+    ]
+  }
+}
