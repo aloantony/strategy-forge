@@ -675,6 +675,13 @@ class TradingBotGUI:
         text = text.strip("_")
         return text or "strategy"
 
+    def _strategy_builder_name(self, key: str) -> str:
+        # esta funcion sirve para obtener el nombre "builder" sin el prefijo strategy_.
+        # El key del registro puede venir como "strategy_<name>" (stem del fichero) o "<name>";
+        # los companions del Builder viven como strategy_<name>.json/.py.
+        key = (key or "").strip()
+        return key[len("strategy_"):] if key.startswith("strategy_") else key
+
     def _get_strategy_payload(self):
         # esta funcion sirve para armar la lista de estrategias para la interfaz.
         payload = []
@@ -699,7 +706,7 @@ class TradingBotGUI:
                 status_parts.append(f"error: {error_text}")
 
             strategy_dir = self._get_strategy_dir()
-            json_path = os.path.join(strategy_dir, f"strategy_{entry['key']}.json")
+            json_path = os.path.join(strategy_dir, f"strategy_{self._strategy_builder_name(entry['key'])}.json")
             has_config = os.path.isfile(json_path)
 
             params_schema = entry.get("params_schema")
@@ -2127,45 +2134,10 @@ class TradingBotGUI:
                 };
 
                 // --- renderBuilderButtons(data) ---
-                window.renderBuilderButtons = (data) => {
-                    const strategies = data.strategies || [];
-                    strategies.forEach((strategy) => {
-                        const row = document.querySelector(`.tv-strategy-item[data-key="${strategy.key}"]`);
-                        if (!row) return;
-
-                        // "Editar" button — Builder-generated only
-                        if (strategy.has_config && !row.querySelector(".tv-builder-edit-btn")) {
-                            const editBtn = document.createElement("button");
-                            editBtn.type = "button";
-                            editBtn.className = "tv-builder-edit-btn";
-                            editBtn.innerText = "✎ Editar";
-                            editBtn.addEventListener("click", (e) => {
-                                e.stopPropagation();
-                                const handler = (data && data.handler) ? data.handler : "";
-                                const key = encodeURIComponent(String(strategy.key || ""));
-                                window.callbackFunction(handler + "_~_strategy_builder_open;;;" + key);
-                            });
-                            const right = row.querySelector(".tv-strategy-right");
-                            if (right) right.appendChild(editBtn);
-                        }
-
-                        // "Params" button — any strategy with non-empty PARAMS
-                        if (strategy.has_params && !row.querySelector(".tv-params-btn")) {
-                            const paramsBtn = document.createElement("button");
-                            paramsBtn.type = "button";
-                            paramsBtn.className = "tv-params-btn";
-                            paramsBtn.innerText = "⚙ Params";
-                            paramsBtn.addEventListener("click", (e) => {
-                                e.stopPropagation();
-                                const handler = (data && data.handler) ? data.handler : "";
-                                const key = encodeURIComponent(String(strategy.key || ""));
-                                window.callbackFunction(handler + "_~_strategy_params_open;;;" + key);
-                            });
-                            const right = row.querySelector(".tv-strategy-right");
-                            if (right) right.appendChild(paramsBtn);
-                        }
-                    });
-                };
+                // Obsoleto: los botones Editar/Params ahora se crean dentro de
+                // renderStrategyList (junto a cada fila) para que persistan en re-renders.
+                // Se mantiene como no-op para no romper llamadas existentes.
+                window.renderBuilderButtons = (data) => {};
 
                 // --- Indicator list rendering ---
                 const INDICATOR_PARAM_DEFS = {
@@ -3629,7 +3601,26 @@ class TradingBotGUI:
                         flex-direction: column;
                         align-items: flex-end;
                         gap: 4px;
-                        min-width: 98px;
+                        min-width: 120px;
+                        flex-shrink: 0;
+                    }
+                    .tv-strategy-actions {
+                        display: flex;
+                        flex-wrap: wrap;
+                        gap: 4px;
+                        justify-content: flex-end;
+                    }
+                    .tv-strategy-panel-title {
+                        font-size: 13px;
+                        font-weight: 600;
+                        color: var(--tv-text-primary, #e0e0e0);
+                        margin-bottom: 2px;
+                    }
+                    .tv-strategy-panel-hint {
+                        font-size: 11px;
+                        color: #8c8c8c;
+                        margin-bottom: 10px;
+                        line-height: 1.3;
                     }
                     .tv-strategy-enable {
                         background: #2a2a2a;
@@ -4929,7 +4920,6 @@ class TradingBotGUI:
             strategyDataSelect.addEventListener("change", () => {{
                 const handler = strategyDataSelect.dataset.handler || payload.handler;
                 const selected = encodeURIComponent(strategyDataSelect.value || "");
-                if (window._updateEditButtons) window._updateEditButtons(strategyDataSelect.value || "");
                 window.callbackFunction(handler + "_~_strategy_data_scope;;;" + selected);
             }});
             const strategyDataAllActivesBtn = document.createElement("button");
@@ -4941,59 +4931,9 @@ class TradingBotGUI:
                 const handler = strategyDataSelect.dataset.handler || strategyDataAllActivesBtn.dataset.handler || payload.handler;
                 window.callbackFunction(handler + "_~_strategy_data_scope_all_actives");
             }});
-            const strategyDataEditBtn = document.createElement("button");
-            strategyDataEditBtn.type = "button";
-            strategyDataEditBtn.id = "tv-sd-edit-btn";
-            strategyDataEditBtn.className = "tv-strategy-edit-btn";
-            strategyDataEditBtn.innerText = "✎ Editar";
-            strategyDataEditBtn.title = "Editar la estrategia seleccionada en el Builder";
-            strategyDataEditBtn.addEventListener("click", () => {{
-                const handler = strategyDataSelect.dataset.handler || payload.handler;
-                const key = encodeURIComponent(strategyDataSelect.value || "");
-                if (key) window.callbackFunction(handler + "_~_strategy_builder_open;;;" + key);
-            }});
-
-            const strategyDataParamsBtn = document.createElement("button");
-            strategyDataParamsBtn.type = "button";
-            strategyDataParamsBtn.id = "tv-sd-params-btn";
-            strategyDataParamsBtn.className = "tv-strategy-params-btn";
-            strategyDataParamsBtn.innerText = "⚙ Params";
-            strategyDataParamsBtn.title = "Ajustar parámetros de la estrategia seleccionada";
-            strategyDataParamsBtn.addEventListener("click", () => {{
-                const handler = strategyDataSelect.dataset.handler || payload.handler;
-                const key = encodeURIComponent(strategyDataSelect.value || "");
-                if (key) window.callbackFunction(handler + "_~_strategy_params_open;;;" + key);
-            }});
-
             strategyDataHeader.appendChild(strategyDataLabel);
             strategyDataHeader.appendChild(strategyDataSelect);
             strategyDataHeader.appendChild(strategyDataAllActivesBtn);
-            strategyDataHeader.appendChild(strategyDataEditBtn);
-            strategyDataHeader.appendChild(strategyDataParamsBtn);
-
-            // Helper global: habilita/oculta los botones Editar/Params según capacidades.
-            window._strategyCaps = window._strategyCaps || {{}};
-            window._updateEditButtons = (selectedKey) => {{
-                if (selectedKey === undefined || selectedKey === null) {{
-                    const sd = document.getElementById("tv-strategy-data-select");
-                    const dw = document.getElementById("tv-data-strategy-select");
-                    selectedKey = (sd && sd.value) || (dw && dw.value) || "";
-                }}
-                const known = !!(window._strategyCaps &&
-                    Object.prototype.hasOwnProperty.call(window._strategyCaps, selectedKey));
-                const caps = (known && window._strategyCaps[selectedKey]) || {{}};
-                const setBtn = (id, enabled) => {{
-                    const b = document.getElementById(id);
-                    if (!b) return;
-                    b.disabled = !enabled;
-                    b.style.opacity = enabled ? "1" : "0.4";
-                }};
-                // Si aún no conocemos las capacidades, mostrar los botones (no ocultarlos por timing).
-                setBtn("tv-sd-edit-btn", known ? !!caps.has_config : true);
-                setBtn("tv-sd-params-btn", known ? !!caps.has_params : true);
-                setBtn("tv-dw-edit-btn", known ? !!caps.has_config : true);
-                setBtn("tv-dw-params-btn", known ? !!caps.has_params : true);
-            }};
 
             const list = document.createElement("div");
             list.className = "tv-side-list";
@@ -5011,8 +4951,6 @@ class TradingBotGUI:
                     <div class="tv-data-controls">
                         <span class="tv-data-control-label">Estrategia:</span>
                         <select id="tv-data-strategy-select" class="tv-data-select"></select>
-                        <button type="button" id="tv-dw-edit-btn" class="tv-strategy-edit-btn" title="Editar la estrategia seleccionada en el Builder">✎ Editar</button>
-                        <button type="button" id="tv-dw-params-btn" class="tv-strategy-params-btn" title="Ajustar parámetros de la estrategia seleccionada">⚙ Params</button>
                     </div>
                     <div class="tv-data-meta">
                         <div class="tv-data-row">
@@ -5046,24 +4984,7 @@ class TradingBotGUI:
                 dataWindowStrategySelect.addEventListener("change", () => {{
                     const handler = dataWindowStrategySelect.dataset.handler || payload.handler;
                     const selected = encodeURIComponent(dataWindowStrategySelect.value || "");
-                    if (window._updateEditButtons) window._updateEditButtons(dataWindowStrategySelect.value || "");
                     window.callbackFunction(handler + "_~_strategy_data_scope;;;" + selected);
-                }});
-            }}
-            const dataWindowEditBtn = dataWindow.querySelector("#tv-dw-edit-btn");
-            if (dataWindowEditBtn) {{
-                dataWindowEditBtn.addEventListener("click", () => {{
-                    const handler = (dataWindowStrategySelect && dataWindowStrategySelect.dataset.handler) || payload.handler;
-                    const key = encodeURIComponent((dataWindowStrategySelect && dataWindowStrategySelect.value) || "");
-                    if (key) window.callbackFunction(handler + "_~_strategy_builder_open;;;" + key);
-                }});
-            }}
-            const dataWindowParamsBtn = dataWindow.querySelector("#tv-dw-params-btn");
-            if (dataWindowParamsBtn) {{
-                dataWindowParamsBtn.addEventListener("click", () => {{
-                    const handler = (dataWindowStrategySelect && dataWindowStrategySelect.dataset.handler) || payload.handler;
-                    const key = encodeURIComponent((dataWindowStrategySelect && dataWindowStrategySelect.value) || "");
-                    if (key) window.callbackFunction(handler + "_~_strategy_params_open;;;" + key);
                 }});
             }}
 
@@ -5333,6 +5254,15 @@ class TradingBotGUI:
                 riskWidget.appendChild(riskValue);
                 riskWidget.appendChild(riskSep);
             }}
+            const stratPanelTitle = document.createElement("div");
+            stratPanelTitle.className = "tv-strategy-panel-title";
+            stratPanelTitle.innerText = "Gestión de estrategias";
+            const stratPanelHint = document.createElement("div");
+            stratPanelHint.className = "tv-strategy-panel-hint";
+            stratPanelHint.innerText = "Activa, edita (✎) o ajusta parámetros (⚙) de cada estrategia.";
+            strategyPanel.appendChild(stratPanelTitle);
+            strategyPanel.appendChild(stratPanelHint);
+
             strategyPanel.appendChild(riskWidget);
 
             strategyPanel.appendChild(strategyList);
@@ -5547,7 +5477,6 @@ class TradingBotGUI:
                     allActivesBtn.classList.toggle("active", allActives);
                     allActivesBtn.disabled = !options.length;
                 }}
-                if (window._updateEditButtons) window._updateEditButtons(selector.value || "");
             }};
 
             window.renderDataWindowStrategySelector = (data) => {{
@@ -5583,7 +5512,6 @@ class TradingBotGUI:
                     selector.selectedIndex = 0;
                 }}
                 selector.dataset.handler = handler;
-                if (window._updateEditButtons) window._updateEditButtons(selector.value || "");
             }};
 
             window.tvBacktest = window.tvBacktest || {{}};
@@ -6106,11 +6034,6 @@ class TradingBotGUI:
             }}
 
             window.renderStrategyList = (data) => {{
-                window._strategyCaps = {{}};
-                (data.strategies || []).forEach((s) => {{
-                    window._strategyCaps[s.key] = {{ has_config: !!s.has_config, has_params: !!s.has_params }};
-                }});
-                if (window._updateEditButtons) window._updateEditButtons();
                 const list = document.getElementById("tv-strategy-list");
                 const empty = document.getElementById("tv-strategy-empty");
                 if (!list) return;
@@ -6182,11 +6105,45 @@ class TradingBotGUI:
                     lastRun.className = "tv-strategy-last-run";
                     lastRun.innerText = strategy.last_run ? ("Run: " + strategy.last_run) : "";
 
+                    // Acciones por fila (Editar/Params) integradas aquí para que persistan
+                    // en cada re-render (antes vivían en una segunda pasada que se perdía).
+                    const actions = document.createElement("div");
+                    actions.className = "tv-strategy-actions";
+                    if (strategy.has_config) {{
+                        const editBtn = document.createElement("button");
+                        editBtn.type = "button";
+                        editBtn.className = "tv-strategy-edit-btn";
+                        editBtn.innerText = "✎ Editar";
+                        editBtn.title = "Editar esta estrategia en el Builder";
+                        editBtn.addEventListener("click", (e) => {{
+                            e.stopPropagation();
+                            const handler = (data && data.handler) ? data.handler : "";
+                            const k = encodeURIComponent(String(strategy.key || ""));
+                            if (handler && k) window.callbackFunction(handler + "_~_strategy_builder_open;;;" + k);
+                        }});
+                        actions.appendChild(editBtn);
+                    }}
+                    if (strategy.has_params) {{
+                        const paramsBtn = document.createElement("button");
+                        paramsBtn.type = "button";
+                        paramsBtn.className = "tv-strategy-params-btn";
+                        paramsBtn.innerText = "⚙ Params";
+                        paramsBtn.title = "Ajustar parámetros de esta estrategia";
+                        paramsBtn.addEventListener("click", (e) => {{
+                            e.stopPropagation();
+                            const handler = (data && data.handler) ? data.handler : "";
+                            const k = encodeURIComponent(String(strategy.key || ""));
+                            if (handler && k) window.callbackFunction(handler + "_~_strategy_params_open;;;" + k);
+                        }});
+                        actions.appendChild(paramsBtn);
+                    }}
+
                     left.appendChild(title);
                     left.appendChild(module);
                     left.appendChild(timeframe);
                     left.appendChild(statusLine);
                     right.appendChild(enableBtn);
+                    if (actions.childNodes.length) right.appendChild(actions);
                     right.appendChild(lastRun);
                     row.appendChild(left);
                     row.appendChild(right);
@@ -6807,7 +6764,8 @@ class TradingBotGUI:
             ''')
             return
         strategy_dir = self._get_strategy_dir()
-        json_path = os.path.join(strategy_dir, f"strategy_{key}.json")
+        builder_name = self._strategy_builder_name(key)
+        json_path = os.path.join(strategy_dir, f"strategy_{builder_name}.json")
         if not os.path.isfile(json_path):
             self.chart.run_script('''
                 ;(function() {
@@ -6831,7 +6789,9 @@ class TradingBotGUI:
             ''')
             return
         config_data["is_new"] = False
-        config_data["editing_key"] = key
+        # editing_key debe ser el nombre "builder" sin prefijo para que handle_save_edit
+        # localice strategy_<name>.json al guardar.
+        config_data["editing_key"] = builder_name
         config_data["handler"] = self.side_panel_handler
         self._apply_strategy_builder_preview(config_data)
         payload = json.dumps(config_data)
