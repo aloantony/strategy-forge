@@ -6,47 +6,19 @@ from __future__ import annotations
 
 from typing import Any
 
-try:
-    import MetaTrader5 as mt5
-    _TF_M1  = mt5.TIMEFRAME_M1   # = 1
-    _TF_M5  = mt5.TIMEFRAME_M5   # = 5
-    _TF_M15 = mt5.TIMEFRAME_M15  # = 15
-    _TF_M30 = mt5.TIMEFRAME_M30  # = 30
-    _TF_H1  = mt5.TIMEFRAME_H1   # = 16385
-    _TF_H4  = mt5.TIMEFRAME_H4   # = 16388
-    _TF_D1  = mt5.TIMEFRAME_D1   # = 16408
-except ImportError:
-    mt5 = None
-    _TF_M1  = 1
-    _TF_M5  = 5
-    _TF_M15 = 15
-    _TF_M30 = 30
-    _TF_H1  = 16385
-    _TF_H4  = 16388
-    _TF_D1  = 16408
-
 import pandas as pd
 
-
-TIMEFRAME_MAP = {
-    "M1": _TF_M1, "M5": _TF_M5, "M15": _TF_M15, "M30": _TF_M30,
-    "H1": _TF_H1, "H4": _TF_H4, "D1": _TF_D1,
-}
-
-
-def resolve_timeframe_value(value: Any):
-    if value is None:
-        return None
-    if isinstance(value, str):
-        return TIMEFRAME_MAP.get(value.strip().upper())
-    if isinstance(value, int) and value in TIMEFRAME_MAP.values():
-        return value
-    return None
-
-
-def timeframe_label(timeframe_value: int) -> str:
-    reverse_map = {v: k for k, v in TIMEFRAME_MAP.items()}
-    return reverse_map.get(timeframe_value, "")
+from src.runtime.timeframes import (
+    TIMEFRAME_MAP,
+    TIMEFRAME_MINUTES,
+    TIMEFRAME_SECONDS,
+    lowest_timeframe_label,
+    normalize_timeframe_label,
+    resolve_timeframe_value,
+    timeframe_label,
+    timeframe_to_minutes,
+    timeframe_to_seconds,
+)
 
 
 def get_strategy_timeframe(module):
@@ -92,6 +64,92 @@ def apply_strategy_processing(
     return out
 
 
+def _frame_time_index(df: pd.DataFrame) -> pd.DataFrame:
+    out = df.copy()
+    if "time" in out.columns:
+        out["_runtime_time"] = pd.to_datetime(out["time"], utc=True, errors="coerce")
+        out = out.dropna(subset=["_runtime_time"]).set_index("_runtime_time")
+    else:
+        out.index = pd.to_datetime(out.index, utc=True, errors="coerce")
+        out = out[~out.index.isna()]
+    return out.sort_index()
+
+
+def resample_ohlcv(df: pd.DataFrame, timeframe: str) -> pd.DataFrame:
+    label = normalize_timeframe_label(timeframe)
+    if not label:
+        raise ValueError(f"Timeframe no soportado para resample: {timeframe!r}")
+    if df is None or df.empty:
+        return pd.DataFrame(columns=["time", "open", "high", "low", "close"])
+
+    source = _frame_time_index(df)
+    rule = f"{TIMEFRAME_MINUTES[label]}min"
+    agg = {
+        "open": "first",
+        "high": "max",
+        "low": "min",
+        "close": "last",
+    }
+    for col in ("tick_volume", "volume", "real_volume"):
+        if col in source.columns:
+            agg[col] = "sum"
+    for col in ("spread",):
+        if col in source.columns:
+            agg[col] = "last"
+
+    out = source.resample(rule, label="left", closed="left").agg(agg)
+    out = out.dropna(subset=["open", "high", "low", "close"]).reset_index()
+    out = out.rename(columns={"_runtime_time": "time", "index": "time"})
+    if "time" not in out.columns:
+        out.insert(0, "time", out.index)
+    return out.reset_index(drop=True)
+
+
+def build_timeframe_frames(
+    base_df: pd.DataFrame,
+    required_timeframes: list[str] | tuple[str, ...] | set[str],
+    base_timeframe: str | None = None,
+) -> dict[str, pd.DataFrame]:
+    labels = []
+    for label in required_timeframes or []:
+        normalized = normalize_timeframe_label(label)
+        if normalized and normalized not in labels:
+            labels.append(normalized)
+    if not labels:
+        labels = ["M1"]
+
+    base_label = normalize_timeframe_label(base_timeframe) or lowest_timeframe_label(labels)
+    base_minutes = TIMEFRAME_MINUTES.get(base_label, 1)
+    frames: dict[str, pd.DataFrame] = {}
+    for label in labels:
+        if label == base_label:
+            frames[label] = base_df.copy()
+            continue
+        target_minutes = TIMEFRAME_MINUTES[label]
+        if target_minutes < base_minutes:
+            raise ValueError(
+                f"No se puede construir {label} desde una base {base_label}; "
+                "usa una base de menor o igual temporalidad."
+            )
+        frames[label] = resample_ohlcv(base_df, label)
+    return frames
+
+
+def apply_mtf_strategy_processing(
+    frames: dict[str, pd.DataFrame],
+    module,
+    enable_signals: bool = True,
+) -> dict[str, pd.DataFrame]:
+    out = {str(k).upper(): v.copy() for k, v in (frames or {}).items()}
+    if module is None:
+        return out
+    if hasattr(module, "prepare_frames"):
+        candidate = module.prepare_frames(out)
+        if isinstance(candidate, dict):
+            out = candidate
+    return out
+
+
 def normalize_signal(signal) -> str:
     value = str(signal or "").strip().lower()
     return value if value in {"buy", "sell", "none"} else "none"
@@ -107,6 +165,11 @@ def normalize_signal_payload(payload) -> dict:
     sl_atr_mult = 1.0
     tp_atr_mult = 2.0
     pyramid_atr_mult = 0.5
+    risk_pct = 0.0
+    entry_index = None
+    max_entries = None
+    block_id = ""
+    tier_id = ""
 
     if isinstance(payload, dict):
         signal_raw = (
@@ -159,6 +222,28 @@ def normalize_signal_payload(payload) -> dict:
             pyramid_atr_mult = float(pyramid_atr_mult_raw) if pyramid_atr_mult_raw is not None else 0.5
         except (TypeError, ValueError):
             pyramid_atr_mult = 0.5
+
+        risk_pct_raw = payload.get("risk_pct", 0.0)
+        try:
+            risk_pct = float(risk_pct_raw) if risk_pct_raw is not None else 0.0
+        except (TypeError, ValueError):
+            risk_pct = 0.0
+
+        for key, target in (("entry_index", "entry_index"), ("max_entries", "max_entries")):
+            raw = payload.get(key)
+            if raw is None:
+                continue
+            try:
+                value = int(raw)
+            except (TypeError, ValueError):
+                continue
+            if target == "entry_index":
+                entry_index = value
+            else:
+                max_entries = value
+
+        block_id = str(payload.get("block_id") or "")
+        tier_id = str(payload.get("tier_id") or "")
     elif isinstance(payload, (tuple, list)):
         if len(payload) > 0:
             signal_raw = payload[0]
@@ -179,6 +264,11 @@ def normalize_signal_payload(payload) -> dict:
         "sl_atr_mult": sl_atr_mult,
         "tp_atr_mult": tp_atr_mult,
         "pyramid_atr_mult": pyramid_atr_mult,
+        "risk_pct": risk_pct,
+        "entry_index": entry_index,
+        "max_entries": max_entries,
+        "block_id": block_id,
+        "tier_id": tier_id,
     }
 
 
@@ -196,6 +286,11 @@ def get_strategy_signal_payload(
             "atr_value": 0.0,
             "dynamic_sizing": False,
             "volume_ratio": 0.0,
+            "risk_pct": 0.0,
+            "entry_index": None,
+            "max_entries": None,
+            "block_id": "",
+            "tier_id": "",
         }
 
     payload = None
@@ -223,4 +318,28 @@ def get_strategy_signal_payload(
             except TypeError:
                 payload = module.get_last_signal(df)
 
+    return normalize_signal_payload(payload)
+
+
+def get_strategy_signal_payload_mtf(
+    frames: dict[str, pd.DataFrame],
+    module,
+    verbose: bool = False,
+    params=None,
+) -> dict:
+    if module is None:
+        return normalize_signal_payload(None)
+
+    payload = None
+    if hasattr(module, "get_last_signal_payload_mtf"):
+        try:
+            if params is not None:
+                payload = module.get_last_signal_payload_mtf(frames, verbose=verbose, params=params)
+            else:
+                payload = module.get_last_signal_payload_mtf(frames, verbose=verbose)
+        except TypeError:
+            try:
+                payload = module.get_last_signal_payload_mtf(frames, verbose=verbose)
+            except TypeError:
+                payload = module.get_last_signal_payload_mtf(frames)
     return normalize_signal_payload(payload)

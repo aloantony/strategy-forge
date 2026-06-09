@@ -1,0 +1,136 @@
+<!DOCTYPE html>
+<html lang="es" data-theme="light">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Configuración · Trading Agent Wiki</title>
+  <link rel="stylesheet" href="assets/style.css" />
+</head>
+<body>
+  <button class="nav-toggle" aria-label="Abrir menú">☰</button>
+  <div class="nav-backdrop"></div>
+
+  <aside class="sidebar">
+    <a class="brand" href="index.html">
+      <span class="brand-mark">◆</span>
+      <span class="brand-name">Trading Agent<small>MT5 · Wiki</small></span>
+    </a>
+    <nav>
+      <span class="nav-group">Introducción</span>
+      <a href="index.html">Inicio</a>
+      <a href="arquitectura.html">Arquitectura</a>
+      <a href="configuracion.html">Configuración</a>
+      <a href="despliegue.html">Despliegue</a>
+      <span class="nav-group">Datos y ejecución</span>
+      <a href="datos.html">Datos de mercado</a>
+      <a href="broker-ordenes.html">Broker y órdenes</a>
+      <span class="nav-group">Estrategias</span>
+      <a href="estrategias.html">Estrategias</a>
+      <a href="strategy-builder.html">Strategy Builder</a>
+      <span class="nav-group">Runtime</span>
+      <a href="runtime-live.html">Runtime live</a>
+      <a href="runtime-v1.html">Runtime v1</a>
+      <a href="persistencia.html">Persistencia</a>
+      <span class="nav-group">Herramientas</span>
+      <a href="backtesting.html">Backtesting</a>
+      <a href="gui.html">Interfaz (GUI)</a>
+      <span class="nav-group">Proyecto</span>
+      <a href="testing.html">Testing</a>
+      <a href="versiones.html">Versiones</a>
+      <a href="glosario.html">Glosario</a>
+    </nav>
+    <div class="sidebar-foot">
+      <span>Wiki · desde código</span>
+      <button class="theme-toggle" type="button"><span class="ico">☾</span><span class="label">Oscuro</span></button>
+    </div>
+  </aside>
+
+  <main>
+    <article class="content">
+      <span class="eyebrow">Configuración</span>
+      <h1>Referencia de <code>config.py</code></h1>
+      <p class="lead">
+        Punto central de configuración. Todos los valores por defecto de esta página están tomados
+        directamente del archivo <code>config.py</code> del repositorio.
+      </p>
+
+      <h2>Trading básico</h2>
+      <div class="kv">
+        <div class="k">SYMBOL</div><div class="v"><code>"#Germany40"</code> — DAX (el prefijo varía por broker; hay alternativas comentadas como <code>DE40</code> o <code>EURUSD</code>).</div>
+        <div class="k">TIMEFRAME</div><div class="v"><code>None</code> — se establece como M1 en <code>main.py</code>.</div>
+        <div class="k">BARS_HISTORY</div><div class="v"><code>500</code> — número de velas a solicitar.</div>
+        <div class="k">LOT</div><div class="v"><code>0.01</code> — tamaño de posición (mínimo para demo).</div>
+        <div class="k">SL_POINTS</div><div class="v"><code>300.0</code> — Stop Loss en puntos.</div>
+        <div class="k">TP_POINTS</div><div class="v"><code>500.0</code> — Take Profit en puntos.</div>
+        <div class="k">MAGIC_NUMBER</div><div class="v"><code>123456</code> — identificador base de órdenes (en multi-estrategia se le suma un offset).</div>
+      </div>
+
+      <h2>Selección de estrategia</h2>
+      <div class="kv">
+        <div class="k">STRATEGY_KEY</div><div class="v"><code>"ema_rsi_trend"</code> — clave por defecto.</div>
+        <div class="k">STRATEGY_MODULE</div><div class="v"><code>""</code> — si está vacío se resuelve por convención: <code>strategies.strategy_&lt;STRATEGY_KEY&gt;</code>.</div>
+        <div class="k">ACTIVE_STRATEGIES</div><div class="v"><code>[]</code> — lista de estrategias activas en vivo.</div>
+        <div class="k">STRATEGY_DIR</div><div class="v"><code>"strategies"</code> — carpeta de estrategias.</div>
+      </div>
+
+      <h2>Indicadores</h2>
+      <div class="kv">
+        <div class="k">SOURCE_MODE</div><div class="v"><code>"OHLC4"</code> — precio base: <code>OHLC4</code> | <code>HLC3</code> | <code>HL2</code> | <code>CLOSE</code>.</div>
+        <div class="k">MA_LENGTH</div><div class="v"><code>20</code> — longitud de la media de la baseline.</div>
+        <div class="k">ATR_LENGTH</div><div class="v"><code>14</code> — longitud del ATR de la baseline.</div>
+        <div class="k">ATR_MULT</div><div class="v"><code>0.5</code> — multiplicador de las bandas ATR.</div>
+        <div class="k">SUPERTREND_ATR_LENGTH</div><div class="v"><code>10</code></div>
+        <div class="k">SUPERTREND_MULT</div><div class="v"><code>3.0</code></div>
+        <div class="k">SUPERTREND_SOURCE</div><div class="v"><code>"close"</code> — fuente del Supertrend.</div>
+        <div class="k">SUPERTREND_USE_HMA</div><div class="v"><code>True</code> — suavizar con HMA.</div>
+        <div class="k">HMA_LENGTH</div><div class="v"><code>55</code></div>
+        <div class="k">TCI_FAST / TCI_SLOW / TCI_SIGNAL</div><div class="v"><code>9</code> / <code>21</code> / <code>5</code> — parámetros del oscilador TCI.</div>
+      </div>
+      <div class="callout note">
+        <div class="callout-title">ℹ Solo visualización</div>
+        <p>Supertrend y TCI se calculan para la GUI; las estrategias pueden usarlos, pero no forman
+        parte de la baseline de señal por defecto. Detalle en <a href="datos.html">Datos de mercado</a>.</p>
+      </div>
+
+      <h2>Loop y concurrencia</h2>
+      <div class="kv">
+        <div class="k">ENABLE_SIGNALS</div><div class="v"><code>True</code> — habilita el cálculo de señales.</div>
+        <div class="k">SLEEP_SECONDS</div><div class="v"><code>10</code> — intervalo de espera configurado. Nota: <code>main.run_bot_loop</code> calcula su propia espera a partir del timeframe más pequeño (p.ej. 60 s en M1); ver <a href="runtime-live.html">Runtime live</a>.</div>
+        <div class="k">STRATEGY_MAX_WORKERS</div><div class="v"><code>8</code> — hilos para análisis concurrente (<code>0</code> = automático).</div>
+        <div class="k">STRATEGY_ANALYSIS_TIMEOUT_SECONDS</div><div class="v"><code>15</code> — timeout total del análisis por ciclo.</div>
+        <div class="k">MAX_ORDERS_PER_ITERATION</div><div class="v"><code>10</code> — límite de órdenes enviadas por ciclo.</div>
+      </div>
+
+      <h2>Supersistema v1</h2>
+      <div class="kv">
+        <div class="k">PERSISTENCE_ENABLED</div><div class="v"><code>True</code> — activa SQLite + migraciones al arrancar.</div>
+        <div class="k">PERSISTENCE_DB_PATH</div><div class="v"><code>"trading_bot.db"</code> — ruta de la base de datos.</div>
+        <div class="k">STRATEGY_RUNTIME_MODE</div><div class="v"><code>"v1_only"</code> — <code>legacy</code> | <code>dual</code> | <code>v1_only</code>.</div>
+        <div class="k">PLAN_EXECUTOR_ENABLED</div><div class="v"><code>True</code> — el <code>ExecutionEngine</code> interpreta y ejecuta planes v1.</div>
+        <div class="k">CANONICAL_RESOURCES_ENABLED</div><div class="v"><code>True</code> — persiste legs, entry_groups y fills.</div>
+      </div>
+
+      <h2>MT5Linux (solo Mac/Linux)</h2>
+      <div class="kv">
+        <div class="k">MT5LINUX_HOST</div><div class="v"><code>"localhost"</code> — IP/host del Windows con MT5.</div>
+        <div class="k">MT5LINUX_PORT</div><div class="v"><code>18812</code> — puerto del servidor mt5linux.</div>
+      </div>
+      <p>En Windows estas dos variables se ignoran. Ver <a href="despliegue.html">Despliegue</a>.</p>
+
+      <div class="src-note">Fuente (código): <code>config.py</code> (valores leídos directamente del archivo).</div>
+
+      <div class="page-nav">
+        <a class="prev" href="arquitectura.html"><span>Anterior</span>← Arquitectura</a>
+        <a class="next" href="despliegue.html"><span>Siguiente</span>Despliegue →</a>
+      </div>
+    </article>
+
+    <footer>
+      <span>Trading Agent · Wiki técnica derivada del código fuente.</span>
+      <span>Reconstruida desde 0, por fases.</span>
+    </footer>
+  </main>
+
+  <script src="assets/wiki.js"></script>
+</body>
+</html>

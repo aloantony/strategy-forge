@@ -122,6 +122,11 @@ class IBrokerAdapter(ABC):
         strategy_label: str = "",
         signal_reason: str = "",
         balance: Optional[float] = None,
+        sl_atr_mult: float = 1.0,
+        tp_atr_mult: float = 2.0,
+        pyramid_atr_mult: float = 0.5,
+        max_entries: Optional[int] = None,
+        entry_index: Optional[int] = None,
     ) -> Optional[dict]:
         ...
 

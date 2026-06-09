@@ -8,7 +8,8 @@
       "Bash(grep -E '\\\\.py$|^d')",
       "Bash(grep '\\\\.py$')",
       "Bash(find C:RealProjectsTradingAgenttrading-agent -type f \\\\\\(-name *.py \\\\\\) -path */strategy_builder/* -o -path */src/*)",
-      "Bash(python *)"
+      "Bash(python *)",
+      "Bash(xargs grep *)"
     ]
   }
 }

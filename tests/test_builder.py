@@ -14,12 +14,14 @@ import pandas as pd
 
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
+import strategy_runtime
 from strategy_builder.generator import (
     GeneratorError,
     NameCollisionError,
     ValidationError,
     build_strategy_module,
     emit_condition,
+    generate_magic_number,
     generate_strategy_file,
     handle_save_edit,
     handle_save_new,
@@ -141,7 +143,7 @@ def test_canonical_example():
     with tempfile.TemporaryDirectory() as tmpdir:
         d = Path(tmpdir)
         validate_strategy_config(config, is_new=True, strategies_dir=d)
-        py_path = generate_strategy_file(config, strategies_dir=d, is_new=True)
+        py_path = generate_strategy_file(config, strategies_dir=d)
 
         content = py_path.read_text()
         ast.parse(content)
@@ -170,11 +172,11 @@ def test_round_trip():
     config = json.loads(json.dumps(EMA_RSI_CONFIG))
     with tempfile.TemporaryDirectory() as tmpdir:
         d = Path(tmpdir)
-        py_path = generate_strategy_file(config, strategies_dir=d, is_new=True)
+        py_path = generate_strategy_file(config, strategies_dir=d)
         original = py_path.read_text()
 
         stored = json.loads((d / "strategy_ema_rsi_cross.json").read_text())
-        py_path2 = generate_strategy_file(stored, strategies_dir=d, is_new=False)
+        py_path2 = generate_strategy_file(stored, strategies_dir=d)
         assert py_path2.read_text() == original
 
     print("PASS test_round_trip")
@@ -185,7 +187,7 @@ def test_get_last_signal_produces_valid_values():
     config = json.loads(json.dumps(EMA_RSI_CONFIG))
     with tempfile.TemporaryDirectory() as tmpdir:
         d = Path(tmpdir)
-        py_path = generate_strategy_file(config, strategies_dir=d, is_new=True)
+        py_path = generate_strategy_file(config, strategies_dir=d)
         mod = load_module(py_path)
 
         df = make_df()
@@ -202,7 +204,7 @@ def test_complex_or_nested_condition():
     with tempfile.TemporaryDirectory() as tmpdir:
         d = Path(tmpdir)
         validate_strategy_config(config, is_new=True, strategies_dir=d)
-        py_path = generate_strategy_file(config, strategies_dir=d, is_new=True)
+        py_path = generate_strategy_file(config, strategies_dir=d)
         ast.parse(py_path.read_text())
 
         mod = load_module(py_path)
@@ -219,7 +221,7 @@ def test_edit_flow_rename():
     config = json.loads(json.dumps(COMPLEX_OR_CONFIG))
     with tempfile.TemporaryDirectory() as tmpdir:
         d = Path(tmpdir)
-        generate_strategy_file(config, strategies_dir=d, is_new=True)
+        generate_strategy_file(config, strategies_dir=d)
         # Write companion json (handle_save_edit reads it)
         (d / "strategy_complex_or.json").write_text(json.dumps(config))
 
@@ -265,7 +267,7 @@ def test_no_prepare_dataframe_when_all_precomputed():
     with tempfile.TemporaryDirectory() as tmpdir:
         d = Path(tmpdir)
         validate_strategy_config(config, is_new=True, strategies_dir=d)
-        py_path = generate_strategy_file(config, strategies_dir=d, is_new=True)
+        py_path = generate_strategy_file(config, strategies_dir=d)
         content = py_path.read_text()
         assert "def prepare_dataframe" not in content
         ast.parse(content)
@@ -306,7 +308,7 @@ def test_atr_donchian():
     with tempfile.TemporaryDirectory() as tmpdir:
         d = Path(tmpdir)
         validate_strategy_config(config, is_new=True, strategies_dir=d)
-        py_path = generate_strategy_file(config, strategies_dir=d, is_new=True)
+        py_path = generate_strategy_file(config, strategies_dir=d)
         content = py_path.read_text()
         ast.parse(content)
         assert "_atr(" in content
@@ -405,7 +407,7 @@ def test_name_collision():
     with tempfile.TemporaryDirectory() as tmpdir:
         d = Path(tmpdir)
         # First create succeeds
-        generate_strategy_file(config, strategies_dir=d, is_new=True)
+        generate_strategy_file(config, strategies_dir=d)
         # Write companion json so it's detected as Builder strategy
         (d / "strategy_ema_rsi_cross.json").write_text(json.dumps(config))
 
@@ -479,6 +481,146 @@ def test_preview_module_exposes_overlay_metadata():
     print("PASS test_preview_module_exposes_overlay_metadata")
 
 
+def test_magic_number_unique():
+    """handle_save_new assigns a magic not already used by another Builder strategy."""
+    with tempfile.TemporaryDirectory() as tmpdir:
+        d = Path(tmpdir)
+        c1 = json.loads(json.dumps(EMA_RSI_CONFIG)); c1["display_name"] = "Strat One"
+        c2 = json.loads(json.dumps(EMA_RSI_CONFIG)); c2["display_name"] = "Strat Two"
+        handle_save_new(c1, strategies_dir=d)
+        handle_save_new(c2, strategies_dir=d)
+
+        m1 = json.loads((d / "strategy_strat_one.json").read_text())["magic_number"]
+        m2 = json.loads((d / "strategy_strat_two.json").read_text())["magic_number"]
+        assert m1 != m2, "Two strategies must not share a magic number"
+
+        # generate_magic_number must never return an already-used value
+        used = {m1, m2}
+        for _ in range(50):
+            assert generate_magic_number(d) not in used
+
+    print("PASS test_magic_number_unique")
+
+
+def test_validation_payload_extra_fields():
+    """Validator rejects payload_extra_fields with unknown columns; accepts valid ones."""
+    # Invalid: column reference that does not exist
+    bad = json.loads(json.dumps(EMA_RSI_CONFIG))
+    bad["payload_extra_fields"] = [
+        {"key": "foo", "type": "column", "value": "does_not_exist"},
+    ]
+    with tempfile.TemporaryDirectory() as tmpdir:
+        d = Path(tmpdir)
+        try:
+            validate_strategy_config(bad, is_new=True, strategies_dir=d)
+            assert False, "Should have raised"
+        except ValidationError as e:
+            assert "does_not_exist" in str(e)
+    print("PASS test_validation_payload_extra_fields_invalid")
+
+    # Valid: literal + existing column, both emitted into get_last_signal_payload
+    good = json.loads(json.dumps(EMA_RSI_CONFIG))
+    good["payload_extra_fields"] = [
+        {"key": "flag", "type": "literal", "value": True},
+        {"key": "rsi_value", "type": "column", "value": "rsi_14"},
+    ]
+    with tempfile.TemporaryDirectory() as tmpdir:
+        d = Path(tmpdir)
+        validate_strategy_config(good, is_new=True, strategies_dir=d)
+        py_path = generate_strategy_file(good, strategies_dir=d)
+        content = py_path.read_text()
+        ast.parse(content)
+        assert '"flag"' in content
+        assert '"rsi_value"' in content
+        assert 'df.iloc[-2]["rsi_14"]' in content
+    print("PASS test_validation_payload_extra_fields_valid")
+
+
+def test_vortex_indicator_generation():
+    """VORTEX is available in Builder v1 and exposes direction/cross columns."""
+    config = {
+        "schema_version": 1,
+        "name": "vortex_simple",
+        "display_name": "Vortex Simple",
+        "description": "",
+        "timeframe": "M2",
+        "magic_number": 23456,
+        "indicators": [
+            {
+                "id": "VORTEX",
+                "params": {"period": 14},
+                "columns": [
+                    "vi_plus_14",
+                    "vi_minus_14",
+                    "vortex_dir_14",
+                    "vortex_cross_up_14",
+                    "vortex_cross_down_14",
+                ],
+                "pre_computed": False,
+            }
+        ],
+        "buy_condition": {"type": "condition", "left": "vortex_cross_up_14", "op": ">", "right": 0},
+        "sell_condition": {"type": "condition", "left": "vortex_cross_down_14", "op": ">", "right": 0},
+    }
+    with tempfile.TemporaryDirectory() as tmpdir:
+        d = Path(tmpdir)
+        validate_strategy_config(config, is_new=True, strategies_dir=d)
+        py_path = generate_strategy_file(config, strategies_dir=d, is_new=True)
+        mod = load_module(py_path)
+        df2 = mod.prepare_dataframe(make_df(80))
+        for col in ("vi_plus_14", "vi_minus_14", "vortex_dir_14", "vortex_cross_up_14", "vortex_cross_down_14"):
+            assert col in df2.columns
+        assert mod.TIMEFRAME == "M2"
+    print("PASS test_vortex_indicator_generation")
+
+
+def test_mtf_schema_v2_generation_and_payload():
+    """Builder v2 can generate an MTF strategy module without affecting v1."""
+    idx = pd.date_range("2026-01-01 09:00", periods=120, freq="1min", tz="UTC")
+    close = pd.Series(np.linspace(100, 110, len(idx)))
+    df = pd.DataFrame({
+        "time": idx,
+        "open": close,
+        "high": close + 0.5,
+        "low": close - 0.5,
+        "close": close,
+        "tick_volume": np.ones(len(idx)) * 100,
+    })
+    config = {
+        "schema_version": 2,
+        "mode": "multi_timeframe",
+        "name": "mtf_vortex",
+        "display_name": "MTF Vortex",
+        "description": "",
+        "primary_timeframe": "M1",
+        "magic_number": 34567,
+        "frames": [{"id": "M1", "timeframe": "M1"}, {"id": "M2", "timeframe": "M2"}],
+        "indicators": [],
+        "blocks": [
+            {
+                "id": "A_scalp",
+                "trigger_timeframe": "M1",
+                "confirm_timeframes": ["M2"],
+                "risk_tiers": [0.005, 0.0025],
+                "atr_sl_mult": 1.5,
+                "tp_ratio": 2.0,
+            }
+        ],
+    }
+
+    mod = build_strategy_module(config, module_name="mtf_builder_preview")
+    assert mod.SCHEMA_VERSION == 2
+    assert mod.REQUIRED_TIMEFRAMES == ["M1", "M2"]
+    frames = strategy_runtime.build_timeframe_frames(df, mod.REQUIRED_TIMEFRAMES, base_timeframe="M1")
+    prepared = mod.prepare_frames(frames)
+    assert "atr_14" in prepared["M1"].columns
+    assert "vortex_dir_14" in prepared["M2"].columns
+    payload = strategy_runtime.get_strategy_signal_payload_mtf(prepared, mod)
+    assert payload["signal"] in ("buy", "sell", "none")
+    assert "risk_pct" in payload
+    print("PASS test_mtf_schema_v2_generation_and_payload")
+
+
 if __name__ == "__main__":
     test_canonical_example()
     test_round_trip()
@@ -491,4 +633,8 @@ if __name__ == "__main__":
     test_emit_condition_spec_examples()
     test_name_collision()
     test_preview_module_exposes_overlay_metadata()
+    test_magic_number_unique()
+    test_validation_payload_extra_fields()
+    test_vortex_indicator_generation()
+    test_mtf_schema_v2_generation_and_payload()
     print("\nAll tests passed.")

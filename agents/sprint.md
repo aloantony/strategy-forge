@@ -2,11 +2,44 @@
 
 _Maintained by Jarvis. Update this file whenever a task status changes, a new task enters the sprint, or a blocking task completes. The "Ready Now" table is the answer to "what can I spin up?"_
 
-_Last updated: 2026-04-11_
+_Last updated: 2026-04-24_
 
 ---
 
-## Sprint activo: Backtest GUI (TASK-027 a TASK-033)
+## Sprint activo: ninguno
+
+Todos los sprints anteriores completados. El código está en `main` y listo para rama de producción.
+
+### Próximos sprints (sin tareas formales aún)
+
+- **BACKLOG-C**: Performance Audit — auditoría de latencia y uso de memoria del bot en vivo
+
+Para iniciar cualquiera de estos, invocar Jarvis para que cree las tareas, asigne agentes y actualice este dashboard.
+
+---
+
+## Sprints completados
+
+| Sprint | Tareas | Cerrado |
+|--------|--------|---------|
+| ExecutionEngine Broker Decoupling | TASK-053 a TASK-055 | 2026-04-24 |
+| Dukascopy in Backtest GUI | TASK-049 a TASK-052 | 2026-04-24 |
+| GUI Polish | TASK-045 a TASK-048 | 2026-04-24 |
+| Broker Abstraction | TASK-034 a TASK-039 | anterior |
+| Backtest GUI | TASK-027 a TASK-033 | anterior |
+| Pyramiding + Dynamic Sizing | TASK-019 a TASK-026 | anterior |
+| Strategy Builder | TASK-011 a TASK-018 | anterior |
+| Cleanup | TASK-001 a TASK-010 | anterior |
+
+---
+
+## Historial de sprints anteriores
+
+_(El detalle de DAGs, conflict matrices y parallelism status de sprints pasados fue archivado. Consultar git history para recuperarlo.)_
+
+---
+
+## Sprint activo: Backtest GUI (TASK-027 a TASK-033) — ARCHIVADO
 
 ### Dependency DAG
 

@@ -4,7 +4,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Overview
 
-This is a MetaTrader 5 (MT5) trading bot with a TradingView-style GUI. It runs multiple pluggable trading strategies concurrently and executes orders automatically.
+This is a MetaTrader 5 (MT5) trading bot with a TradingView-style GUI. It runs multiple pluggable trading strategies concurrently and executes orders automatically. The GUI is a visual entrypoint, not the architectural owner of business processes; reusable process logic belongs in `src/application/`, `main.py`, `backtesting/`, and `src/runtime/`.
 
 ## Commands
 
@@ -22,29 +22,47 @@ python main.py
 python -m backtesting runtime --help
 ```
 
+## Documentation
+
+Developer documentation lives in `docs/DocsTradingSystemObsidian/`. Keep it updated when architecture, agent routing, runtime behavior, or public contracts change.
+
+Key docs:
+- `docs/DocsTradingSystemObsidian/00-system-map.md`
+- `docs/DocsTradingSystemObsidian/architecture/overview.md`
+- `docs/DocsTradingSystemObsidian/architecture/application-services.md`
+- `docs/DocsTradingSystemObsidian/design/gui.md`
+- `docs/DocsTradingSystemObsidian/agents/routing-guide.md`
+
 ## Architecture
 
 ### Execution Flow
 
 ```
-MT5 Connection
+GUI / CLI / main.py
     ↓
-main.py (Bot orchestrator)
-    ├─ data_feed.py     → Fetches candles from MT5, preprocesses DataFrame
-    ├─ strategies/      → Pluggable strategy modules (run in ThreadPoolExecutor)
-    ├─ trading.py       → Order placement, position management
-    └─ gui_charts.py    → TradingView-style interface (lightweight_charts)
+src/application/      → process services shared by entrypoints
+    ↓
+runtime packages      → backtesting/, src/runtime/, strategy_runtime.py
+    ↓
+adapters              → src/broker/, src/data/, trading.py, data_feed.py
+    ↓
+external systems      → MT5, Dukascopy, SQLite/local files
 ```
 
 ### Key Files
 
 - **config.py** — Central config: symbol, lot size, SL/TP points, active strategies, indicator params, thread settings
+- **src/application/** — Application services shared by GUI/CLI/tests; `BacktestService` owns backtest request construction and datasource resolution
 - **main.py** — Strategy loader (dynamic module resolution), main trading loop, magic number generation per strategy
 - **trading.py** — Order execution; encodes trade metadata in comment strings (`"TAo|s=strategy|r=reason"`)
 - **data_feed.py** — `get_rates_df()` fetches OHLCV, adds derived columns (OHLC4, HLC3, ATR bands, MAs)
 - **backtesting/** — backtesting package: `runtime.py` for the GUI/runtime-aligned engine and `python -m backtesting runtime` for CLI entrypoints
-- **strategies/builder.py** — Strategy `.py` file generator; called by the GUI's Strategy Builder to create/overwrite strategy modules from a JSON config
-- **gui_charts.py** — 6613 line GUI; Strategy Builder UI, strategy enable/disable, Data Window for custom indicator values, performance metrics
+- **strategy_builder/generator.py** — Strategy `.py` file generator; called by the GUI's Strategy Builder to create/overwrite strategy modules from a JSON config
+- **gui_charts.py** — Large GUI file; Strategy Builder UI, strategy enable/disable, Data Window, performance metrics, and visual event handling
+
+### Service Extraction Rule
+
+Do not add new business process orchestration directly to `gui_charts.py`. Add it to `src/application/` or an existing runtime/backend module, then call it from the GUI. GUI changes that remain visual still go through Grace/Felix; process/service changes go through Daniel/Alex when non-trivial.
 
 ### Strategy System
 

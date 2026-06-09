@@ -2,7 +2,7 @@
 Gestión de conexión con MetaTrader 5.
 """
 
-import MetaTrader5 as mt5
+from src.mt5_import import mt5
 import config
 
 
@@ -10,13 +10,19 @@ def initialize_mt5():
     # esta funcion sirve para initialize mt5.
     """
     Inicializa la conexión con MetaTrader 5.
-    
+
     Returns:
         bool: True si la inicialización fue exitosa, False en caso contrario.
-    
+
     Raises:
         Exception: Si hay un error crítico durante la inicialización.
     """
+    if mt5 is None:
+        raise RuntimeError(
+            "MetaTrader5 no disponible. En Mac/Linux asegúrate de que el servidor "
+            "mt5linux esté corriendo en tu Windows y que MT5LINUX_HOST/PORT estén "
+            "correctamente configurados en config.py."
+        )
     if not mt5.initialize():
         error = mt5.last_error()
         raise Exception(f"Error al inicializar MT5: {error}")

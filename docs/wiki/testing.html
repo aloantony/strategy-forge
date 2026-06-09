@@ -1,0 +1,111 @@
+<!DOCTYPE html>
+<html lang="es" data-theme="light">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Testing · Trading Agent Wiki</title>
+  <link rel="stylesheet" href="assets/style.css" />
+</head>
+<body>
+  <button class="nav-toggle" aria-label="Abrir menú">☰</button>
+  <div class="nav-backdrop"></div>
+
+  <aside class="sidebar">
+    <a class="brand" href="index.html">
+      <span class="brand-mark">◆</span>
+      <span class="brand-name">Trading Agent<small>MT5 · Wiki</small></span>
+    </a>
+    <nav>
+      <span class="nav-group">Introducción</span>
+      <a href="index.html">Inicio</a>
+      <a href="arquitectura.html">Arquitectura</a>
+      <a href="configuracion.html">Configuración</a>
+      <a href="despliegue.html">Despliegue</a>
+      <span class="nav-group">Datos y ejecución</span>
+      <a href="datos.html">Datos de mercado</a>
+      <a href="broker-ordenes.html">Broker y órdenes</a>
+      <span class="nav-group">Estrategias</span>
+      <a href="estrategias.html">Estrategias</a>
+      <a href="strategy-builder.html">Strategy Builder</a>
+      <span class="nav-group">Runtime</span>
+      <a href="runtime-live.html">Runtime live</a>
+      <a href="runtime-v1.html">Runtime v1</a>
+      <a href="persistencia.html">Persistencia</a>
+      <span class="nav-group">Herramientas</span>
+      <a href="backtesting.html">Backtesting</a>
+      <a href="gui.html">Interfaz (GUI)</a>
+      <span class="nav-group">Proyecto</span>
+      <a href="testing.html">Testing</a>
+      <a href="versiones.html">Versiones</a>
+      <a href="glosario.html">Glosario</a>
+    </nav>
+    <div class="sidebar-foot">
+      <span>Wiki · desde código</span>
+      <button class="theme-toggle" type="button"><span class="ico">☾</span><span class="label">Oscuro</span></button>
+    </div>
+  </aside>
+
+  <main>
+    <article class="content">
+      <span class="eyebrow">Proyecto</span>
+      <h1>Testing</h1>
+      <p class="lead">
+        La suite usa <code>pytest</code> con descubrimiento estándar. Está diseñada para correr sin
+        un MT5 real: las fuentes de datos, el broker y MT5 se sustituyen por mocks, de modo que cubre
+        runtime, datos, builder y persistencia de forma aislada.
+      </p>
+
+      <h2>Cómo ejecutarla</h2>
+      <pre><code># Toda la suite
+pytest tests/
+
+# Un archivo, con detalle
+pytest tests/test_runtime.py -v
+
+# Una clase / test concretos
+pytest tests/test_persistence.py -k state -v</code></pre>
+
+      <h2>Cobertura por archivo</h2>
+      <p>Número de funciones <code>test_*</code> reales por archivo y qué cubren:</p>
+      <div class="table-wrap">
+        <table>
+          <thead><tr><th>Archivo</th><th>Tests</th><th>Qué cubre</th></tr></thead>
+          <tbody>
+            <tr><td><code>test_runtime.py</code></td><td>32</td><td>Adapter legacy, <code>PlanInterpreter</code> (specs, action types) y <code>StrategyStateStore</code> con MT5 mockeado.</td></tr>
+            <tr><td><code>test_persistence.py</code></td><td>23</td><td>DAL / <code>UnitOfWork</code> y migraciones (instancias, planes, fills, event log).</td></tr>
+            <tr><td><code>test_data_factory.py</code></td><td>19</td><td>Resolución de símbolo canónico y <code>build_data_source</code>.</td></tr>
+            <tr><td><code>test_dukascopy_historical_source.py</code></td><td>17</td><td>Fetch de Dukascopy y normalización de schema (mock de <code>fetch</code>).</td></tr>
+            <tr><td><code>test_builder.py</code></td><td>11</td><td>Generación de estrategias y validación AST.</td></tr>
+            <tr><td><code>test_backtest_runtime.py</code></td><td>4</td><td>Lógica del <code>BacktestEngine</code>.</td></tr>
+            <tr><td><code>test_backtest_service.py</code></td><td>4</td><td>Orquestación del <code>BacktestService</code>.</td></tr>
+            <tr><td><code>test_market_status.py</code></td><td>3</td><td><code>trading.is_market_open</code>.</td></tr>
+            <tr><td><code>test_backtesting_cli.py</code></td><td>1</td><td>Parseo/enrutado del CLI de backtesting.</td></tr>
+          </tbody>
+        </table>
+      </div>
+
+      <div class="callout note">
+        <div class="callout-title">ℹ Sin MT5 para testear</div>
+        <p>Ningún test requiere conexión MT5 real. <code>test_persistence</code> y
+        <code>test_runtime</code> usan <code>bootstrap_persistence</code> sobre una base temporal.
+        Se omite <code>test_dispatch.py</code> aquí porque pertenece al sistema de hooks de
+        <code>.claude/</code>, fuera del alcance de esta wiki.</p>
+      </div>
+
+      <div class="src-note">Fuente (código): <code>tests/*.py</code> (conteo de funciones <code>test_*</code> directo del repositorio).</div>
+
+      <div class="page-nav">
+        <a class="prev" href="gui.html"><span>Anterior</span>← Interfaz (GUI)</a>
+        <a class="next" href="versiones.html"><span>Siguiente</span>Versiones →</a>
+      </div>
+    </article>
+
+    <footer>
+      <span>Trading Agent · Wiki técnica derivada del código fuente.</span>
+      <span>Reconstruida desde 0, por fases.</span>
+    </footer>
+  </main>
+
+  <script src="assets/wiki.js"></script>
+</body>
+</html>

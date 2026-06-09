@@ -31,6 +31,7 @@ def load_trading_module():
     spec = importlib.util.spec_from_file_location("trading_test_module", TRADING_PATH)
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
+    module.mt5 = fake_mt5
     return module, fake_mt5, previous_mt5
 
 

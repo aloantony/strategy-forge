@@ -15,18 +15,21 @@ import data_feed
 from src.data.interface import IHistoricalDataSource
 from strategy_runtime import (
     TIMEFRAME_MAP,
+    TIMEFRAME_MINUTES,
+    apply_mtf_strategy_processing,
     apply_strategy_processing,
+    build_timeframe_frames,
     get_strategy_signal_payload,
+    get_strategy_signal_payload_mtf,
     get_strategy_timeframe,
+    lowest_timeframe_label,
     resolve_timeframe_value,
     timeframe_label,
+    timeframe_to_minutes,
 )
 
 
-_TIMEFRAME_STR_TO_MINUTES = {
-    "M1": 1, "M5": 5, "M15": 15, "M30": 30,
-    "H1": 60, "H4": 240, "D1": 1440,
-}
+_TIMEFRAME_STR_TO_MINUTES = dict(TIMEFRAME_MINUTES)
 
 
 def _as_utc_datetime(value: Any) -> datetime:
@@ -50,8 +53,7 @@ def _time_to_epoch(value) -> int | None:
 
 
 def _timeframe_to_minutes(timeframe_value: int) -> int:
-    label = timeframe_label(timeframe_value) or "M1"
-    return int(_TIMEFRAME_STR_TO_MINUTES.get(label, 1))
+    return int(timeframe_to_minutes(timeframe_value, default=1))
 
 
 def _default_warmup_bars() -> int:
@@ -71,11 +73,15 @@ def _build_market_dataframe(
     warmup_minutes = max(1, warmup_bars) * timeframe_minutes
     warmup_start = start_date - timedelta(minutes=warmup_minutes)
 
-    df = data_source.get_rates_df(symbol, tf_label, warmup_start, end_date)
+    fetch_label = "M1" if tf_label in {"M2", "M3", "M10"} else tf_label
+    df = data_source.get_rates_df(symbol, fetch_label, warmup_start, end_date)
     if df is None or df.empty:
         raise RuntimeError(f"No se pudieron obtener datos para {symbol} en el rango especificado")
 
     df = df.sort_values("time").reset_index(drop=True)
+    if fetch_label != tf_label:
+        from strategy_runtime import resample_ohlcv
+        df = resample_ohlcv(df, tf_label)
     df = data_feed.add_source_columns(df, config.SOURCE_MODE)
     return df
 
@@ -170,6 +176,7 @@ class BacktestEngine:
         self.point = instrument_info.point
         self.tick_size = instrument_info.tick_size
         self.tick_value = instrument_info.tick_value
+        self.digits = int(getattr(instrument_info, "digits", 0) or 0)
         if self.tick_size <= 0 or self.tick_value <= 0:
             raise RuntimeError(f"Symbol {self.symbol} has invalid tick metadata")
         self.value_per_price_unit_per_lot = self.tick_value / self.tick_size
@@ -422,10 +429,25 @@ class BacktestEngine:
         sl_atr_mult = float(signal_payload.get("sl_atr_mult") or 1.0)
         tp_atr_mult = float(signal_payload.get("tp_atr_mult") or 2.0)
         pyramid_atr_mult = float(signal_payload.get("pyramid_atr_mult") or 0.5)
+        max_entries = signal_payload.get("max_entries")
+        entry_index = signal_payload.get("entry_index")
+        try:
+            max_entries = int(max_entries) if max_entries is not None else None
+        except (TypeError, ValueError):
+            max_entries = None
+        try:
+            entry_index = int(entry_index) if entry_index is not None else None
+        except (TypeError, ValueError):
+            entry_index = None
 
         dynamic_sizing = bool(signal_payload.get("dynamic_sizing"))
         volume_ratio = float(signal_payload.get("volume_ratio") or 0.0)
-        requested_lot = self.request.lot  # dynamic sizing deferred (no MT5 for symbol_info)
+        risk_pct = float(signal_payload.get("risk_pct") or 0.0)
+        requested_lot = self.request.lot
+        if risk_pct > 0 and sl_atr_mult > 0:
+            risk_money = self.balance * risk_pct
+            risk_per_lot = (atr_value * sl_atr_mult) * self.value_per_price_unit_per_lot
+            requested_lot = risk_money / risk_per_lot if risk_per_lot > 0 else 0.0
 
         lot, volume_note = self._normalize_volume(requested_lot)
         if lot <= 0:
@@ -434,6 +456,11 @@ class BacktestEngine:
         raw_fill = float(candle["open"])
         cost_points = (self.request.spread_points + self.request.slippage_points) * self.point
         entry_price = raw_fill + cost_points  # BUY direction only
+
+        if max_entries is not None and max_entries > 0 and len(self.open_positions) >= max_entries:
+            return
+        if entry_index is not None and entry_index >= 0 and len(self.open_positions) != entry_index:
+            return
 
         if self.open_positions:
             most_recent = max(
@@ -478,6 +505,110 @@ class BacktestEngine:
 
         self._apply_standard_signal(candle, signal_payload)
 
+    def _is_mtf_module(self) -> bool:
+        return hasattr(self.module, "get_last_signal_payload_mtf") or hasattr(self.module, "prepare_frames")
+
+    def _required_timeframes(self) -> list[str]:
+        required = list(getattr(self.module, "REQUIRED_TIMEFRAMES", []) or [])
+        primary = str(getattr(self.module, "PRIMARY_TIMEFRAME", getattr(self.module, "TIMEFRAME", self.timeframe_label)) or "").upper()
+        if primary and primary not in required:
+            required.append(primary)
+        return required or [self.timeframe_label]
+
+    @staticmethod
+    def _slice_frames_until(frames: dict[str, pd.DataFrame], timestamp) -> dict[str, pd.DataFrame]:
+        ts = pd.Timestamp(timestamp)
+        if ts.tzinfo is None:
+            ts = ts.tz_localize("UTC")
+        else:
+            ts = ts.tz_convert("UTC")
+        sliced = {}
+        for label, frame in frames.items():
+            if frame is None or frame.empty or "time" not in frame.columns:
+                sliced[label] = frame
+                continue
+            times = pd.to_datetime(frame["time"], utc=True)
+            sliced[label] = frame.loc[times <= ts].copy().reset_index(drop=True)
+        return sliced
+
+    def _run_mtf_with_df(self, base_df: pd.DataFrame) -> dict:
+        try:
+            required = self._required_timeframes()
+            base_label = lowest_timeframe_label(required)
+            frames = build_timeframe_frames(base_df, required, base_timeframe=base_label)
+            frames = apply_mtf_strategy_processing(
+                frames,
+                self.module,
+                enable_signals=bool(getattr(config, "ENABLE_SIGNALS", True)),
+            )
+        except Exception as error:
+            return {"status": "error", "error": str(error)}
+
+        primary_label = str(getattr(self.module, "PRIMARY_TIMEFRAME", getattr(self.module, "TIMEFRAME", self.timeframe_label)) or self.timeframe_label).upper()
+        strategy_df = frames.get(primary_label)
+        if strategy_df is None or strategy_df.empty or "time" not in strategy_df.columns:
+            return {"status": "error", "error": "La estrategia MTF no devolvió frame primario válido"}
+
+        strategy_df = strategy_df.sort_values("time").reset_index(drop=True)
+        time_series = pd.to_datetime(strategy_df["time"], utc=True)
+        visible_mask = (
+            (time_series >= pd.Timestamp(self.request.start_date))
+            & (time_series <= pd.Timestamp(self.request.end_date))
+        )
+        visible_indices = strategy_df.index[visible_mask].tolist()
+        if not visible_indices:
+            return {"status": "error", "error": "No hay velas dentro del rango solicitado"}
+
+        last_visible_index = int(visible_indices[-1])
+        first_visible_index = int(visible_indices[0])
+        pending_signal = None
+
+        if first_visible_index > 0:
+            prefix_time = strategy_df.iloc[first_visible_index]["time"]
+            try:
+                pending_signal = get_strategy_signal_payload_mtf(
+                    self._slice_frames_until(frames, prefix_time),
+                    self.module,
+                    verbose=False,
+                )
+            except Exception as error:
+                return {"status": "error", "error": str(error)}
+
+        for idx in visible_indices:
+            candle = strategy_df.iloc[int(idx)]
+            if pending_signal is not None:
+                self._apply_pending_signal(candle, pending_signal)
+                pending_signal = None
+
+            self._process_candle_exits(candle)
+            self._mark_equity(candle)
+
+            next_index = int(idx) + 1
+            if next_index > last_visible_index:
+                continue
+
+            prefix_time = strategy_df.iloc[next_index]["time"]
+            try:
+                pending_signal = get_strategy_signal_payload_mtf(
+                    self._slice_frames_until(frames, prefix_time),
+                    self.module,
+                    verbose=False,
+                )
+            except Exception as error:
+                return {"status": "error", "error": str(error)}
+
+        last_candle = strategy_df.iloc[last_visible_index]
+        if self.open_positions:
+            self._close_all_positions(
+                candle=last_candle,
+                exit_price=float(last_candle["close"]),
+                reason="END_OF_RANGE",
+                forced=True,
+            )
+            self._mark_equity(last_candle)
+
+        return self._build_success_result()
+
     def _build_success_result(self) -> dict:
         total_profit = self.balance - self.initial_balance
         closed_count = len(self.closed_trades)
@@ -516,6 +647,7 @@ class BacktestEngine:
             "strategy_key": self.request.strategy_key,
             "strategy_label": self.request.strategy_label,
             "symbol": self.symbol,
+            "digits": self.digits,
             "timeframe": self.timeframe_label,
             "data_provider": self.request.data_provider,
             "start_date": _time_to_epoch(self.request.start_date),
@@ -544,6 +676,9 @@ class BacktestEngine:
         }
 
     def run_with_df(self, base_df: pd.DataFrame) -> dict:
+        if self._is_mtf_module():
+            return self._run_mtf_with_df(base_df)
+
         try:
             strategy_df = apply_strategy_processing(
                 base_df,
@@ -620,7 +755,11 @@ class BacktestEngine:
         return self._build_success_result()
 
     def run(self) -> dict:
+        original_timeframe_value = self.timeframe_value
         try:
+            if self._is_mtf_module():
+                fetch_label = lowest_timeframe_label(self._required_timeframes())
+                self.timeframe_value = TIMEFRAME_MAP.get(fetch_label, self.timeframe_value)
             df = _build_market_dataframe(
                 self.symbol,
                 self.timeframe_value,
@@ -631,6 +770,8 @@ class BacktestEngine:
             )
         except Exception as error:
             return {"status": "error", "error": str(error)}
+        finally:
+            self.timeframe_value = original_timeframe_value
         return self.run_with_df(df)
 
 
@@ -653,6 +794,7 @@ def _empty_metrics(initial_balance: float) -> dict:
         "losing_trades":    0,
         "win_rate":         0.0,
         "max_drawdown":     0.0,
+        "profit_factor":    0.0,
     }
 
 
@@ -692,6 +834,7 @@ def _extract_comparison_summary(result: dict, fallback_balance: float) -> dict:
         "losing_trades":    result["losing_trades"],
         "win_rate":         result["win_rate"],
         "max_drawdown":     result["max_drawdown"],
+        "profit_factor":    result["profit_factor"],
     }
 
 
@@ -733,7 +876,15 @@ def run_backtest_comparison(request: dict, data_source: IHistoricalDataSource = 
     # Group strategies by timeframe_value
     groups: dict = {}
     for i, strat in enumerate(strategies_raw):
-        tv = int(strat.get("timeframe_value") or default_tv)
+        module = strat.get("module")
+        if module is not None and (hasattr(module, "get_last_signal_payload_mtf") or hasattr(module, "prepare_frames")):
+            required = list(getattr(module, "REQUIRED_TIMEFRAMES", []) or [])
+            primary = str(getattr(module, "PRIMARY_TIMEFRAME", getattr(module, "TIMEFRAME", "")) or "").upper()
+            if primary and primary not in required:
+                required.append(primary)
+            tv = TIMEFRAME_MAP.get(lowest_timeframe_label(required), default_tv)
+        else:
+            tv = int(strat.get("timeframe_value") or default_tv)
         if tv not in groups:
             groups[tv] = []
         groups[tv].append((i, strat))

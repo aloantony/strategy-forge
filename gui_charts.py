@@ -7,7 +7,7 @@ from lightweight_charts import Chart
 from lightweight_charts.util import parse_event_message
 import pandas as pd
 import numpy as np
-import MetaTrader5 as mt5
+from src.mt5_import import mt5
 import threading
 import time
 import asyncio
@@ -30,17 +30,22 @@ import config
 import mt5_connection
 import data_feed
 import trading
+from src.application import BacktestService
 from src.broker.mt5_adapter import MT5BrokerAdapter
-from backtesting import run_backtest, run_backtest_comparison
-from src.data.factory import build_data_source, resolve_symbol_for_request
+from src.analytics import trade_history
 from strategy_runtime import (
+    apply_mtf_strategy_processing as runtime_apply_mtf_strategy_processing,
     apply_strategy_processing as runtime_apply_strategy_processing,
+    build_timeframe_frames as runtime_build_timeframe_frames,
+    get_strategy_signal_payload_mtf as runtime_get_strategy_signal_payload_mtf,
     get_strategy_signal_payload as runtime_get_strategy_signal_payload,
     get_strategy_timeframe as runtime_get_strategy_timeframe,
+    lowest_timeframe_label as runtime_lowest_timeframe_label,
     normalize_signal as runtime_normalize_signal,
     normalize_signal_payload as runtime_normalize_signal_payload,
     resolve_timeframe_value as runtime_resolve_timeframe_value,
     timeframe_label as runtime_timeframe_label,
+    timeframe_to_minutes as runtime_timeframe_to_minutes,
 )
 
 
@@ -97,6 +102,7 @@ class TradingBotGUI:
         # esta funcion sirve para preparar todo al inicio.
         # Estado del bot
         self.bot_running = False
+        self._mt5_available = False
         self.bot_thread = None
         self.stop_event = threading.Event()
         
@@ -108,6 +114,11 @@ class TradingBotGUI:
         self._action_tooltip_ready = False
         self._current_aggregate_risk_pct = 0.0
         self.action_markers = []
+        # Handles de dibujos sobre el gráfico (líneas SL/TP y conectores entrada↔salida).
+        self._level_line_handles = []
+        self._trade_link_handles = []
+        # Máximo de conectores entrada↔salida a dibujar (evita clutter/coste).
+        self.max_trade_links = getattr(config, "MAX_TRADE_LINKS", 30)
         # None/0 = sin límite (mostrar todas las operaciones)
         self.max_action_markers = getattr(config, "MAX_ACTION_MARKERS", None)
         self.quote_thread = None
@@ -163,6 +174,7 @@ class TradingBotGUI:
         }
         self._init_strategy_registry()
         self._broker = MT5BrokerAdapter()
+        self._backtest_service = BacktestService()
 
         _patch_lightweight_charts_js_worker()
         
@@ -793,11 +805,7 @@ class TradingBotGUI:
 
     @staticmethod
     def _check_dukascopy_available() -> bool:
-        try:
-            from dukascopy_python import fetch  # noqa: F401
-            return True
-        except ImportError:
-            return False
+        return BacktestService.dukascopy_available()
 
     def _get_backtest_payload(self):
         form = self._get_backtest_form_state()
@@ -862,20 +870,10 @@ class TradingBotGUI:
             ''')
 
     def _parse_backtest_date(self, value: str, *, end_of_day: bool = False) -> datetime:
-        text = str(value or "").strip()
-        if not text:
-            raise ValueError("Las fechas del backtest son obligatorias")
-        base = datetime.strptime(text, "%Y-%m-%d")
-        if end_of_day:
-            base = base.replace(hour=23, minute=59, second=59)
-        local_tz = datetime.now().astimezone().tzinfo or timezone.utc
-        return base.replace(tzinfo=local_tz).astimezone(timezone.utc)
+        return self._backtest_service.parse_date(value, end_of_day=end_of_day)
 
     def _run_backtest_worker(self, request: dict, data_source=None):
-        try:
-            result = run_backtest(request, data_source=data_source)
-        except Exception as error:
-            result = {"status": "error", "error": str(error)}
+        result = self._backtest_service.execute_run(request, data_source=data_source)
 
         self.backtest_state["running"] = False
         if result.get("status") == "success":
@@ -915,78 +913,21 @@ class TradingBotGUI:
             self._render_backtest_panel()
             return
 
-        symbol = str(payload.get("symbol") or "").strip()
-        if not symbol:
-            self.backtest_state["error"] = "Debe seleccionar un símbolo"
-            self._render_backtest_panel()
-            return
-
         try:
-            initial_balance = float(payload.get("initial_balance") or 0.0)
-        except Exception:
-            initial_balance = 0.0
-        if initial_balance <= 0:
-            self.backtest_state["error"] = "El balance inicial debe ser mayor que cero"
-            self._render_backtest_panel()
-            return
-
-        try:
-            start_date = self._parse_backtest_date(payload.get("start_date"), end_of_day=False)
-            end_date = self._parse_backtest_date(payload.get("end_date"), end_of_day=True)
-        except Exception as error:
+            prepared = self._backtest_service.prepare_run(payload, entry)
+        except ValueError as error:
             self.backtest_state["error"] = str(error)
             self._render_backtest_panel()
             return
 
-        if end_date < start_date:
-            self.backtest_state["error"] = "La fecha fin no puede ser anterior a la fecha inicio"
-            self._render_backtest_panel()
-            return
-
-        source_name = str(payload.get("data_source") or "mt5").lower()
-        if source_name not in ("mt5", "dukascopy"):
-            source_name = "mt5"
-
-        try:
-            data_source = build_data_source(source_name, symbol)
-        except ValueError as e:
-            self.backtest_state["error"] = str(e)
-            self._render_backtest_panel()
-            return
-
-        request_symbol = resolve_symbol_for_request(source_name, symbol)
-
-        self.backtest_state["form"] = {
-            "strategy_key": entry["key"],
-            "symbol": symbol,
-            "preset": str(payload.get("preset") or "CUSTOM").upper(),
-            "start_date": str(payload.get("start_date") or ""),
-            "end_date": str(payload.get("end_date") or ""),
-            "initial_balance": f"{initial_balance:.2f}",
-            "data_source": source_name,
-        }
+        self.backtest_state["form"] = prepared.form
         self.backtest_state["running"] = True
         self.backtest_state["error"] = ""
 
-        request = {
-            "strategy_key": entry["key"],
-            "strategy_label": entry["label"],
-            "module": entry.get("module_obj"),
-            "symbol": request_symbol,
-            "data_provider": source_name,
-            "timeframe_value": entry.get("timeframe_value"),
-            "start_date": start_date,
-            "end_date": end_date,
-            "initial_balance": initial_balance,
-            "warmup_bars": max(int(getattr(config, "BARS_HISTORY", 500) or 500), 500),
-            "lot": float(getattr(config, "LOT", 0.01) or 0.01),
-            "sl_points": float(getattr(config, "SL_POINTS", 0.0) or 0.0),
-            "tp_points": float(getattr(config, "TP_POINTS", 0.0) or 0.0),
-        }
         self._render_backtest_panel()
         self.backtest_thread = threading.Thread(
             target=self._run_backtest_worker,
-            args=(request, data_source),
+            args=(prepared.request, prepared.data_source),
             daemon=True,
         )
         self.backtest_thread.start()
@@ -1016,7 +957,7 @@ class TradingBotGUI:
             self._render_backtest_comparison_panel()
             return
 
-        strategies = []
+        strategy_entries = []
         for key in strategy_keys:
             entry = self._get_strategy_entry(key)
             if not entry:
@@ -1029,82 +970,28 @@ class TradingBotGUI:
                 )
                 self._render_backtest_comparison_panel()
                 return
-            strategies.append({
-                "strategy_key":    entry["key"],
-                "strategy_label":  entry["label"],
-                "module":          entry.get("module_obj"),
-                "timeframe_value": entry.get("timeframe_value"),
-            })
-
-        symbol = str(payload.get("symbol") or "").strip()
-        if not symbol:
-            self.backtest_state["comparison_error"] = "Debe seleccionar un símbolo"
-            self._render_backtest_comparison_panel()
-            return
+            strategy_entries.append(entry)
 
         try:
-            initial_balance = float(payload.get("initial_balance") or 0.0)
-        except Exception:
-            initial_balance = 0.0
-        if initial_balance <= 0:
-            self.backtest_state["comparison_error"] = "El balance inicial debe ser mayor que cero"
-            self._render_backtest_comparison_panel()
-            return
-
-        try:
-            start_date = self._parse_backtest_date(payload.get("start_date"), end_of_day=False)
-            end_date   = self._parse_backtest_date(payload.get("end_date"), end_of_day=True)
-        except Exception as error:
+            prepared = self._backtest_service.prepare_comparison(payload, strategy_entries)
+        except ValueError as error:
             self.backtest_state["comparison_error"] = str(error)
             self._render_backtest_comparison_panel()
             return
 
-        if end_date < start_date:
-            self.backtest_state["comparison_error"] = "La fecha fin no puede ser anterior a la fecha inicio"
-            self._render_backtest_comparison_panel()
-            return
-
-        source_name = str(payload.get("data_source") or "mt5").lower()
-        if source_name not in ("mt5", "dukascopy"):
-            source_name = "mt5"
-
-        try:
-            data_source = build_data_source(source_name, symbol)
-        except ValueError as e:
-            self.backtest_state["comparison_error"] = str(e)
-            self._render_backtest_comparison_panel()
-            return
-
-        request_symbol = resolve_symbol_for_request(source_name, symbol)
-
-        request = {
-            "symbol":          request_symbol,
-            "data_provider":   source_name,
-            "start_date":      start_date,
-            "end_date":        end_date,
-            "initial_balance": initial_balance,
-            "strategies":      strategies,
-            "warmup_bars":     max(int(getattr(config, "BARS_HISTORY", 500) or 500), 500),
-            "lot":             float(getattr(config, "LOT", 0.01) or 0.01),
-            "sl_points":       float(getattr(config, "SL_POINTS", 0.0) or 0.0),
-            "tp_points":       float(getattr(config, "TP_POINTS", 0.0) or 0.0),
-        }
         self.backtest_state["comparison_running"] = True
         self.backtest_state["comparison_error"]   = ""
         self._render_backtest_comparison_panel()
 
         self.comparison_thread = threading.Thread(
             target=self._run_backtest_comparison_worker,
-            args=(request, data_source),
+            args=(prepared.request, prepared.data_source),
             daemon=True,
         )
         self.comparison_thread.start()
 
     def _run_backtest_comparison_worker(self, request: dict, data_source=None):
-        try:
-            result = run_backtest_comparison(request, data_source=data_source)
-        except Exception as error:
-            result = {"status": "error", "error": str(error)}
+        result = self._backtest_service.execute_comparison(request, data_source=data_source)
 
         self.backtest_state["comparison_running"] = False
         if result.get("status") in ("success", "partial"):
@@ -1192,6 +1079,8 @@ class TradingBotGUI:
             "short": "<svg viewBox='0 0 16 16' fill='none' stroke='currentColor' stroke-width='1.4'><path d='M8 4 V12'/><path d='M8 12 L5 9'/><path d='M8 12 L11 9'/></svg>",
         }
 
+    _DRAWING_TOGGLE_KEYS = {"sltp", "trade_links"}
+
     def _get_object_tree_catalog(self):
         # esta funcion sirve para obtener el catalogo del arbol de objetos.
         return {
@@ -1199,6 +1088,8 @@ class TradingBotGUI:
             "atr_bands": {"label": "ATR Bands", "icon": "bands", "toggle": True, "visible": True},
             "supertrend": {"label": "Supertrend w/ HMA", "icon": "trend", "toggle": True, "visible": True},
             "tci": {"label": "TuTCI", "icon": "hist", "toggle": True, "visible": True},
+            "sltp": {"label": "SL/TP posiciones", "icon": "line", "toggle": True, "visible": True},
+            "trade_links": {"label": "Entradas↔Salidas", "icon": "line", "toggle": True, "visible": False},
         }
 
     def _get_default_object_tree_items(self):
@@ -1219,6 +1110,20 @@ class TradingBotGUI:
             else:
                 combined.append(items)
         return combined
+
+    _LABEL_ACRONYMS = {
+        "atr", "rsi", "adx", "tci", "hma", "ema", "sma", "bb", "vwap",
+        "di", "macd", "ohlc", "hlc", "hl", "ma",
+    }
+
+    def _humanize_label(self, key: str) -> str:
+        # esta funcion sirve para convertir una clave en etiqueta legible respetando acronimos.
+        words = []
+        for word in str(key or "").replace("-", "_").split("_"):
+            if not word:
+                continue
+            words.append(word.upper() if word.lower() in self._LABEL_ACRONYMS else word.capitalize())
+        return " ".join(words)
 
     def _normalize_object_tree_items(self, items):
         # esta funcion sirve para ordenar y limpiar elementos del arbol de objetos.
@@ -1248,7 +1153,7 @@ class TradingBotGUI:
             item["key"] = key
 
             if not item.get("label"):
-                item["label"] = key.replace("_", " ").title()
+                item["label"] = self._humanize_label(key)
             if not item.get("icon"):
                 item["icon"] = "line"
 
@@ -1331,6 +1236,19 @@ class TradingBotGUI:
                 continue
             seen.add(key)
             combined.append(item)
+
+        # Toggles globales de dibujo (no son series de estrategia): SL/TP y conectores.
+        catalog = self._get_object_tree_catalog()
+        for key in ("sltp", "trade_links"):
+            if key in seen:
+                continue
+            base = catalog.get(key, {})
+            combined.append({
+                **base,
+                "key": key,
+                "toggle": True,
+                "visible": bool(self.indicator_state.get(key, base.get("visible", True))),
+            })
         return combined
 
     def _apply_indicator_visibility_for_items(self, items):
@@ -1966,14 +1884,19 @@ class TradingBotGUI:
                     .tv-builder-num-inp { width: 70px; background: rgba(255,255,255,0.06); border: 1px solid rgba(255,255,255,0.15); color: #e0e0e0; border-radius: 3px; padding: 2px 4px; font-size: 11px; }
                     .tv-builder-remove-btn { background: transparent; border: none; color: rgba(255,255,255,0.35); cursor: pointer; font-size: 12px; padding: 0 3px; }
                     .tv-builder-remove-btn:hover { color: #e05c5c; }
+                    .tv-builder-payload-row { display: grid; grid-template-columns: 1fr 80px 1fr 24px; gap: 4px; align-items: center; margin-bottom: 4px; }
+                    .tv-builder-payload-row input, .tv-builder-payload-row select { background: rgba(255,255,255,0.05); border: 1px solid rgba(255,255,255,0.15); color: #e0e0e0; border-radius: 3px; padding: 3px 5px; font-size: 11px; width: 100%; box-sizing: border-box; }
+                    .tv-builder-payload-row input::placeholder { color: rgba(255,255,255,0.3); }
+                    .tv-builder-add-payload-btn { background: transparent; border: 1px dashed rgba(255,255,255,0.2); color: rgba(255,255,255,0.45); border-radius: 3px; padding: 3px 8px; cursor: pointer; font-size: 11px; margin-top: 4px; width: 100%; }
+                    .tv-builder-add-payload-btn:hover { border-color: rgba(74,144,226,0.5); color: #7ab4f5; }
                     .tv-builder-footer { padding: 8px 10px; border-top: 1px solid rgba(255,255,255,0.1); flex-shrink: 0; }
                     .tv-builder-error { background: rgba(220,50,50,0.15); border: 1px solid rgba(220,50,50,0.4); color: #f08080; border-radius: 4px; padding: 5px 8px; font-size: 11px; margin-bottom: 6px; }
                     .tv-builder-save-btn { width: 100%; background: rgba(74,144,226,0.3); border: 1px solid rgba(74,144,226,0.6); color: #7ab4f5; border-radius: 4px; padding: 6px 0; cursor: pointer; font-size: 13px; font-weight: 600; }
                     .tv-builder-save-btn:hover { background: rgba(74,144,226,0.5); }
                     .tv-builder-new-btn { width: 100%; background: rgba(74,144,226,0.2); border: 1px solid rgba(74,144,226,0.4); color: #7ab4f5; border-radius: 4px; padding: 6px 0; cursor: pointer; font-size: 12px; margin-top: 8px; }
                     .tv-builder-new-btn:hover { background: rgba(74,144,226,0.35); }
-                    .tv-builder-edit-btn { background: transparent; border: 1px solid rgba(255,255,255,0.2); color: rgba(255,255,255,0.55); border-radius: 3px; padding: 2px 7px; cursor: pointer; font-size: 10px; flex-shrink: 0; }
-                    .tv-builder-edit-btn:hover { background: rgba(255,255,255,0.08); color: #e0e0e0; }
+                    .tv-builder-edit-btn { background: rgba(74,144,226,0.18); border: 1px solid rgba(74,144,226,0.45); color: #9fc2ff; border-radius: 4px; padding: 3px 8px; cursor: pointer; font-size: 11px; font-weight: 600; flex-shrink: 0; }
+                    .tv-builder-edit-btn:hover { background: rgba(74,144,226,0.4); color: #ffffff; }
                     #tv-strategy-panel.builder-mode > :not(#tv-builder-form-view) { display: none !important; }
                     #tv-strategy-panel.builder-mode > #tv-builder-form-view { display: flex; flex-direction: column; }
                     .tv-builder-vwap-d1-warn { color: #f0c040; font-size: 10px; margin-top: 4px; }
@@ -2008,14 +1931,17 @@ class TradingBotGUI:
                     </div>
                     <div class="tv-builder-body">
                         <div class="tv-builder-section">
-                            <label>Nombre (id)</label>
-                            <input id="tv-builder-name" type="text" placeholder="mi_estrategia" />
                             <label>Nombre visible</label>
                             <input id="tv-builder-display-name" type="text" placeholder="Mi Estrategia" />
+                            <label>Id (autogenerado)</label>
+                            <input id="tv-builder-name" type="text" placeholder="mi_estrategia" disabled />
                             <label>Temporalidad</label>
                             <select id="tv-builder-timeframe">
                                 <option value="M1">M1</option>
+                                <option value="M2">M2</option>
+                                <option value="M3">M3</option>
                                 <option value="M5">M5</option>
+                                <option value="M10">M10</option>
                                 <option value="M15">M15</option>
                                 <option value="M30">M30</option>
                                 <option value="H1">H1</option>
@@ -2032,6 +1958,7 @@ class TradingBotGUI:
                                     <option value="BB">Bollinger Bands</option>
                                     <option value="DONCHIAN">Donchian Channel</option>
                                     <option value="ATR">ATR</option>
+                                    <option value="VORTEX">Vortex</option>
                                     <option value="ADX_DI">ADX + DI</option>
                                     <option value="VWAP">VWAP</option>
                                     <option value="VOLUME_RATIO">Volume Ratio</option>
@@ -2052,6 +1979,11 @@ class TradingBotGUI:
                             <div class="tv-builder-section-title">Condición de Venta</div>
                             <div id="tv-builder-sell-tree" class="tv-builder-tree"></div>
                         </div>
+                        <div class="tv-builder-section">
+                            <div class="tv-builder-section-title">Payload extra (opcional)</div>
+                            <div id="tv-builder-payload-list"></div>
+                            <button type="button" id="tv-builder-add-payload" class="tv-builder-add-payload-btn">+ Añadir campo</button>
+                        </div>
                     </div>
                     <div class="tv-builder-footer">
                         <div id="tv-builder-error" class="tv-builder-error" style="display:none"></div>
@@ -2068,11 +2000,24 @@ class TradingBotGUI:
                     buy_tree: null,
                     sell_tree: null,
                     indicators: [],
+                    payload_extra_fields: [],
                     _handler: "",
                     _previewTimer: 0
                 };
 
                 window._builderClone = (value) => JSON.parse(JSON.stringify(value === undefined ? null : value));
+
+                // Espejo de sanitize_name() del backend (sin el sufijo anti-colisión, que resuelve el backend).
+                window._builderSlugify = (displayName) => {
+                    let s = (displayName || "").toLowerCase();
+                    s = s.replace(/[^a-z0-9_]/g, "_");
+                    s = s.replace(/_+/g, "_");
+                    s = s.replace(/^_+|_+$/g, "");
+                    if (!s || /^[0-9]/.test(s)) {
+                        s = "strategy_" + s;
+                    }
+                    return s;
+                };
 
                 window._builderCollectConfig = (strictMode) => {
                     const state = window._strategyBuilderState || {};
@@ -2099,6 +2044,7 @@ class TradingBotGUI:
                         indicators: window._builderClone(state.indicators || []),
                         buy_condition: window._builderClone(state.buy_tree || { type: "AND", children: [] }),
                         sell_condition: window._builderClone(state.sell_tree || { type: "AND", children: [] }),
+                        payload_extra_fields: window._builderClone(state.payload_extra_fields || []),
                         _is_new: !!state.is_new,
                         _editing_key: state.editing_key || null
                     };
@@ -2125,6 +2071,7 @@ class TradingBotGUI:
                     window._strategyBuilderState.indicators = config.indicators ? JSON.parse(JSON.stringify(config.indicators)) : [];
                     window._strategyBuilderState.buy_tree = config.buy_condition || { "type": "AND", "children": [] };
                     window._strategyBuilderState.sell_tree = config.sell_condition || { "type": "AND", "children": [] };
+                    window._strategyBuilderState.payload_extra_fields = config.payload_extra_fields ? JSON.parse(JSON.stringify(config.payload_extra_fields)) : [];
                     window._strategyBuilderState._handler = config.handler || window._strategyBuilderState._handler;
                     if (window._strategyBuilderState._previewTimer) {
                         window.clearTimeout(window._strategyBuilderState._previewTimer);
@@ -2133,14 +2080,16 @@ class TradingBotGUI:
 
                     document.getElementById("tv-builder-title").innerText = config.is_new ? "Nueva estrategia" : ("Editar: " + (config.display_name || config.name || ""));
                     const nameInput = document.getElementById("tv-builder-name");
-                    nameInput.value = config.name || "";
-                    nameInput.disabled = !config.is_new;
+                    // El id es siempre de solo lectura: se deriva del nombre visible (sanitize_name en backend).
+                    nameInput.value = config.name || window._builderSlugify(config.display_name || "");
+                    nameInput.disabled = true;
                     document.getElementById("tv-builder-display-name").value = config.display_name || "";
                     document.getElementById("tv-builder-timeframe").value = config.timeframe || "M1";
 
                     window._builderRenderIndicators();
                     window._builderRenderTree("buy");
                     window._builderRenderTree("sell");
+                    window._builderRenderPayloadFields();
                     window.setBuilderError("");
 
                     strategyPanel.classList.add("builder-mode");
@@ -2189,7 +2138,7 @@ class TradingBotGUI:
                             const editBtn = document.createElement("button");
                             editBtn.type = "button";
                             editBtn.className = "tv-builder-edit-btn";
-                            editBtn.innerText = "Editar";
+                            editBtn.innerText = "✎ Editar";
                             editBtn.addEventListener("click", (e) => {
                                 e.stopPropagation();
                                 const handler = (data && data.handler) ? data.handler : "";
@@ -2205,7 +2154,7 @@ class TradingBotGUI:
                             const paramsBtn = document.createElement("button");
                             paramsBtn.type = "button";
                             paramsBtn.className = "tv-params-btn";
-                            paramsBtn.innerText = "Params";
+                            paramsBtn.innerText = "⚙ Params";
                             paramsBtn.addEventListener("click", (e) => {
                                 e.stopPropagation();
                                 const handler = (data && data.handler) ? data.handler : "";
@@ -2226,6 +2175,7 @@ class TradingBotGUI:
                                      { key: "multiplier", label: "Multiplicador", type: "float", min: 0.1, default: 2.0 }],
                     "DONCHIAN":     [{ key: "period", label: "Período", type: "int", min: 2, default: 12 }],
                     "ATR":          [{ key: "period", label: "Período", type: "int", min: 1, default: 14 }],
+                    "VORTEX":       [{ key: "period", label: "Período", type: "int", min: 2, default: 14 }],
                     "ADX_DI":       [{ key: "period", label: "Período", type: "int", min: 2, default: 14 }],
                     "VWAP":         [],
                     "VOLUME_RATIO": [{ key: "lookback", label: "Lookback", type: "int", min: 2, default: 30 }],
@@ -2243,6 +2193,7 @@ class TradingBotGUI:
                         case "BB":           return [`bb_basis_${p.period}`, `bb_upper_${p.period}`, `bb_lower_${p.period}`, `bb_width_pct_${p.period}`];
                         case "DONCHIAN":     return [`donchian_high_${p.period}`, `donchian_low_${p.period}`, `donchian_mid_${p.period}`];
                         case "ATR":          return [`atr_${p.period}`, `atr_pct_${p.period}`];
+                        case "VORTEX":       return [`vi_plus_${p.period}`, `vi_minus_${p.period}`, `vortex_dir_${p.period}`, `vortex_cross_up_${p.period}`, `vortex_cross_down_${p.period}`];
                         case "ADX_DI":       return [`adx_${p.period}`, `plus_di_${p.period}`, `minus_di_${p.period}`, `plus_di_cross_${p.period}`, `minus_di_cross_${p.period}`];
                         case "VWAP":         return ["vwap"];
                         case "VOLUME_RATIO": return [`volume_ratio_${p.lookback}`];
@@ -2300,6 +2251,7 @@ class TradingBotGUI:
                                 ind.columns = window._indicatorColumns(ind);
                                 window._builderRenderTree("buy");
                                 window._builderRenderTree("sell");
+                                window._builderRenderPayloadFields();
                                 window._builderSchedulePreview();
                             });
                             row.appendChild(inp);
@@ -2312,6 +2264,7 @@ class TradingBotGUI:
                             window._builderRenderIndicators();
                             window._builderRenderTree("buy");
                             window._builderRenderTree("sell");
+                            window._builderRenderPayloadFields();
                             window._builderSchedulePreview();
                         });
                         row.appendChild(removeBtn);
@@ -2336,6 +2289,7 @@ class TradingBotGUI:
                     window._builderRenderIndicators();
                     window._builderRenderTree("buy");
                     window._builderRenderTree("sell");
+                    window._builderRenderPayloadFields();
                     window._builderSchedulePreview();
                 });
 
@@ -2344,11 +2298,12 @@ class TradingBotGUI:
                     window._builderSchedulePreview();
                 });
 
-                document.getElementById("tv-builder-name").addEventListener("input", () => {
-                    window._builderSchedulePreview();
-                });
-
                 document.getElementById("tv-builder-display-name").addEventListener("input", () => {
+                    const nameEl = document.getElementById("tv-builder-name");
+                    const dispEl = document.getElementById("tv-builder-display-name");
+                    if (nameEl && dispEl) {
+                        nameEl.value = window._builderSlugify(dispEl.value);
+                    }
                     window._builderSchedulePreview();
                 });
 
@@ -2557,6 +2512,104 @@ class TradingBotGUI:
                     window._builderRenderNode(tree, container, null, 0);
                 };
 
+                // --- Payload extra fields ---
+                window._builderRenderPayloadFields = () => {
+                    const container = document.getElementById("tv-builder-payload-list");
+                    if (!container) return;
+                    container.innerHTML = "";
+                    const fields = window._strategyBuilderState.payload_extra_fields || [];
+                    const availableCols = (() => {
+                        const cols = ["close", "open", "high", "low", "volume"];
+                        (window._strategyBuilderState.indicators || []).forEach((ind) => {
+                            window._indicatorColumns(ind).forEach(c => cols.push(c));
+                        });
+                        return cols;
+                    })();
+
+                    fields.forEach((field, idx) => {
+                        const row = document.createElement("div");
+                        row.className = "tv-builder-payload-row";
+
+                        const keyInput = document.createElement("input");
+                        keyInput.type = "text";
+                        keyInput.placeholder = "clave";
+                        keyInput.value = field.key || "";
+                        keyInput.addEventListener("input", () => {
+                            fields[idx].key = keyInput.value.trim();
+                            window._builderSchedulePreview();
+                        });
+
+                        const typeSel = document.createElement("select");
+                        ["literal", "column"].forEach(t => {
+                            const opt = document.createElement("option");
+                            opt.value = t; opt.textContent = t;
+                            if (field.type === t) opt.selected = true;
+                            typeSel.appendChild(opt);
+                        });
+                        typeSel.addEventListener("change", () => {
+                            fields[idx].type = typeSel.value;
+                            fields[idx].value = typeSel.value === "column" ? (availableCols[0] || "") : "";
+                            window._builderRenderPayloadFields();
+                            window._builderSchedulePreview();
+                        });
+
+                        let valueEl;
+                        if (field.type === "column") {
+                            valueEl = document.createElement("select");
+                            availableCols.forEach(c => {
+                                const opt = document.createElement("option");
+                                opt.value = c; opt.textContent = c;
+                                if (field.value === c) opt.selected = true;
+                                valueEl.appendChild(opt);
+                            });
+                            valueEl.addEventListener("change", () => {
+                                fields[idx].value = valueEl.value;
+                                window._builderSchedulePreview();
+                            });
+                        } else {
+                            valueEl = document.createElement("input");
+                            valueEl.type = "text";
+                            valueEl.placeholder = "valor";
+                            valueEl.value = field.value === undefined ? "" : String(field.value);
+                            valueEl.addEventListener("input", () => {
+                                const raw = valueEl.value.trim();
+                                if (raw === "true") fields[idx].value = true;
+                                else if (raw === "false") fields[idx].value = false;
+                                else if (raw !== "" && !isNaN(Number(raw))) fields[idx].value = Number(raw);
+                                else fields[idx].value = raw;
+                                window._builderSchedulePreview();
+                            });
+                        }
+
+                        const removeBtn = document.createElement("button");
+                        removeBtn.type = "button";
+                        removeBtn.className = "tv-builder-remove-btn";
+                        removeBtn.textContent = "✕";
+                        removeBtn.title = "Eliminar campo";
+                        removeBtn.addEventListener("click", () => {
+                            fields.splice(idx, 1);
+                            window._builderRenderPayloadFields();
+                            window._builderSchedulePreview();
+                        });
+
+                        row.appendChild(keyInput);
+                        row.appendChild(typeSel);
+                        row.appendChild(valueEl);
+                        row.appendChild(removeBtn);
+                        container.appendChild(row);
+                    });
+
+                    const addBtn = document.getElementById("tv-builder-add-payload");
+                    if (addBtn) {
+                        addBtn.onclick = null;
+                        addBtn.addEventListener("click", () => {
+                            fields.push({ key: "", type: "literal", value: "" });
+                            window._builderRenderPayloadFields();
+                            window._builderSchedulePreview();
+                        });
+                    }
+                };
+
                 // --- Cancel button ---
                 document.getElementById("tv-builder-cancel").addEventListener("click", () => {
                     window.closeStrategyBuilder();
@@ -2571,15 +2624,12 @@ class TradingBotGUI:
                     window.setBuilderError("");
                     const state = window._strategyBuilderState;
                     const config = window._builderCollectConfig(true);
-                    const name = config.name;
                     const displayName = config.display_name;
                     if (state._previewTimer) {
                         window.clearTimeout(state._previewTimer);
                         state._previewTimer = 0;
                     }
 
-                    if (!name) { window.setBuilderError("El nombre (id) es obligatorio."); return; }
-                    if (!/^[a-z][a-z0-9_]*$/.test(name)) { window.setBuilderError("El nombre solo puede tener letras minúsculas, números y guión bajo, y debe empezar con letra."); return; }
                     if (!displayName) { window.setBuilderError("El nombre visible es obligatorio."); return; }
 
                     const buyTree = state.buy_tree;
@@ -2755,6 +2805,27 @@ class TradingBotGUI:
         module = entry.get("module_obj")
         if module is None:
             return df
+        if hasattr(module, "prepare_frames") or hasattr(module, "get_last_signal_payload_mtf"):
+            try:
+                required = list(getattr(module, "REQUIRED_TIMEFRAMES", []) or [])
+                primary = str(getattr(module, "PRIMARY_TIMEFRAME", getattr(module, "TIMEFRAME", "")) or "").upper()
+                if primary and primary not in required:
+                    required.append(primary)
+                if not required:
+                    required = [self._timeframe_label(self._strategy_timeframe_value(entry, fallback=config.TIMEFRAME)) or "M1"]
+                base_label = runtime_lowest_timeframe_label(required)
+                frames = runtime_build_timeframe_frames(df, required, base_timeframe=base_label)
+                frames = runtime_apply_mtf_strategy_processing(
+                    frames,
+                    module,
+                    enable_signals=bool(getattr(config, "ENABLE_SIGNALS", True)),
+                )
+                entry["_last_mtf_frames"] = frames
+                return frames.get(primary or base_label, df)
+            except Exception as e:
+                entry["_last_mtf_frames"] = {}
+                self.log_message(f"Error MTF en estrategia '{entry.get('key', '')}': {e}")
+                return df
         return self._apply_strategy_processing_with_module(df, module, entry.get("key", ""))
 
     def _apply_strategy_processing(self, df: pd.DataFrame) -> pd.DataFrame:
@@ -2807,6 +2878,17 @@ class TradingBotGUI:
         module = entry.get("module_obj")
         if module is None:
             return {"signal": "none", "reason": ""}
+        if hasattr(module, "get_last_signal_payload_mtf"):
+            frames = entry.get("_last_mtf_frames") or {}
+            try:
+                return runtime_get_strategy_signal_payload_mtf(
+                    frames,
+                    module,
+                    verbose=verbose,
+                )
+            except Exception as e:
+                self.log_message(f"Error al obtener señal MTF ({entry.get('key', '')}): {e}")
+                return {"signal": "none", "reason": ""}
         return self._get_strategy_signal_payload_with_module(
             df, module, entry.get("key", ""), verbose=verbose
         )
@@ -3047,6 +3129,23 @@ class TradingBotGUI:
                         background: #1f3a24;
                         border-color: #2d6a38;
                         color: #b2e5bc;
+                    }
+                    .tv-strategy-edit-btn, .tv-strategy-params-btn {
+                        background: #1a3a5e;
+                        border: 1px solid #2962ff66;
+                        color: #9fc2ff;
+                        border-radius: 6px;
+                        padding: 5px 8px;
+                        font-size: 11px;
+                        font-weight: 600;
+                        cursor: pointer;
+                        white-space: nowrap;
+                        flex-shrink: 0;
+                        margin-left: 4px;
+                    }
+                    .tv-strategy-edit-btn:hover, .tv-strategy-params-btn:hover {
+                        background: #2962ff;
+                        color: #ffffff;
                     }
                     .tv-strategy-data-all-btn:disabled {
                         opacity: 0.45;
@@ -4641,6 +4740,8 @@ class TradingBotGUI:
     def update_quotes(self):
         # esta funcion sirve para actualizar cotizaciones.
         """Actualiza las cotizaciones BUY/SELL y el spread."""
+        if not getattr(self, '_mt5_available', False):
+            return
         try:
             tick = mt5.symbol_info_tick(config.SYMBOL)
             info = mt5.symbol_info(config.SYMBOL)
@@ -4828,6 +4929,7 @@ class TradingBotGUI:
             strategyDataSelect.addEventListener("change", () => {{
                 const handler = strategyDataSelect.dataset.handler || payload.handler;
                 const selected = encodeURIComponent(strategyDataSelect.value || "");
+                if (window._updateEditButtons) window._updateEditButtons(strategyDataSelect.value || "");
                 window.callbackFunction(handler + "_~_strategy_data_scope;;;" + selected);
             }});
             const strategyDataAllActivesBtn = document.createElement("button");
@@ -4839,9 +4941,59 @@ class TradingBotGUI:
                 const handler = strategyDataSelect.dataset.handler || strategyDataAllActivesBtn.dataset.handler || payload.handler;
                 window.callbackFunction(handler + "_~_strategy_data_scope_all_actives");
             }});
+            const strategyDataEditBtn = document.createElement("button");
+            strategyDataEditBtn.type = "button";
+            strategyDataEditBtn.id = "tv-sd-edit-btn";
+            strategyDataEditBtn.className = "tv-strategy-edit-btn";
+            strategyDataEditBtn.innerText = "✎ Editar";
+            strategyDataEditBtn.title = "Editar la estrategia seleccionada en el Builder";
+            strategyDataEditBtn.addEventListener("click", () => {{
+                const handler = strategyDataSelect.dataset.handler || payload.handler;
+                const key = encodeURIComponent(strategyDataSelect.value || "");
+                if (key) window.callbackFunction(handler + "_~_strategy_builder_open;;;" + key);
+            }});
+
+            const strategyDataParamsBtn = document.createElement("button");
+            strategyDataParamsBtn.type = "button";
+            strategyDataParamsBtn.id = "tv-sd-params-btn";
+            strategyDataParamsBtn.className = "tv-strategy-params-btn";
+            strategyDataParamsBtn.innerText = "⚙ Params";
+            strategyDataParamsBtn.title = "Ajustar parámetros de la estrategia seleccionada";
+            strategyDataParamsBtn.addEventListener("click", () => {{
+                const handler = strategyDataSelect.dataset.handler || payload.handler;
+                const key = encodeURIComponent(strategyDataSelect.value || "");
+                if (key) window.callbackFunction(handler + "_~_strategy_params_open;;;" + key);
+            }});
+
             strategyDataHeader.appendChild(strategyDataLabel);
             strategyDataHeader.appendChild(strategyDataSelect);
             strategyDataHeader.appendChild(strategyDataAllActivesBtn);
+            strategyDataHeader.appendChild(strategyDataEditBtn);
+            strategyDataHeader.appendChild(strategyDataParamsBtn);
+
+            // Helper global: habilita/oculta los botones Editar/Params según capacidades.
+            window._strategyCaps = window._strategyCaps || {{}};
+            window._updateEditButtons = (selectedKey) => {{
+                if (selectedKey === undefined || selectedKey === null) {{
+                    const sd = document.getElementById("tv-strategy-data-select");
+                    const dw = document.getElementById("tv-data-strategy-select");
+                    selectedKey = (sd && sd.value) || (dw && dw.value) || "";
+                }}
+                const known = !!(window._strategyCaps &&
+                    Object.prototype.hasOwnProperty.call(window._strategyCaps, selectedKey));
+                const caps = (known && window._strategyCaps[selectedKey]) || {{}};
+                const setBtn = (id, enabled) => {{
+                    const b = document.getElementById(id);
+                    if (!b) return;
+                    b.disabled = !enabled;
+                    b.style.opacity = enabled ? "1" : "0.4";
+                }};
+                // Si aún no conocemos las capacidades, mostrar los botones (no ocultarlos por timing).
+                setBtn("tv-sd-edit-btn", known ? !!caps.has_config : true);
+                setBtn("tv-sd-params-btn", known ? !!caps.has_params : true);
+                setBtn("tv-dw-edit-btn", known ? !!caps.has_config : true);
+                setBtn("tv-dw-params-btn", known ? !!caps.has_params : true);
+            }};
 
             const list = document.createElement("div");
             list.className = "tv-side-list";
@@ -4859,6 +5011,8 @@ class TradingBotGUI:
                     <div class="tv-data-controls">
                         <span class="tv-data-control-label">Estrategia:</span>
                         <select id="tv-data-strategy-select" class="tv-data-select"></select>
+                        <button type="button" id="tv-dw-edit-btn" class="tv-strategy-edit-btn" title="Editar la estrategia seleccionada en el Builder">✎ Editar</button>
+                        <button type="button" id="tv-dw-params-btn" class="tv-strategy-params-btn" title="Ajustar parámetros de la estrategia seleccionada">⚙ Params</button>
                     </div>
                     <div class="tv-data-meta">
                         <div class="tv-data-row">
@@ -4892,7 +5046,24 @@ class TradingBotGUI:
                 dataWindowStrategySelect.addEventListener("change", () => {{
                     const handler = dataWindowStrategySelect.dataset.handler || payload.handler;
                     const selected = encodeURIComponent(dataWindowStrategySelect.value || "");
+                    if (window._updateEditButtons) window._updateEditButtons(dataWindowStrategySelect.value || "");
                     window.callbackFunction(handler + "_~_strategy_data_scope;;;" + selected);
+                }});
+            }}
+            const dataWindowEditBtn = dataWindow.querySelector("#tv-dw-edit-btn");
+            if (dataWindowEditBtn) {{
+                dataWindowEditBtn.addEventListener("click", () => {{
+                    const handler = (dataWindowStrategySelect && dataWindowStrategySelect.dataset.handler) || payload.handler;
+                    const key = encodeURIComponent((dataWindowStrategySelect && dataWindowStrategySelect.value) || "");
+                    if (key) window.callbackFunction(handler + "_~_strategy_builder_open;;;" + key);
+                }});
+            }}
+            const dataWindowParamsBtn = dataWindow.querySelector("#tv-dw-params-btn");
+            if (dataWindowParamsBtn) {{
+                dataWindowParamsBtn.addEventListener("click", () => {{
+                    const handler = (dataWindowStrategySelect && dataWindowStrategySelect.dataset.handler) || payload.handler;
+                    const key = encodeURIComponent((dataWindowStrategySelect && dataWindowStrategySelect.value) || "");
+                    if (key) window.callbackFunction(handler + "_~_strategy_params_open;;;" + key);
                 }});
             }}
 
@@ -5376,6 +5547,7 @@ class TradingBotGUI:
                     allActivesBtn.classList.toggle("active", allActives);
                     allActivesBtn.disabled = !options.length;
                 }}
+                if (window._updateEditButtons) window._updateEditButtons(selector.value || "");
             }};
 
             window.renderDataWindowStrategySelector = (data) => {{
@@ -5411,6 +5583,7 @@ class TradingBotGUI:
                     selector.selectedIndex = 0;
                 }}
                 selector.dataset.handler = handler;
+                if (window._updateEditButtons) window._updateEditButtons(selector.value || "");
             }};
 
             window.tvBacktest = window.tvBacktest || {{}};
@@ -5672,15 +5845,16 @@ class TradingBotGUI:
                     const tbody = document.getElementById("tv-backtest-trades-tbody");
                     if (tbody) {{
                         tbody.innerHTML = "";
+                        const bDigits = Number.isInteger(result.digits) ? result.digits : 2;
                         trades.forEach((trade, idx) => {{
                             const pnl = Number(trade.profit || 0);
                             const pnlClass = pnl > 0 ? "tv-backtest-trade-win" : pnl < 0 ? "tv-backtest-trade-loss" : "";
                             const tipo = trade.direction === 1 ? "BUY" : "SELL";
                             const entryTime = window.tvBacktest.formatDateTime(trade.entry_time);
                             const exitTime = window.tvBacktest.formatDateTime(trade.exit_time);
-                            const entryPx = Number(trade.entry_price || 0).toFixed(2);
-                            const exitPx = Number(trade.exit_price || 0).toFixed(2);
-                            const pnlText = (pnl >= 0 ? "+" : "") + pnl.toFixed(2);
+                            const entryPx = window.tvDataWindow._formatValue(trade.entry_price, "price", bDigits);
+                            const exitPx = window.tvDataWindow._formatValue(trade.exit_price, "price", bDigits);
+                            const pnlText = (pnl >= 0 ? "+" : "") + window.tvBacktest.formatMoney(pnl);
                             const reason = String(trade.reason || "");
 
                             const row = document.createElement("tr");
@@ -5932,6 +6106,11 @@ class TradingBotGUI:
             }}
 
             window.renderStrategyList = (data) => {{
+                window._strategyCaps = {{}};
+                (data.strategies || []).forEach((s) => {{
+                    window._strategyCaps[s.key] = {{ has_config: !!s.has_config, has_params: !!s.has_params }};
+                }});
+                if (window._updateEditButtons) window._updateEditButtons();
                 const list = document.getElementById("tv-strategy-list");
                 const empty = document.getElementById("tv-strategy-empty");
                 if (!list) return;
@@ -6043,7 +6222,7 @@ class TradingBotGUI:
                 }}
                 if (status) {{
                     if (running) {{
-                        status.innerText = "Motor activo · " + activeCount + " estrategia(s)";
+                        status.innerText = "Motor activo · " + activeCount + " activa(s)";
                     }} else {{
                         status.innerText = "Motor detenido · " + activeCount + " activa(s)";
                     }}
@@ -6108,7 +6287,7 @@ class TradingBotGUI:
             window.tvDataWindow._formatValue = (value, format, digits) => {{
                 if (value === null || value === undefined) return "--";
                 const num = Number(value);
-                if (Number.isNaN(num)) return String(value);
+                if (!Number.isFinite(num)) return "--";
                 if (format === "price") {{
                     return num.toLocaleString(undefined, {{
                         minimumFractionDigits: digits,
@@ -6119,6 +6298,7 @@ class TradingBotGUI:
                     return Math.round(num).toLocaleString();
                 }}
                 if (format === "percent") {{
+                    // 'percent' espera un ratio (0.05 -> "5.00%"), convencion de las estrategias generadas.
                     return (num * 100).toFixed(2) + "%";
                 }}
                 return num.toLocaleString(undefined, {{
@@ -6212,7 +6392,9 @@ class TradingBotGUI:
 
                     const entry = document.createElement("div");
                     entry.className = "tv-trade-entry";
-                    entry.innerText = trade.entry || "";
+                    entry.innerText = trade.exit_cause
+                        ? ((trade.entry || "OUT") + " · " + trade.exit_cause)
+                        : (trade.entry || "");
 
                     const price = document.createElement("div");
                     price.className = "tv-trade-price";
@@ -6232,9 +6414,12 @@ class TradingBotGUI:
 
                     const profit = document.createElement("span");
                     profit.className = "tv-trade-profit";
-                    if (typeof trade.profit === "number") {{
+                    if (typeof trade.profit === "number" && Number.isFinite(trade.profit)) {{
                         const sign = trade.profit >= 0 ? "+" : "";
-                        profit.innerText = "P/L " + sign + trade.profit.toFixed(2);
+                        const pl = (window.tvBacktest && window.tvBacktest.formatMoney)
+                            ? window.tvBacktest.formatMoney(trade.profit)
+                            : trade.profit.toFixed(2);
+                        profit.innerText = "P/L " + sign + pl;
                         if (trade.profit > 0) profit.classList.add("pos");
                         if (trade.profit < 0) profit.classList.add("neg");
                     }} else {{
@@ -6733,10 +6918,26 @@ class TradingBotGUI:
             raw_name = "builder_preview"
 
         display_name = str(preview_config.get("display_name") or "").strip() or "Builder Preview"
+        schema_version = int(preview_config.get("schema_version") or 1)
+        if schema_version == 2:
+            preview_config["schema_version"] = 2
+            preview_config["mode"] = "multi_timeframe"
+            preview_config["name"] = raw_name
+            preview_config["display_name"] = display_name
+            preview_config["magic_number"] = (
+                preview_config.get("magic_number")
+                if isinstance(preview_config.get("magic_number"), int)
+                else 10000
+            )
+            preview_config.setdefault("primary_timeframe", preview_config.get("timeframe") or "M1")
+            preview_config.setdefault("frames", [{"id": "M1", "timeframe": "M1"}])
+            preview_config.setdefault("indicators", [])
+            preview_config.setdefault("blocks", [])
+            return preview_config
+
         timeframe = str(preview_config.get("timeframe") or "").strip().upper()
-        valid_timeframes = {"M1", "M5", "M15", "M30", "H1", "H4", "D1"}
-        if timeframe not in valid_timeframes:
-            timeframe = self.current_timeframe if self.current_timeframe in valid_timeframes else "M1"
+        if self._resolve_timeframe_value(timeframe) is None:
+            timeframe = self.current_timeframe if self._resolve_timeframe_value(self.current_timeframe) is not None else "M1"
 
         magic_number = preview_config.get("magic_number")
         if not isinstance(magic_number, int) or not (10000 <= magic_number <= 99999):
@@ -6854,44 +7055,54 @@ class TradingBotGUI:
         except Exception as e:
             self._show_builder_error(f"JSON inválido: {e}")
             return
-        name = (config_data.get("name") or "").strip()
+
         display_name = (config_data.get("display_name") or "").strip()
-        timeframe = (config_data.get("timeframe") or "").strip()
-        magic_number = config_data.get("magic_number")
-        is_new = bool(config_data.get("_is_new", True))
-        import re as _re
-        if not name or not _re.match(r'^[a-z][a-z0-9_]*$', name):
-            self._show_builder_error("Nombre inválido. Solo letras minúsculas, números y guión bajo.")
-            return
         if not display_name:
             self._show_builder_error("El nombre visible es obligatorio.")
             return
-        valid_timeframes = {"M1", "M5", "M15", "M30", "H1", "H4", "D1"}
-        if timeframe not in valid_timeframes:
-            self._show_builder_error(f"Temporalidad inválida: {timeframe}")
-            return
-        if not isinstance(magic_number, int) or not (10000 <= magic_number <= 99999):
-            self._show_builder_error("Magic number inválido.")
-            return
-        if is_new and name in self.strategy_registry:
-            self._show_builder_error(f"Ya existe una estrategia con el nombre '{name}'.")
-            return
-        generator_config = {k: v for k, v in config_data.items() if not k.startswith("_")}
-        strategies_dir = self._get_strategy_dir()
+
+        is_new = bool(config_data.get("_is_new", True))
+        editing_key = (config_data.get("_editing_key") or "").strip() or None
+        # El backend deriva el nombre de máquina y el magic; sólo le pasamos la config limpia.
+        raw_config = {k: v for k, v in config_data.items() if not k.startswith("_")}
+
+        strategies_dir = Path(self._get_strategy_dir())
+        strategy_builder = self._get_strategy_builder_module()
         try:
-            strategy_builder = self._get_strategy_builder_module()
-            py_path = strategy_builder.generate_strategy_file(
-                generator_config,
-                strategies_dir,
-                is_new=is_new
-            )
-        except ImportError:
-            self._show_builder_error("El generador de estrategias aún no está implementado (TASK-017).")
+            if is_new:
+                py_path = strategy_builder.handle_save_new(
+                    raw_config, strategies_dir=strategies_dir
+                )
+            else:
+                if not editing_key:
+                    self._show_builder_error("No se puede editar: falta la estrategia original.")
+                    return
+                py_path = strategy_builder.handle_save_edit(
+                    raw_config, editing_key, strategies_dir=strategies_dir
+                )
+        except strategy_builder.NameCollisionError as e:
+            self._show_builder_error(str(e))
             return
-        except Exception as e:
+        except strategy_builder.ValidationError as e:
+            self._show_builder_error(f"Configuración inválida: {e}")
+            return
+        except strategy_builder.GeneratorError as e:
             self._show_builder_error(f"Error al generar estrategia: {e}")
             return
+        except Exception as e:
+            self._show_builder_error(f"Error inesperado: {e}")
+            return
+
+        py_path = Path(py_path)
+        stem = py_path.stem
+        name = stem[len("strategy_"):] if stem.startswith("strategy_") else stem
         module_ref = str(py_path)
+
+        # Edición con rename: el nombre derivado de display_name pudo cambiar; el backend
+        # ya borró los ficheros antiguos, así que retiramos la entrada vieja del registro.
+        if not is_new and editing_key and editing_key != name:
+            self.strategy_registry.pop(editing_key, None)
+
         if name not in self.strategy_registry:
             self._register_strategy(name, display_name, module_ref)
         else:
@@ -6926,8 +7137,18 @@ class TradingBotGUI:
 
     def toggle_indicator(self, key: str):
         # esta funcion sirve para activar o desactivar indicador.
-        visible = not self.indicator_state.get(key, True)
+        default_visible = key not in {"trade_links"}
+        visible = not self.indicator_state.get(key, default_visible)
         self.indicator_state[key] = visible
+        if key in self._DRAWING_TOGGLE_KEYS:
+            # Dibujos sobre el gráfico: no son series; redibujamos el chart.
+            self._sync_indicator_ui(key, visible)
+            try:
+                if self.price_data is not None:
+                    self.update_chart(self.price_data, strategy_entry=self._get_selected_strategy_entry())
+            except Exception as e:
+                self.log_message(f"Error al alternar dibujo {key}: {e}")
+            return
         self._apply_indicator_visibility(key, visible)
         self._sync_indicator_ui(key, visible)
         if self.price_data is not None:
@@ -7086,7 +7307,11 @@ class TradingBotGUI:
             pass
     
     def log_message(self, message):
-        pass
+        # Imprime en consola para no tragar errores en silencio (diagnóstico).
+        try:
+            print(f"[gui] {message}", flush=True)
+        except Exception:
+            pass
 
     def show_toast(self, msg: str, type: str = 'info') -> None:
         """Muestra un toast notification en la GUI. Thread-safe."""
@@ -7100,6 +7325,8 @@ class TradingBotGUI:
     def init_mt5(self):
         # esta funcion sirve para iniciar mt5.
         """Inicializa la conexión con MT5."""
+        if mt5 is None:
+            return False
         try:
             if config.TIMEFRAME is None:
                 config.TIMEFRAME = mt5.TIMEFRAME_M1
@@ -7107,17 +7334,9 @@ class TradingBotGUI:
             mt5_connection.initialize_mt5()
             mt5_connection.check_symbol(config.SYMBOL)
             
-            timeframe_map = {
-                mt5.TIMEFRAME_M1: "M1",
-                mt5.TIMEFRAME_M5: "M5",
-                mt5.TIMEFRAME_M15: "M15",
-                mt5.TIMEFRAME_M30: "M30",
-                mt5.TIMEFRAME_H1: "H1",
-                mt5.TIMEFRAME_H4: "H4",
-                mt5.TIMEFRAME_D1: "D1"
-            }
-            if config.TIMEFRAME in timeframe_map:
-                self.current_timeframe = timeframe_map[config.TIMEFRAME]
+            timeframe_label = self._timeframe_label(config.TIMEFRAME)
+            if timeframe_label:
+                self.current_timeframe = timeframe_label
             
             self.log_message("MT5 inicializado correctamente")
             self.update_balance()
@@ -7132,6 +7351,8 @@ class TradingBotGUI:
     def update_balance(self):
         # esta funcion sirve para actualizar balance.
         """Actualiza el balance en la barra superior."""
+        if not getattr(self, '_mt5_available', False):
+            return
         try:
             info = mt5.account_info()
             if info is None:
@@ -7207,16 +7428,7 @@ class TradingBotGUI:
 
     def _timeframe_to_minutes(self, timeframe_value) -> int:
         # esta funcion sirve para pasar el marco de tiempo a minutos.
-        timeframe_minutes = {
-            mt5.TIMEFRAME_M1: 1,
-            mt5.TIMEFRAME_M5: 5,
-            mt5.TIMEFRAME_M15: 15,
-            mt5.TIMEFRAME_M30: 30,
-            mt5.TIMEFRAME_H1: 60,
-            mt5.TIMEFRAME_H4: 240,
-            mt5.TIMEFRAME_D1: 1440
-        }
-        return int(timeframe_minutes.get(timeframe_value, 1))
+        return int(runtime_timeframe_to_minutes(timeframe_value, default=1))
 
     def get_timeframe_minutes(self):
         # esta funcion sirve para obtener marco de tiempo minutos.
@@ -7316,6 +7528,116 @@ class TradingBotGUI:
                 return reason
         return ""
 
+    def _resolve_deal_exit_cause(self, deal) -> str:
+        # esta funcion sirve para traducir el motivo de cierre nativo de MT5 (deal.reason).
+        return trade_history.resolve_exit_cause(deal)
+
+    def _build_round_trips(self, deals, magic_labels=None) -> list:
+        # esta funcion sirve para emparejar deals de entrada y salida por position_id.
+        return trade_history.build_round_trips(
+            deals,
+            self._get_symbol_point(),
+            strategy_resolver=lambda d: self._resolve_deal_strategy_label(d, magic_labels=magic_labels),
+            reason_resolver=self._resolve_deal_reason_label,
+        )
+
+    def _format_duration(self, seconds) -> str:
+        # esta funcion sirve para mostrar una duración legible (h/m/s).
+        try:
+            secs = int(seconds or 0)
+        except (TypeError, ValueError):
+            return ""
+        if secs <= 0:
+            return ""
+        h, rem = divmod(secs, 3600)
+        m, s = divmod(rem, 60)
+        if h:
+            return f"{h}h {m}m"
+        if m:
+            return f"{m}m {s}s"
+        return f"{s}s"
+
+    _MAGIC_PALETTE = [
+        '#26a69a', '#42a5f5', '#ab47bc', '#ffa726',
+        '#26c6da', '#ec407a', '#9ccc65', '#ff7043',
+    ]
+
+    def _magic_color(self, magic) -> str:
+        # esta funcion sirve para asignar un color estable por magic.
+        try:
+            return self._MAGIC_PALETTE[int(magic) % len(self._MAGIC_PALETTE)]
+        except (TypeError, ValueError):
+            return self._MAGIC_PALETTE[0]
+
+    def _clear_drawing_handles(self, handles):
+        # esta funcion sirve para borrar dibujos previos del gráfico.
+        for handle in handles:
+            try:
+                handle.delete()
+            except Exception:
+                pass
+        handles.clear()
+
+    def _draw_position_levels(self, tracked_magics):
+        # esta funcion sirve para dibujar líneas SL/TP de posiciones abiertas.
+        self._clear_drawing_handles(self._level_line_handles)
+        if not self.indicator_state.get("sltp", True):
+            return
+        try:
+            positions = mt5.positions_get(symbol=config.SYMBOL) or []
+        except Exception:
+            return
+        digits = self._get_symbol_digits()
+        for pos in positions:
+            try:
+                magic = int(getattr(pos, "magic", 0) or 0)
+                if tracked_magics and magic not in tracked_magics:
+                    continue
+                sl = float(getattr(pos, "sl", 0) or 0)
+                tp = float(getattr(pos, "tp", 0) or 0)
+                if sl > 0:
+                    self._level_line_handles.append(
+                        self.chart.horizontal_line(
+                            sl, color='#ef5350', width=1, style='dashed',
+                            text=f"SL {sl:.{digits}f}"
+                        )
+                    )
+                if tp > 0:
+                    self._level_line_handles.append(
+                        self.chart.horizontal_line(
+                            tp, color='#26a69a', width=1, style='dashed',
+                            text=f"TP {tp:.{digits}f}"
+                        )
+                    )
+            except Exception:
+                continue
+
+    def _draw_trade_links(self, round_trips):
+        # esta funcion sirve para dibujar conectores entrada->salida (opcional).
+        self._clear_drawing_handles(self._trade_link_handles)
+        if not self.indicator_state.get("trade_links", False):
+            return
+        if not round_trips:
+            return
+        rts = sorted(round_trips, key=lambda r: r.get("exit_time", 0))
+        limit = self.max_trade_links or 30
+        for rt in rts[-limit:]:
+            try:
+                entry_time = int(rt.get("entry_time", 0))
+                exit_time = int(rt.get("exit_time", 0))
+                ep = float(rt.get("entry_price", 0) or 0)
+                xp = float(rt.get("exit_price", 0) or 0)
+                if not ep or not xp or exit_time <= entry_time:
+                    continue
+                et = datetime.fromtimestamp(entry_time, tz=timezone.utc)
+                xt = datetime.fromtimestamp(exit_time, tz=timezone.utc)
+                color = '#26a69a' if rt.get("profit", 0) >= 0 else '#ef5350'
+                self._trade_link_handles.append(
+                    self.chart.trend_line(et, ep, xt, xp, line_color=color, width=1, style='dotted')
+                )
+            except Exception:
+                continue
+
     def _strategy_timeframe_value(self, entry: dict, fallback=None):
         # esta funcion sirve para valor del marco de tiempo de la estrategia.
         if isinstance(entry, dict):
@@ -7325,6 +7647,18 @@ class TradingBotGUI:
         if fallback is not None:
             return fallback
         return config.TIMEFRAME
+
+    def _strategy_feed_timeframe_value(self, entry: dict, fallback=None):
+        # para estrategias MTF se descarga la menor temporalidad requerida y el resto se resamplea.
+        if isinstance(entry, dict):
+            module = entry.get("module_obj")
+            required = list(getattr(module, "REQUIRED_TIMEFRAMES", []) or []) if module is not None else []
+            if required:
+                lowest = runtime_lowest_timeframe_label(required)
+                value = self._resolve_timeframe_value(lowest)
+                if value is not None:
+                    return value
+        return self._strategy_timeframe_value(entry, fallback=fallback)
 
     def _build_market_dataframe(self, timeframe_value, bars_needed):
         # esta funcion sirve para construir mercado tabla de datos.
@@ -7448,7 +7782,7 @@ class TradingBotGUI:
     ) -> bool:
         # esta funcion sirve para cargar una tanda completa de datos.
         selected_entry = self._get_selected_strategy_entry()
-        timeframe_value = self._strategy_timeframe_value(selected_entry, fallback=config.TIMEFRAME)
+        timeframe_value = self._strategy_feed_timeframe_value(selected_entry, fallback=config.TIMEFRAME)
         if timeframe_value is None:
             timeframe_value = mt5.TIMEFRAME_M1
 
@@ -7618,23 +7952,33 @@ class TradingBotGUI:
                 deals = mt5.history_deals_get(start_time, end_time)
 
                 selected_magic = self._selected_strategy_magic()
-                _, magic_labels = self._get_marker_strategy_scope(strategy_entry=strategy_entry)
+                tracked_magics, magic_labels = self._get_marker_strategy_scope(strategy_entry=strategy_entry)
+                if not tracked_magics:
+                    tracked_magics = {selected_magic} if selected_magic else set()
+                multi_strategy = len(tracked_magics) > 1
 
                 markers = []
                 action_markers = []
                 filtered_deals = []
 
                 if deals:
-                    # Deduplicar por position_id (evitar múltiples fills por la misma operación)
+                    # Filtrar por las estrategias en alcance (1 seleccionada o todas las activas).
                     for deal in deals:
                         if deal.symbol != config.SYMBOL:
                             continue
-                        if hasattr(deal, "magic") and deal.magic != selected_magic:
+                        deal_magic = int(getattr(deal, "magic", 0) or 0)
+                        if tracked_magics and deal_magic not in tracked_magics:
                             continue
                         filtered_deals.append(deal)
 
                 self._latest_deals_cache = filtered_deals
                 self._latest_deals_range = (start_time, end_time)
+
+                # Round-trips (entrada<->salida) por position_id para enriquecer cierres.
+                round_trips_by_pos = {
+                    rt["position_id"]: rt
+                    for rt in self._build_round_trips(filtered_deals, magic_labels=magic_labels)
+                }
 
                 if filtered_deals:
                     # Deduplicar por (position_id, entry) para evitar múltiples fills
@@ -7692,14 +8036,15 @@ class TradingBotGUI:
                         deals = group["deals"]
                         ordered_deals = sorted(deals, key=lambda d: getattr(d, "time", 0))
 
-                        # Nunca mostrar MIX: elegir una sola direccion por vela.
-                        # Prioridad:
-                        # 1) Ultimo DEAL_ENTRY_IN del minuto (accion efectiva de apertura/reversion).
-                        # 2) Si no hay IN, ultimo deal del minuto.
+                        # Clasificar la vela como ENTRADA o SALIDA y elegir una sola
+                        # accion representativa (nunca MIX).
+                        #   - Hay algun IN/INOUT -> ENTRADA (apertura o reversion).
+                        #   - Solo OUT           -> SALIDA (SL/TP/cierre manual).
                         last_in_deal = None
                         for d in ordered_deals:
-                            if getattr(d, "entry", None) == mt5.DEAL_ENTRY_IN:
+                            if getattr(d, "entry", None) in (mt5.DEAL_ENTRY_IN, mt5.DEAL_ENTRY_INOUT):
                                 last_in_deal = d
+                        is_exit = last_in_deal is None
                         selected_deal = last_in_deal or (ordered_deals[-1] if ordered_deals else None)
 
                         if getattr(selected_deal, "type", None) == mt5.DEAL_TYPE_BUY:
@@ -7720,18 +8065,64 @@ class TradingBotGUI:
 
                         count = len(selected_deals)
 
-                        if direction == "BUY":
+                        exit_profit = None
+                        exit_cause = ""
+                        group_round_trips = []
+                        if is_exit:
+                            # Salida: marcador neutro (circulo) para distinguirla de las
+                            # flechas de entrada. El color refleja el resultado (P/L).
+                            exit_profit = sum(
+                                float(getattr(d, "profit", 0) or 0)
+                                for d in selected_deals
+                                if getattr(d, "entry", None) in (mt5.DEAL_ENTRY_OUT, mt5.DEAL_ENTRY_INOUT)
+                            )
+                            # Causa real del cierre (deal.reason nativo) y round-trips cerrados.
+                            exit_cause = self._resolve_deal_exit_cause(selected_deal)
+                            seen_pos = set()
+                            for d in selected_deals:
+                                pid = getattr(d, "position_id", None) or getattr(d, "ticket", None)
+                                if pid is None or pid in seen_pos:
+                                    continue
+                                seen_pos.add(pid)
+                                rt = round_trips_by_pos.get(pid)
+                                if rt:
+                                    group_round_trips.append(rt)
+                            if exit_profit > 0:
+                                color = '#26a69a'
+                            elif exit_profit < 0:
+                                color = '#ef5350'
+                            else:
+                                color = '#b2b5be'
+                            shape = 'circle'
+                            position = 'above'
+                            offset_y = -12
+                            if count > 1:
+                                text = f"Cierre x{count}"
+                            elif exit_cause:
+                                text = f"Cierre · {exit_cause}"
+                            else:
+                                text = "Cierre"
+                        elif direction == "BUY":
                             color = '#26a69a'
                             shape = 'arrow_up'
                             position = 'below'
                             offset_y = 12
+                            text = "Compra" if count == 1 else f"Compra x{count}"
                         else:
                             color = '#ef5350'
                             shape = 'arrow_down'
                             position = 'above'
                             offset_y = -12
+                            text = "Venta" if count == 1 else f"Venta x{count}"
 
-                        text = direction if count == 1 else f"{direction} x{count}"
+                        # Multi-estrategia: color por magic en entradas + etiqueta de estrategia.
+                        if multi_strategy:
+                            deal_magic = int(getattr(selected_deal, "magic", 0) or 0)
+                            if not is_exit:
+                                color = self._magic_color(deal_magic)
+                            strat_label = magic_labels.get(deal_magic, "")
+                            if strat_label:
+                                text = f"{text} · {strat_label[:14]}"
 
                         markers.append({
                             "time": group["aligned_marker_time"],
@@ -7745,7 +8136,9 @@ class TradingBotGUI:
                         marker_price = None
                         if bucket_time in ohlc_map:
                             low, high = ohlc_map[bucket_time]
-                            if direction == "BUY":
+                            if is_exit:
+                                marker_price = high
+                            elif direction == "BUY":
                                 marker_price = low
                             else:
                                 marker_price = high
@@ -7762,7 +8155,11 @@ class TradingBotGUI:
                                 selected_deals,
                                 direction,
                                 strategy_label=strategy_label,
-                                signal_reason=signal_reason
+                                signal_reason=signal_reason,
+                                is_exit=is_exit,
+                                exit_profit=exit_profit,
+                                exit_cause=exit_cause,
+                                round_trips=group_round_trips
                             )
                             action_markers.append({
                                 "time": bucket_time,
@@ -7778,6 +8175,16 @@ class TradingBotGUI:
                     self.chart.marker_list(markers)
 
                 self._set_action_markers(action_markers)
+
+                # Dibujos auxiliares: líneas SL/TP de posiciones abiertas y conectores.
+                try:
+                    self._draw_position_levels(tracked_magics)
+                except Exception as e:
+                    self.log_message(f"Error al dibujar SL/TP: {e}")
+                try:
+                    self._draw_trade_links(list(round_trips_by_pos.values()))
+                except Exception as e:
+                    self.log_message(f"Error al dibujar conectores: {e}")
 
             except Exception as e:
                 self.log_message(f"Error al marcar operaciones: {e}")
@@ -7920,17 +8327,41 @@ class TradingBotGUI:
         direction,
         strategy_label: str = "",
         signal_reason: str = "",
+        is_exit: bool = False,
+        exit_profit=None,
+        exit_cause: str = "",
+        round_trips=None,
         max_items: int = 8
     ):
         # esta funcion sirve para dar formato a operacion grupo cartel.
         """Construye el tooltip para un grupo de operaciones en la misma vela."""
         if not deals:
             return ""
-        lines = [f"Señal: {direction}"]
+        digits = self._get_symbol_digits()
+        if is_exit:
+            lines = ["Acción: Cierre"]
+        else:
+            verbo = "Compra" if direction == "BUY" else "Venta"
+            lines = [f"Acción: {verbo} ({direction})"]
         if strategy_label:
             lines.append(f"Estrategia: {strategy_label}")
         if signal_reason:
             lines.append(f"Motivo: {signal_reason}")
+        if is_exit and exit_cause:
+            lines.append(f"Causa: {exit_cause}")
+        if is_exit and isinstance(exit_profit, (int, float)):
+            sign = "+" if exit_profit >= 0 else ""
+            lines.append(f"Resultado: {sign}{exit_profit:.2f}")
+        # Round-trips emparejados (entrada -> salida) cerrados en esta vela.
+        for rt in (round_trips or []):
+            sign = "+" if rt.get("profit", 0) >= 0 else ""
+            lines.append(
+                f"  {rt.get('direction', '')} "
+                f"{rt.get('entry_price', 0):.{digits}f} → {rt.get('exit_price', 0):.{digits}f}  "
+                f"{sign}{rt.get('profit', 0):.2f} "
+                f"({sign}{rt.get('return_pct', 0):.2f}%, {sign}{rt.get('points', 0):.0f} pts) "
+                f"{self._format_duration(rt.get('duration_s', 0))}"
+            )
         lines.extend([f"Operaciones: {len(deals)}", ""])
         try:
             ordered = sorted(deals, key=lambda d: getattr(d, "time", 0))
@@ -7973,7 +8404,7 @@ class TradingBotGUI:
 
             price = getattr(deal, "price", None)
             if isinstance(price, (int, float)):
-                parts.append(f"@ {price:.5f}")
+                parts.append(f"@ {price:.{digits}f}")
 
             volume = getattr(deal, "volume", None)
             if isinstance(volume, (int, float)):
@@ -8096,6 +8527,18 @@ class TradingBotGUI:
             pass
         return 2
 
+    def _get_symbol_point(self) -> float:
+        # esta funcion sirve para obtener el tamaño de punto del símbolo actual.
+        """Devuelve el tamaño de punto del símbolo (fallback 10^-digits)."""
+        try:
+            info = mt5.symbol_info(config.SYMBOL)
+            point = float(getattr(info, "point", 0) or 0)
+            if point > 0:
+                return point
+        except Exception:
+            pass
+        return 10 ** (-self._get_symbol_digits())
+
     def _format_deals_for_data_window(self, deals, limit: int = 40, magic_labels=None):
         # esta funcion sirve para dar formato a operaciones para ventana de datos.
         """Convierte deals de MT5 en una lista amigable para el Data Window."""
@@ -8146,6 +8589,10 @@ class TradingBotGUI:
                     comment_text = ""
                 strategy_label = self._resolve_deal_strategy_label(deal, magic_labels=magic_labels)
                 signal_reason = self._resolve_deal_reason_label(deal)
+                exit_cause = (
+                    self._resolve_deal_exit_cause(deal)
+                    if entry_label in ("OUT", "IN/OUT") else ""
+                )
 
                 trade = {
                     "time": int(deal_time),
@@ -8158,6 +8605,7 @@ class TradingBotGUI:
                     "comment": comment_text,
                     "strategy": strategy_label,
                     "reason": signal_reason,
+                    "exit_cause": exit_cause,
                 }
                 trades.append(trade)
             except Exception:
@@ -8374,15 +8822,22 @@ class TradingBotGUI:
             end_date = datetime.now(timezone.utc)
             start_date = end_date - timedelta(days=30)
             positions = mt5.history_deals_get(start_date, end_date)
-            
+
+            # Balance real de la cuenta como ancla (fallback a 10000 si MT5 no responde).
+            acct = mt5.account_info() if mt5 is not None else None
+            current_balance = float(acct.balance) if acct is not None else 10000.0
+
             if positions:
                 selected_magic = self._selected_strategy_magic()
                 filtered = [p for p in positions if hasattr(p, 'magic') and p.magic == selected_magic]
-                
+
                 if filtered:
                     equity_data = []
-                    balance = 10000.0
-                    
+                    # Anclar el final de la curva al balance real: el inicio es ese balance
+                    # menos el profit realizado por esta estrategia en la ventana.
+                    realized = sum(d.profit for d in filtered if d.entry == mt5.DEAL_ENTRY_OUT)
+                    balance = current_balance - realized
+
                     for deal in sorted(filtered, key=lambda x: x.time):
                         if deal.entry == mt5.DEAL_ENTRY_OUT:
                             balance += deal.profit
@@ -8390,28 +8845,28 @@ class TradingBotGUI:
                                 'time': datetime.fromtimestamp(deal.time, tz=timezone.utc),
                                 'Equity': float(balance)
                             })
-                    
+
                     if equity_data:
                         equity_df = pd.DataFrame(equity_data)
                         equity_df['time'] = pd.to_datetime(equity_df['time'], utc=True)
                         equity_df = equity_df.reset_index(drop=True)
                         self.equity_line.set(equity_df)
                         return
-            
-            # Si no hay datos, mostrar línea base con el precio actual
+
+            # Si no hay datos, mostrar línea base con el balance real de la cuenta
             if self.price_data is not None and len(self.price_data) > 1:
                 # Usar tiempo del precio de datos para la línea base
                 first_time = self.price_data['time'].iloc[0]
                 last_time = self.price_data['time'].iloc[-1]
                 base_data = pd.DataFrame({
                     'time': [first_time, last_time],
-                    'Equity': [10000.0, 10000.0]
+                    'Equity': [current_balance, current_balance]
                 })
             else:
                 now = datetime.now(timezone.utc)
                 base_data = pd.DataFrame({
                     'time': pd.to_datetime([now - timedelta(days=7), now], utc=True),
-                    'Equity': [10000.0, 10000.0]
+                    'Equity': [current_balance, current_balance]
                 })
             
             base_data = base_data.reset_index(drop=True)
@@ -8500,6 +8955,8 @@ class TradingBotGUI:
             self._set_tci_sync_line(df)
 
             tci_view = df[['time', 'tci_hist', 'tci_signal']].copy()
+            # shift(1): se dibuja el valor de la vela cerrada (alineado con df.iloc[-2]),
+            # no el de la vela en formacion. Intencional, no es un off-by-one.
             tci_view[['tci_hist', 'tci_signal']] = tci_view[['tci_hist', 'tci_signal']].shift(1)
 
             hist_df = tci_view[['time', 'tci_hist']].dropna().copy()
@@ -8579,18 +9036,9 @@ class TradingBotGUI:
                 return
             self.current_timeframe = timeframe_str
             
-            timeframe_map = {
-                "M1": mt5.TIMEFRAME_M1,
-                "M5": mt5.TIMEFRAME_M5,
-                "M15": mt5.TIMEFRAME_M15,
-                "M30": mt5.TIMEFRAME_M30,
-                "H1": mt5.TIMEFRAME_H1,
-                "H4": mt5.TIMEFRAME_H4,
-                "D1": mt5.TIMEFRAME_D1
-            }
-            
-            if timeframe_str in timeframe_map:
-                config.TIMEFRAME = timeframe_map[timeframe_str]
+            timeframe_value = self._resolve_timeframe_value(timeframe_str)
+            if timeframe_value is not None:
+                config.TIMEFRAME = timeframe_value
                 self.log_message(f"Timeframe cambiado a {timeframe_str}")
                 self.refresh_data()
                 
@@ -8664,6 +9112,11 @@ class TradingBotGUI:
     def start_bot(self, chart=None):
         # esta funcion sirve para iniciar bot.
         """Inicia el bot."""
+        if not getattr(self, '_mt5_available', False):
+            self.log_message(
+                "MT5 no conectado. Verifica MT5LINUX_HOST y MT5LINUX_PORT en config.py."
+            )
+            return
         if self.bot_running:
             return
 
@@ -8790,7 +9243,7 @@ class TradingBotGUI:
                     market_cache = {}
 
                     for entry in enabled_entries:
-                        timeframe_value = self._strategy_timeframe_value(entry, fallback=config.TIMEFRAME)
+                        timeframe_value = self._strategy_feed_timeframe_value(entry, fallback=config.TIMEFRAME)
                         if timeframe_value is None:
                             timeframe_value = mt5.TIMEFRAME_M1
 
@@ -8823,6 +9276,12 @@ class TradingBotGUI:
                         atr_value = float(signal_payload.get("atr_value", 0.0) or 0.0)
                         dynamic_sizing = bool(signal_payload.get("dynamic_sizing", False))
                         volume_ratio = float(signal_payload.get("volume_ratio", 0.0) or 0.0)
+                        sl_atr_mult = float(signal_payload.get("sl_atr_mult", 1.0) or 1.0)
+                        tp_atr_mult = float(signal_payload.get("tp_atr_mult", 2.0) or 2.0)
+                        pyramid_atr_mult = float(signal_payload.get("pyramid_atr_mult", 0.5) or 0.5)
+                        risk_pct = float(signal_payload.get("risk_pct", 0.0) or 0.0)
+                        max_entries = signal_payload.get("max_entries")
+                        entry_index = signal_payload.get("entry_index")
                         entry["last_signal"] = signal
                         entry["last_signal_reason"] = signal_reason
 
@@ -8836,7 +9295,22 @@ class TradingBotGUI:
                                 _toast_msg += f"\n[{entry['label']}]"
                             self.show_toast(_toast_msg, 'warn')
                             if pyramiding and atr_value > 0 and signal == "buy":
-                                if dynamic_sizing and volume_ratio > 0:
+                                if risk_pct > 0:
+                                    account = self._broker.get_account_info()
+                                    balance = account.balance if account is not None else 0.0
+                                    instrument_info = self._broker.get_instrument_info(config.SYMBOL)
+                                    if instrument_info is not None and balance > 0:
+                                        raw_lot = trading.calculate_risk_lot(
+                                            atr_value,
+                                            risk_pct,
+                                            instrument_info,
+                                            balance,
+                                            sl_atr_mult=sl_atr_mult,
+                                        )
+                                    else:
+                                        raw_lot = 0.0
+                                    lot = raw_lot if raw_lot > 0 else config.LOT
+                                elif dynamic_sizing and volume_ratio > 0:
                                     account = self._broker.get_account_info()
                                     balance = account.balance if account is not None else 0.0
                                     instrument_info = self._broker.get_instrument_info(config.SYMBOL)
@@ -8862,7 +9336,12 @@ class TradingBotGUI:
                                     strategy_key=entry.get("key", ""),
                                     strategy_label=entry.get("label", ""),
                                     signal_reason=signal_reason,
-                                    balance=balance if dynamic_sizing else None,
+                                    balance=balance if (dynamic_sizing or risk_pct > 0) else None,
+                                    sl_atr_mult=sl_atr_mult,
+                                    tp_atr_mult=tp_atr_mult,
+                                    pyramid_atr_mult=pyramid_atr_mult,
+                                    max_entries=max_entries,
+                                    entry_index=entry_index,
                                 )
                             else:
                                 action_info = self._broker.apply_signal(
@@ -8891,7 +9370,7 @@ class TradingBotGUI:
                         display_df = selected_entry.get("last_df")
 
                     if display_df is None and isinstance(selected_entry, dict):
-                        timeframe_value = self._strategy_timeframe_value(selected_entry, fallback=config.TIMEFRAME)
+                        timeframe_value = self._strategy_feed_timeframe_value(selected_entry, fallback=config.TIMEFRAME)
                         if timeframe_value is None:
                             timeframe_value = mt5.TIMEFRAME_M1
 
@@ -8940,7 +9419,15 @@ class TradingBotGUI:
         """Ejecuta la aplicación."""
         # Inicializar MT5
         if not self.init_mt5():
-            self.log_message("No se pudo inicializar MT5. Ejecutando sin datos.")
+            self._mt5_available = False
+            self.log_message(
+                "[SIN MT5] No se pudo conectar a MT5. "
+                "Verifica que el servidor mt5linux esté activo y que "
+                "MT5LINUX_HOST/MT5LINUX_PORT estén correctos en config.py. "
+                "Backtesting con Dukascopy sigue disponible."
+            )
+        else:
+            self._mt5_available = True
 
         try:
             self._refresh_data_once(fit_view=True, log_update=False)

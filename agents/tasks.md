@@ -10,31 +10,7 @@ _Para actualizar el estado de tu tarea, edita solo tu task file — Jarvis actua
 
 ## Active / Todo
 
-### Sprint: ExecutionEngine Broker Decoupling (TASK-053 a TASK-055)
-
-| ID | Status | Assigned | Blocked by | Blocks |
-|----|--------|----------|------------|--------|
-| [TASK-053](tasks/TASK-053.md) | done | Daniel | — | TASK-054 |
-| [TASK-054](tasks/TASK-054.md) | todo | Alex | TASK-053 | TASK-055 |
-| [TASK-055](tasks/TASK-055.md) | done | Daniel | TASK-054 | — |
-
-### Sprint: Dukascopy in Backtest GUI (TASK-049 a TASK-052)
-
-| ID | Status | Assigned | Blocked by | Blocks |
-|----|--------|----------|------------|--------|
-| [TASK-049](tasks/TASK-049.md) | done | Daniel | — | TASK-050, TASK-051 |
-| [TASK-050](tasks/TASK-050.md) | done | Grace | TASK-049 | TASK-052 |
-| [TASK-051](tasks/TASK-051.md) | done | Alex | TASK-049 | TASK-052 |
-| [TASK-052](tasks/TASK-052.md) | done | Felix | TASK-050, TASK-051 | — |
-
-### Sprint: GUI Polish (TASK-045 a TASK-048)
-
-| ID | Status | Assigned | Blocked by | Blocks |
-|----|--------|----------|------------|--------|
-| [TASK-045](tasks/TASK-045.md) | done | Grace | — | TASK-047, TASK-048 |
-| [TASK-046](tasks/TASK-046.md) | done | Felix | — | — |
-| [TASK-047](tasks/TASK-047.md) | done | Felix | TASK-045 | — |
-| [TASK-048](tasks/TASK-048.md) | done | Felix | TASK-045 | — |
+_Sin tareas activas. Próximo sprint por definir (ver Backlog)._
 
 ---
 
@@ -42,6 +18,17 @@ _Para actualizar el estado de tu tarea, edita solo tu task file — Jarvis actua
 
 | ID | Assigned | Resumen |
 |----|----------|---------|
+| TASK-055 | Daniel | Review desacoplamiento completo: sin callers externos a `trading._send_order` / `trading._close_position` |
+| TASK-054 | Alex | MT5BrokerAdapter desacoplado de trading.py; `modify_tp` implementado; `build_trade_comment` movido a `src/broker/comment.py` |
+| TASK-053 | Daniel | Spec desacoplamiento ExecutionEngine Broker (`agents/specs/TASK-053-broker-decoupling-spec.md`) |
+| TASK-052 | Felix | Integración Dukascopy en GUI backtest completa |
+| TASK-051 | Alex | Datasource selection backend implementado |
+| TASK-050 | Grace | Spec GUI datasource selection (`agents/specs/TASK-050-datasource-gui-spec.md`) |
+| TASK-049 | Daniel | Spec datasource selection backend (`agents/specs/TASK-049-datasource-selection-spec.md`) |
+| TASK-048 | Felix | GUI Polish — item 3 implementado |
+| TASK-047 | Felix | GUI Polish — item 2 implementado |
+| TASK-046 | Felix | GUI Polish — item 1 implementado |
+| TASK-045 | Grace | Spec GUI Polish (`agents/specs/TASK-045-gui-polish-spec.md`) |
 | TASK-044 | Felix | Quick Params panel + main.py injection implementados |
 | TASK-043 | Grace | Spec GUI Quick Params (`agents/specs/TASK-043-quick-params-gui-spec.md`) |
 | TASK-042 | Daniel | Schema PARAMS + pseudocode para main.py y generator.py |

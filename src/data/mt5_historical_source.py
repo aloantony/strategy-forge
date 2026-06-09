@@ -3,10 +3,7 @@ import os
 from datetime import datetime
 from typing import Optional
 
-try:
-    import MetaTrader5 as mt5
-except ImportError:
-    mt5 = None
+from src.mt5_import import mt5
 
 import pandas as pd
 
@@ -14,7 +11,7 @@ from src.broker.interface import InstrumentInfo
 from src.data.interface import IHistoricalDataSource
 
 TIMEFRAME_INT = {
-    "M1": 1, "M5": 5, "M15": 15, "M30": 30,
+    "M1": 1, "M2": 2, "M3": 3, "M5": 5, "M10": 10, "M15": 15, "M30": 30,
     "H1": 16385, "H4": 16388, "D1": 16408,
 }
 

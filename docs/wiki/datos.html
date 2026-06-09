@@ -1,0 +1,164 @@
+<!DOCTYPE html>
+<html lang="es" data-theme="light">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Datos de mercado · Trading Agent Wiki</title>
+  <link rel="stylesheet" href="assets/style.css" />
+</head>
+<body>
+  <button class="nav-toggle" aria-label="Abrir menú">☰</button>
+  <div class="nav-backdrop"></div>
+
+  <aside class="sidebar">
+    <a class="brand" href="index.html">
+      <span class="brand-mark">◆</span>
+      <span class="brand-name">Trading Agent<small>MT5 · Wiki</small></span>
+    </a>
+    <nav>
+      <span class="nav-group">Introducción</span>
+      <a href="index.html">Inicio</a>
+      <a href="arquitectura.html">Arquitectura</a>
+      <a href="configuracion.html">Configuración</a>
+      <a href="despliegue.html">Despliegue</a>
+      <span class="nav-group">Datos y ejecución</span>
+      <a href="datos.html">Datos de mercado</a>
+      <a href="broker-ordenes.html">Broker y órdenes</a>
+      <span class="nav-group">Estrategias</span>
+      <a href="estrategias.html">Estrategias</a>
+      <a href="strategy-builder.html">Strategy Builder</a>
+      <span class="nav-group">Runtime</span>
+      <a href="runtime-live.html">Runtime live</a>
+      <a href="runtime-v1.html">Runtime v1</a>
+      <a href="persistencia.html">Persistencia</a>
+      <span class="nav-group">Herramientas</span>
+      <a href="backtesting.html">Backtesting</a>
+      <a href="gui.html">Interfaz (GUI)</a>
+      <span class="nav-group">Proyecto</span>
+      <a href="testing.html">Testing</a>
+      <a href="versiones.html">Versiones</a>
+      <a href="glosario.html">Glosario</a>
+    </nav>
+    <div class="sidebar-foot">
+      <span>Wiki · desde código</span>
+      <button class="theme-toggle" type="button"><span class="ico">☾</span><span class="label">Oscuro</span></button>
+    </div>
+  </aside>
+
+  <main>
+    <article class="content">
+      <span class="eyebrow">Datos y ejecución</span>
+      <h1>Datos de mercado</h1>
+      <p class="lead">
+        Dos contratos abstractos aíslan al sistema de sus fuentes: datos <em>live</em> enriquecidos
+        para el runtime/GUI, y datos <em>históricos</em> para el backtesting. Las implementaciones
+        concretas (MT5, Dukascopy, ficheros) se eligen por fábrica.
+      </p>
+
+      <h2>Contratos (<code>src/data/interface.py</code>)</h2>
+      <div class="table-wrap">
+        <table>
+          <thead><tr><th>Interfaz</th><th>Método</th><th>Devuelve</th></tr></thead>
+          <tbody>
+            <tr><td><code>IDataFeed</code></td><td><code>get_enriched_df(symbol, timeframe, bars)</code></td><td>DataFrame con indicadores ya calculados.</td></tr>
+            <tr><td><code>IHistoricalDataSource</code></td><td><code>get_rates_df(symbol, timeframe, start, end)</code></td><td>OHLCV crudo en el rango.</td></tr>
+            <tr><td><code>IHistoricalDataSource</code></td><td><code>get_instrument_info(symbol)</code></td><td><code>InstrumentInfo</code> o <code>None</code>.</td></tr>
+          </tbody>
+        </table>
+      </div>
+
+      <h2>Columnas derivadas (<code>data_feed.py</code>)</h2>
+      <p>
+        <code>get_rates_df()</code> obtiene velas de MT5 con <code>copy_rates_from_pos</code> y marca
+        <code>time</code> en UTC. La cadena <code>add_*</code> añade los indicadores. Estas son las
+        columnas exactas que produce cada función:
+      </p>
+      <div class="table-wrap">
+        <table>
+          <thead><tr><th>Función</th><th>Columnas que añade</th></tr></thead>
+          <tbody>
+            <tr><td><code>get_rates_df</code></td><td><code>time, open, high, low, close, tick_volume</code> (y <code>spread</code>/<code>real_volume</code> si MT5 los entrega)</td></tr>
+            <tr><td><code>add_source_columns</code></td><td><code>OHLC4, HLC3, HL2, CLOSE</code> y <code>h_set</code>, <code>l_set</code> (según <code>SOURCE_MODE</code>)</td></tr>
+            <tr><td><code>add_baseline_bands</code></td><td><code>average</code> (SMA), <code>atr</code>, <code>upper</code>, <code>lower</code></td></tr>
+            <tr><td><code>add_supertrend</code></td><td><code>supertrend, supertrend_dir</code> (1/-1/0), <code>supertrend_up, supertrend_down</code> (y <code>hma</code> si <code>use_hma</code>)</td></tr>
+            <tr><td><code>add_tci</code></td><td><code>tci, tci_signal, tci_hist</code></td></tr>
+          </tbody>
+        </table>
+      </div>
+      <p><code>MT5DataFeed.get_enriched_df</code> aplica esa cadena completa internamente, así que el
+      consumidor recibe el DataFrame listo. También están <code>weighted_moving_average</code> y
+      <code>hull_moving_average</code> como helpers.</p>
+
+      <h2>Datos históricos y fábrica</h2>
+      <div class="figure">
+        <svg class="diagram" viewBox="0 0 920 200" role="img" aria-label="Fábrica de fuentes de datos históricos">
+          <defs><marker id="arrow" markerWidth="9" markerHeight="9" refX="7" refY="3" orient="auto" markerUnits="strokeWidth"><path d="M0,0 L7,3 L0,6 Z"></path></marker></defs>
+          <rect class="box" x="0" y="78" width="150" height="56" rx="9"></rect>
+          <text class="lbl" x="75" y="103" text-anchor="middle">GUI / CLI</text>
+          <text class="sub" x="75" y="119" text-anchor="middle">request</text>
+          <rect class="box accent" x="210" y="78" width="180" height="56" rx="9"></rect>
+          <text class="lbl" x="300" y="103" text-anchor="middle">build_data_source()</text>
+          <text class="sub" x="300" y="119" text-anchor="middle">src/data/factory.py</text>
+          <rect class="box ext" x="460" y="20" width="200" height="46" rx="9"></rect>
+          <text class="lbl" x="560" y="47" text-anchor="middle">MT5HistoricalDataSource</text>
+          <rect class="box ext" x="460" y="92" width="200" height="46" rx="9"></rect>
+          <text class="lbl" x="560" y="119" text-anchor="middle">DukascopyHistoricalDataSource</text>
+          <rect class="box dash" x="460" y="160" width="200" height="34" rx="9"></rect>
+          <text class="sub" x="560" y="181" text-anchor="middle">FileProvider (no en factory)</text>
+          <rect class="box dash" x="720" y="86" width="180" height="44" rx="9"></rect>
+          <text class="lbl" x="810" y="106" text-anchor="middle">symbols.json</text>
+          <text class="sub" x="810" y="121" text-anchor="middle">canónico ↔ proveedor</text>
+          <path class="edge" d="M150,106 L206,106" marker-end="url(#arrow)"></path>
+          <path class="edge" d="M390,100 L456,46" marker-end="url(#arrow)"></path>
+          <path class="edge" d="M390,108 L456,114" marker-end="url(#arrow)"></path>
+          <path class="edge" d="M660,114 L716,110" marker-end="url(#arrow)"></path>
+        </svg>
+      </div>
+      <p class="figcaption">
+        <code>build_data_source</code> acepta <code>"mt5"</code> o <code>"dukascopy"</code>; para
+        Dukascopy traduce el símbolo a su canónico vía <code>symbols.json</code> y falla temprano si
+        falta la dependencia o el mapeo. <code>FileProvider</code> existe pero no está cableado en la
+        fábrica.
+      </p>
+
+      <h2>Fuentes históricas</h2>
+      <div class="table-wrap">
+        <table>
+          <thead><tr><th>Fuente</th><th>Cómo obtiene los datos</th></tr></thead>
+          <tbody>
+            <tr><td><code>MT5HistoricalDataSource</code></td><td><code>mt5.copy_rates_range</code>; resuelve el ticker MT5 con <code>providers.mt5</code> de <code>symbols.json</code>. <code>get_instrument_info</code> lee <code>symbol_info</code>.</td></tr>
+            <tr><td><code>DukascopyHistoricalDataSource</code></td><td><code>dukascopy_python.fetch(..., offer_side="bid")</code>; mapea timeframe a <code>1MIN…1DAY</code>; normaliza el schema y rellena <code>spread</code>/<code>real_volume</code> a 0; <code>InstrumentInfo</code> desde el bloque <code>instrument</code> de <code>symbols.json</code>.</td></tr>
+            <tr><td><code>FileProvider</code></td><td>Lee <code>cache/file/&lt;symbol&gt;/&lt;timeframe&gt;/*.parquet|*.csv</code>, concatena, ordena por <code>time</code> y filtra al rango.</td></tr>
+          </tbody>
+        </table>
+      </div>
+
+      <h2>Registro de símbolos (<code>symbols.json</code>)</h2>
+      <p>Cada símbolo canónico mapea a su ticker por proveedor y, para fuentes sin metadata propia,
+      incluye un bloque <code>instrument</code>. Ejemplo real del repositorio:</p>
+      <pre><code>"GER40": {
+  "providers": { "mt5": "#Germany40", "dukascopy": "E_DAAX", "file": "GER40" },
+  "instrument": { "tick_size": 0.1, "tick_value": 1.0, "point": 0.1, "digits": 1, ... }
+},
+"EURUSD": {
+  "providers": { "mt5": "EURUSD", "dukascopy": "EUR/USD", "file": "EURUSD" },
+  "instrument": { "tick_size": 0.00001, "point": 0.00001, "digits": 5, ... }
+}</code></pre>
+
+      <div class="src-note">Fuente (código): <code>data_feed.py</code>, <code>src/data/interface.py</code>, <code>factory.py</code>, <code>mt5_data_feed.py</code>, <code>mt5_historical_source.py</code>, <code>dukascopy_historical_source.py</code>, <code>file_provider.py</code>, <code>symbols.json</code>.</div>
+
+      <div class="page-nav">
+        <a class="prev" href="despliegue.html"><span>Anterior</span>← Despliegue</a>
+        <a class="next" href="broker-ordenes.html"><span>Siguiente</span>Broker y órdenes →</a>
+      </div>
+    </article>
+
+    <footer>
+      <span>Trading Agent · Wiki técnica derivada del código fuente.</span>
+      <span>Reconstruida desde 0, por fases.</span>
+    </footer>
+  </main>
+
+  <script src="assets/wiki.js"></script>
+</body>
+</html>

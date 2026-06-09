@@ -15,7 +15,7 @@ import zlib
 from concurrent.futures import ThreadPoolExecutor, wait
 from datetime import datetime, timezone
 
-import MetaTrader5 as mt5
+from src.mt5_import import mt5
 import pandas as pd
 
 import config
@@ -31,6 +31,7 @@ from strategy_runtime import (
     normalize_signal_payload as runtime_normalize_signal_payload,
     resolve_timeframe_value as runtime_resolve_timeframe_value,
     timeframe_label as runtime_timeframe_label,
+    timeframe_to_seconds as runtime_timeframe_to_seconds,
 )
 
 ORDER_EXECUTION_LOCK = threading.Lock()
@@ -662,7 +663,7 @@ def _run_v1_strategy_cycle(
     if not _persistence_enabled():
         return result
 
-    import MetaTrader5 as _mt5
+    from src.mt5_import import mt5 as _mt5
     from src.persistence import UnitOfWork
     from src.runtime import (
         StrategyContextBuilder,
@@ -862,7 +863,8 @@ def run_bot_loop(strategy_entries: list, data_feed_impl=None):
     if data_feed_impl is None:
         data_feed_impl = _make_mt5_data_feed()
     max_workers = _resolve_max_workers(len(strategy_entries))
-    sleep_seconds = max(1, int(getattr(config, "SLEEP_SECONDS", 10) or 10))
+    min_tf_value = min(entry["timeframe_value"] for entry in strategy_entries)
+    sleep_seconds = runtime_timeframe_to_seconds(min_tf_value)
     analysis_timeout = _resolve_analysis_timeout()
     max_orders_per_iteration = _resolve_max_orders_per_iteration(len(strategy_entries))
     executor = ThreadPoolExecutor(max_workers=max_workers, thread_name_prefix="strategy") if max_workers > 1 else None
@@ -873,7 +875,6 @@ def run_bot_loop(strategy_entries: list, data_feed_impl=None):
 
     try:
         while True:
-            start_ts = time.time()
             try:
                 market_open, market_status_msg = trading.is_market_open(config.SYMBOL)
 
@@ -1021,7 +1022,6 @@ def run_bot_loop(strategy_entries: list, data_feed_impl=None):
                             )
                     executed_orders += 1
 
-                elapsed = time.time() - start_ts
                 time.sleep(sleep_seconds)
 
             except Exception as error:
@@ -1036,6 +1036,15 @@ def run_bot_loop(strategy_entries: list, data_feed_impl=None):
 
 def main():
     global _db_conn
+
+    if mt5 is None:
+        print(
+            "ERROR: MT5 no está disponible.\n"
+            "En Mac/Linux: asegúrate de que el servidor mt5linux esté corriendo\n"
+            "en tu Windows y configura MT5LINUX_HOST y MT5LINUX_PORT en config.py.",
+            file=sys.stderr,
+        )
+        sys.exit(1)
 
     if _resolve_timeframe_value(getattr(config, "TIMEFRAME", None)) is None:
         config.TIMEFRAME = mt5.TIMEFRAME_M1

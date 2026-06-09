@@ -75,3 +75,15 @@ PLAN_EXECUTOR_ENABLED = True
 # CANONICAL_RESOURCES_ENABLED: activa persistencia de legs, entry_groups y fills.
 CANONICAL_RESOURCES_ENABLED = True
 
+# Strategy Builder v2 multi-timeframe support. Keep disabled to hide UI affordances
+# while retaining schema/runtime compatibility for rollback.
+ENABLE_BUILDER_MTF = False
+
+# ---------------------------------------------------------------------------
+# MT5Linux (Mac/Linux solamente)
+# Requerido si corres el bot desde Mac/Linux conectado a un Windows con MT5.
+# En Windows estas variables se ignoran.
+# ---------------------------------------------------------------------------
+MT5LINUX_HOST = "localhost"   # IP o hostname de la máquina Windows con MT5
+MT5LINUX_PORT = 18812         # Puerto del servidor mt5linux (default 18812)
+

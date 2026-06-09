@@ -2,7 +2,7 @@
 Gestión de órdenes y posiciones en MetaTrader 5.
 """
 
-import MetaTrader5 as mt5
+from src.mt5_import import mt5
 from datetime import datetime, timedelta, timezone
 import math
 import re
@@ -579,7 +579,7 @@ def _send_order(
     # abre una operacion nueva (compra o venta) con SL/TP.
     """
     Envía una orden de compra o venta.
-    
+
     Args:
         symbol: Símbolo a operar.
         direction: 1 para BUY, -1 para SELL.
@@ -588,6 +588,8 @@ def _send_order(
         tp_points: Take Profit en puntos.
         magic_number: Magic number de la orden.
     """
+    if mt5 is None:
+        raise RuntimeError("Trading en vivo no disponible: MT5 no está conectado.")
     symbol_info = mt5.symbol_info(symbol)
     if symbol_info is None:
         return {
@@ -808,12 +810,47 @@ def calculate_dynamic_lot(
     return risk_money / risk_per_lot
 
 
+def _instrument_tick_size_value(instrument_info) -> tuple[float, float]:
+    tick_size = (
+        getattr(instrument_info, "tick_size", 0.0)
+        or getattr(instrument_info, "trade_tick_size", 0.0)
+        or 0.0
+    )
+    tick_value = (
+        getattr(instrument_info, "tick_value", 0.0)
+        or getattr(instrument_info, "trade_tick_value", 0.0)
+        or 0.0
+    )
+    return float(tick_size or 0.0), float(tick_value or 0.0)
+
+
+def calculate_risk_lot(
+    atr_value: float,
+    risk_pct: float,
+    instrument_info,
+    balance: float,
+    sl_atr_mult: float = 1.0,
+) -> float:
+    # calcula lotaje desde un porcentaje decimal de riesgo, por ejemplo 0.005 = 0.5%.
+    if atr_value <= 0 or risk_pct <= 0 or balance <= 0 or sl_atr_mult <= 0:
+        return 0.0
+    tick_size, tick_value = _instrument_tick_size_value(instrument_info)
+    if tick_size <= 0 or tick_value <= 0:
+        return 0.0
+    risk_money = balance * risk_pct
+    risk_per_lot = (atr_value * sl_atr_mult) * (tick_value / tick_size)
+    if risk_per_lot <= 0:
+        return 0.0
+    return risk_money / risk_per_lot
+
+
 def check_aggregate_risk(
     new_lot: float,
     atr_value: float,
     balance: float,
     open_positions: list,
     instrument_info: InstrumentInfo,
+    sl_atr_mult: float = 1.0,
 ) -> tuple:
     # verifica que el riesgo agregado (posiciones actuales + nueva entrada) no supere el 3% del balance.
     AGGREGATE_RISK_LIMIT = 0.03
@@ -821,8 +858,7 @@ def check_aggregate_risk(
     if balance <= 0:
         return (False, 0.0)
 
-    tick_size = instrument_info.tick_size
-    tick_value = instrument_info.tick_value
+    tick_size, tick_value = _instrument_tick_size_value(instrument_info)
     if tick_size <= 0 or tick_value <= 0:
         return (False, 0.0)
 
@@ -841,7 +877,7 @@ def check_aggregate_risk(
             continue
         existing_risk_money += pos["volume"] * distance * value_per_price_unit_per_lot
 
-    new_entry_risk = new_lot * atr_value * value_per_price_unit_per_lot
+    new_entry_risk = new_lot * atr_value * max(float(sl_atr_mult or 1.0), 0.0) * value_per_price_unit_per_lot
     total_risk_money = existing_risk_money + new_entry_risk
     aggregate_risk_pct = total_risk_money / balance
 
@@ -858,6 +894,11 @@ def apply_pyramid_signal(
     strategy_label: str = "",
     signal_reason: str = "",
     balance: float = None,
+    sl_atr_mult: float = 1.0,
+    tp_atr_mult: float = 2.0,
+    pyramid_atr_mult: float = 0.5,
+    max_entries: int | None = None,
+    entry_index: int | None = None,
 ):
     # abre una entrada inicial o piramiada solo-largo, con SL/TP calculados desde el ATR.
     if atr_value <= 0:
@@ -879,9 +920,21 @@ def apply_pyramid_signal(
         return None
 
     positions = get_all_positions(symbol, magic_number)
+    if max_entries is not None and max_entries > 0 and len(positions) >= max_entries:
+        return None
+    if entry_index is not None and entry_index >= 0 and len(positions) != entry_index:
+        return None
 
-    sl_price = ask - (1.0 * atr_value)
-    tp_price = ask + (2.0 * atr_value)
+    symbol_info = mt5.symbol_info(symbol)
+    if symbol_info is None:
+        return None
+
+    sl_atr_mult = float(sl_atr_mult or 1.0)
+    tp_atr_mult = float(tp_atr_mult or 2.0)
+    pyramid_atr_mult = float(pyramid_atr_mult or 0.5)
+
+    sl_price = ask - (sl_atr_mult * atr_value)
+    tp_price = ask + (tp_atr_mult * atr_value)
 
     open_comment = build_trade_comment(
         strategy_key=strategy_key,
@@ -891,7 +944,7 @@ def apply_pyramid_signal(
 
     if len(positions) == 0:
         allowed, aggregate_risk_pct = check_aggregate_risk(
-            symbol, lot, atr_value, balance, positions
+            lot, atr_value, balance, positions, symbol_info, sl_atr_mult=sl_atr_mult
         )
         if not allowed:
             return None
@@ -910,13 +963,13 @@ def apply_pyramid_signal(
             return None
 
         last_entry_price = most_recent["price_open"]
-        pyramid_threshold = last_entry_price + (0.5 * atr_value)
+        pyramid_threshold = last_entry_price + (pyramid_atr_mult * atr_value)
 
         if ask < pyramid_threshold:
             return None
 
         allowed, aggregate_risk_pct = check_aggregate_risk(
-            symbol, lot, atr_value, balance, positions
+            lot, atr_value, balance, positions, symbol_info, sl_atr_mult=sl_atr_mult
         )
         if not allowed:
             return None

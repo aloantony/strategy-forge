@@ -1,0 +1,129 @@
+<!DOCTYPE html>
+<html lang="es" data-theme="light">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Interfaz (GUI) · Trading Agent Wiki</title>
+  <link rel="stylesheet" href="assets/style.css" />
+</head>
+<body>
+  <button class="nav-toggle" aria-label="Abrir menú">☰</button>
+  <div class="nav-backdrop"></div>
+
+  <aside class="sidebar">
+    <a class="brand" href="index.html">
+      <span class="brand-mark">◆</span>
+      <span class="brand-name">Trading Agent<small>MT5 · Wiki</small></span>
+    </a>
+    <nav>
+      <span class="nav-group">Introducción</span>
+      <a href="index.html">Inicio</a>
+      <a href="arquitectura.html">Arquitectura</a>
+      <a href="configuracion.html">Configuración</a>
+      <a href="despliegue.html">Despliegue</a>
+      <span class="nav-group">Datos y ejecución</span>
+      <a href="datos.html">Datos de mercado</a>
+      <a href="broker-ordenes.html">Broker y órdenes</a>
+      <span class="nav-group">Estrategias</span>
+      <a href="estrategias.html">Estrategias</a>
+      <a href="strategy-builder.html">Strategy Builder</a>
+      <span class="nav-group">Runtime</span>
+      <a href="runtime-live.html">Runtime live</a>
+      <a href="runtime-v1.html">Runtime v1</a>
+      <a href="persistencia.html">Persistencia</a>
+      <span class="nav-group">Herramientas</span>
+      <a href="backtesting.html">Backtesting</a>
+      <a href="gui.html">Interfaz (GUI)</a>
+      <span class="nav-group">Proyecto</span>
+      <a href="testing.html">Testing</a>
+      <a href="versiones.html">Versiones</a>
+      <a href="glosario.html">Glosario</a>
+    </nav>
+    <div class="sidebar-foot">
+      <span>Wiki · desde código</span>
+      <button class="theme-toggle" type="button"><span class="ico">☾</span><span class="label">Oscuro</span></button>
+    </div>
+  </aside>
+
+  <main>
+    <article class="content">
+      <span class="eyebrow">Herramientas</span>
+      <h1>Interfaz (GUI)</h1>
+      <p class="lead">
+        <code>gui_charts.py</code> define la clase <code>TradingBotGUI</code>, construida sobre
+        Lightweight Charts (estilo TradingView). Se lanza con <code>run()</code>. Presenta estado y
+        captura intención; delega los procesos en los servicios y runtimes.
+      </p>
+
+      <div class="callout note">
+        <div class="callout-title">★ La GUI no orquesta procesos</div>
+        <p>El bot en vivo se ejecuta en un hilo (<code>bot_loop</code>), pero la lógica reutilizable
+        vive en <code>src/application/</code> y los runtimes; la GUI solo los invoca. Ver
+        <a href="arquitectura.html">Arquitectura</a>.</p>
+      </div>
+
+      <h2>Responsabilidades (con métodos reales)</h2>
+      <div class="table-wrap">
+        <table>
+          <thead><tr><th>Área</th><th>Métodos representativos</th></tr></thead>
+          <tbody>
+            <tr><td>Arranque</td><td><code>__init__</code>, <code>run</code>, <code>init_mt5</code></td></tr>
+            <tr><td>Registro de estrategias</td><td><code>_init_strategy_registry</code>, <code>_register_strategy</code>, <code>_sync_strategy_registry_from_disk</code>, <code>_set_strategy_enabled</code>, <code>_set_strategy_by_key</code></td></tr>
+            <tr><td>Strategy Builder UI</td><td><code>_build_strategy_builder_ui</code>, <code>_on_strategy_builder_new/open/preview/save</code>, <code>_apply_strategy_builder_preview</code></td></tr>
+            <tr><td>Parámetros</td><td><code>_on_strategy_params_open</code>, <code>_on_strategy_params_save</code></td></tr>
+            <tr><td>Backtesting</td><td><code>_render_backtest_panel</code>, <code>_on_backtest_run</code>, <code>_run_backtest_worker</code>, <code>_on_backtest_compare</code>, <code>_on_backtest_export_csv</code></td></tr>
+            <tr><td>Indicadores / Object Tree</td><td><code>_build_object_tree_items</code>, <code>_render_object_tree</code>, <code>toggle_indicator</code>, <code>_apply_indicator_visibility</code></td></tr>
+            <tr><td>Cotizaciones / cuenta</td><td><code>update_quotes</code>, <code>start_quote_updater</code>, <code>on_quick_trade</code>, <code>update_balance</code></td></tr>
+            <tr><td>Paneles</td><td><code>setup_topbar</code>, <code>setup_side_panel</code>, <code>on_side_panel_event</code>, <code>setup_bottom_bar</code>, <code>on_bottom_bar_event</code></td></tr>
+            <tr><td>Control del bot</td><td><code>start_bot</code>, <code>stop_bot</code>, <code>bot_loop</code>, <code>_toggle_strategy_run</code></td></tr>
+          </tbody>
+        </table>
+      </div>
+
+      <h2>Modelo de hilos</h2>
+      <div class="kv">
+        <div class="k">Hilo principal</div><div class="v">Montaje de la UI y el chart (<code>run</code>).</div>
+        <div class="k">Hilo del bot</div><div class="v"><code>bot_loop</code>, lanzado por <code>start_bot</code> / <code>_toggle_strategy_run</code>; analiza estrategias y ejecuta señales.</div>
+        <div class="k">Quote updater</div><div class="v"><code>start_quote_updater</code> → <code>_quote_loop</code>: precios en tiempo real.</div>
+        <div class="k">Callback pump</div><div class="v"><code>start_callback_pump</code> → <code>_callback_loop</code>: procesa eventos venidos del JS.</div>
+      </div>
+
+      <h2>Puente Python ↔ JavaScript</h2>
+      <p>
+        Los botones del chart llaman a <code>window.callbackFunction("&lt;handler&gt;_~_&lt;evento&gt;[;;;payload]")</code>;
+        el separador <code>_~_</code> distingue el handler del evento y <code>;;;</code> separa los
+        argumentos (a menudo JSON URL-encoded). El <em>callback pump</em> de Python despacha esos
+        eventos a métodos como <code>_on_backtest_run</code> o <code>on_side_panel_event</code>.
+      </p>
+
+      <h2>Mapa rápido de la interfaz</h2>
+      <div class="table-wrap">
+        <table>
+          <thead><tr><th>Acción</th><th>Dónde</th></tr></thead>
+          <tbody>
+            <tr><td>Iniciar / detener motor</td><td>Pestaña <em>Estrategias</em> (<code>_toggle_strategy_run</code> → <code>start_bot</code>/<code>stop_bot</code>).</td></tr>
+            <tr><td>Activar / desactivar estrategia</td><td>Botón <em>Activa/Inactiva</em> (<code>_set_strategy_enabled</code>).</td></tr>
+            <tr><td>Mostrar / ocultar indicadores</td><td><em>Object Tree</em> (<code>toggle_indicator</code>).</td></tr>
+            <tr><td>Datos de vela / operaciones</td><td><em>Data Window</em>.</td></tr>
+            <tr><td>Periodo visible</td><td>Barra inferior (<code>on_bottom_bar_event</code>).</td></tr>
+          </tbody>
+        </table>
+      </div>
+
+      <div class="src-note">Fuente (código): <code>gui_charts.py</code> (clase <code>TradingBotGUI</code>; nombres de método verificados directamente en el archivo).</div>
+
+      <div class="page-nav">
+        <a class="prev" href="backtesting.html"><span>Anterior</span>← Backtesting</a>
+        <a class="next" href="testing.html"><span>Siguiente</span>Testing →</a>
+      </div>
+    </article>
+
+    <footer>
+      <span>Trading Agent · Wiki técnica derivada del código fuente.</span>
+      <span>Reconstruida desde 0, por fases.</span>
+    </footer>
+  </main>
+
+  <script src="assets/wiki.js"></script>
+</body>
+</html>

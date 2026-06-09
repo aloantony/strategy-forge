@@ -1,5 +1,5 @@
 import trading
-import MetaTrader5 as mt5
+from src.mt5_import import mt5
 from src.broker.interface import IBrokerAdapter, InstrumentInfo, OrderResult, AccountInfo
 from src.broker.comment import build_trade_comment, _FALLBACK_OPEN_COMMENT, _FALLBACK_CLOSE_COMMENT
 
@@ -13,6 +13,8 @@ class MT5BrokerAdapter(IBrokerAdapter):
 
     def send_order(self, symbol, order_type, lot, magic,
                    sl_price, tp_price, strategy_key="", strategy_label="", signal_reason=""):
+        if mt5 is None:
+            raise RuntimeError("MT5BrokerAdapter: MT5 no está conectado.")
         direction = 1 if order_type == 0 else -1
 
         symbol_info = mt5.symbol_info(symbol)
@@ -182,7 +184,9 @@ class MT5BrokerAdapter(IBrokerAdapter):
         )
 
     def apply_pyramid_signal(self, symbol, magic_number, atr_value, lot,
-                              strategy_key="", strategy_label="", signal_reason="", balance=None):
+                              strategy_key="", strategy_label="", signal_reason="", balance=None,
+                              sl_atr_mult=1.0, tp_atr_mult=2.0, pyramid_atr_mult=0.5,
+                              max_entries=None, entry_index=None):
         return trading.apply_pyramid_signal(
             symbol=symbol,
             magic_number=magic_number,
@@ -192,6 +196,11 @@ class MT5BrokerAdapter(IBrokerAdapter):
             strategy_label=strategy_label,
             signal_reason=signal_reason,
             balance=balance,
+            sl_atr_mult=sl_atr_mult,
+            tp_atr_mult=tp_atr_mult,
+            pyramid_atr_mult=pyramid_atr_mult,
+            max_entries=max_entries,
+            entry_index=entry_index,
         )
 
     def is_market_open(self, symbol):

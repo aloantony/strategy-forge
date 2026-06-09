@@ -1,0 +1,155 @@
+<!DOCTYPE html>
+<html lang="es" data-theme="light">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Runtime live · Trading Agent Wiki</title>
+  <link rel="stylesheet" href="assets/style.css" />
+</head>
+<body>
+  <button class="nav-toggle" aria-label="Abrir menú">☰</button>
+  <div class="nav-backdrop"></div>
+
+  <aside class="sidebar">
+    <a class="brand" href="index.html">
+      <span class="brand-mark">◆</span>
+      <span class="brand-name">Trading Agent<small>MT5 · Wiki</small></span>
+    </a>
+    <nav>
+      <span class="nav-group">Introducción</span>
+      <a href="index.html">Inicio</a>
+      <a href="arquitectura.html">Arquitectura</a>
+      <a href="configuracion.html">Configuración</a>
+      <a href="despliegue.html">Despliegue</a>
+      <span class="nav-group">Datos y ejecución</span>
+      <a href="datos.html">Datos de mercado</a>
+      <a href="broker-ordenes.html">Broker y órdenes</a>
+      <span class="nav-group">Estrategias</span>
+      <a href="estrategias.html">Estrategias</a>
+      <a href="strategy-builder.html">Strategy Builder</a>
+      <span class="nav-group">Runtime</span>
+      <a href="runtime-live.html">Runtime live</a>
+      <a href="runtime-v1.html">Runtime v1</a>
+      <a href="persistencia.html">Persistencia</a>
+      <span class="nav-group">Herramientas</span>
+      <a href="backtesting.html">Backtesting</a>
+      <a href="gui.html">Interfaz (GUI)</a>
+      <span class="nav-group">Proyecto</span>
+      <a href="testing.html">Testing</a>
+      <a href="versiones.html">Versiones</a>
+      <a href="glosario.html">Glosario</a>
+    </nav>
+    <div class="sidebar-foot">
+      <span>Wiki · desde código</span>
+      <button class="theme-toggle" type="button"><span class="ico">☾</span><span class="label">Oscuro</span></button>
+    </div>
+  </aside>
+
+  <main>
+    <article class="content">
+      <span class="eyebrow">Runtime</span>
+      <h1>Runtime live (<code>main.py</code>)</h1>
+      <p class="lead">
+        El loop headless carga las estrategias, las analiza en paralelo respetando un timeout y
+        enruta cada señal por el camino v1 o por el legacy. Es el mismo motor que usa el botón
+        <em>Iniciar motor</em> de la GUI.
+      </p>
+
+      <h2>Arranque (<code>main()</code>)</h2>
+      <ol>
+        <li>Si <code>PERSISTENCE_ENABLED</code>, llama a <code>bootstrap_persistence(PERSISTENCE_DB_PATH)</code> y guarda la conexión.</li>
+        <li><code>load_active_strategies()</code> descubre y carga las estrategias.</li>
+        <li><code>mt5_connection.initialize_mt5()</code> y <code>check_symbol(SYMBOL)</code>.</li>
+        <li><code>run_bot_loop(entries)</code> y, al terminar, <code>mt5.shutdown()</code> + cierre de la DB.</li>
+      </ol>
+
+      <h2>El loop (<code>run_bot_loop</code>)</h2>
+      <div class="figure">
+        <svg class="diagram" viewBox="0 0 920 150" role="img" aria-label="Iteración del loop">
+          <defs><marker id="arrow" markerWidth="9" markerHeight="9" refX="7" refY="3" orient="auto" markerUnits="strokeWidth"><path d="M0,0 L7,3 L0,6 Z"></path></marker></defs>
+          <rect class="box" x="0" y="50" width="170" height="56" rx="9"></rect>
+          <text class="lbl" x="85" y="74" text-anchor="middle">market_cache</text>
+          <text class="sub" x="85" y="90" text-anchor="middle">por timeframe</text>
+          <rect class="box accent" x="220" y="50" width="180" height="56" rx="9"></rect>
+          <text class="lbl" x="310" y="74" text-anchor="middle">ThreadPool</text>
+          <text class="sub" x="310" y="90" text-anchor="middle">_analyze_strategy + timeout</text>
+          <rect class="box" x="450" y="6" width="200" height="50" rx="9"></rect>
+          <text class="lbl" x="550" y="30" text-anchor="middle">Ruta v1</text>
+          <text class="sub" x="550" y="46" text-anchor="middle">_run_v1_strategy_cycle</text>
+          <rect class="box" x="450" y="100" width="200" height="50" rx="9"></rect>
+          <text class="lbl" x="550" y="124" text-anchor="middle">Ruta legacy</text>
+          <text class="sub" x="550" y="140" text-anchor="middle">apply_signal / pyramid</text>
+          <rect class="box ext" x="710" y="50" width="120" height="56" rx="9"></rect>
+          <text class="lbl" x="770" y="82" text-anchor="middle">Broker</text>
+          <path class="edge" d="M170,78 L216,78" marker-end="url(#arrow)"></path>
+          <path class="edge" d="M400,70 L446,40" marker-end="url(#arrow)"></path>
+          <path class="edge" d="M400,86 L446,120" marker-end="url(#arrow)"></path>
+          <path class="edge" d="M650,32 L726,66" marker-end="url(#arrow)"></path>
+          <path class="edge" d="M650,124 L726,92" marker-end="url(#arrow)"></path>
+        </svg>
+      </div>
+      <p>Por cada iteración:</p>
+      <ul>
+        <li>Comprueba <code>is_market_open(SYMBOL)</code> y construye un <code>market_cache</code> con
+        un DataFrame enriquecido por cada timeframe distinto.</li>
+        <li><strong>Scheduler justo:</strong> ordena las estrategias por su última ejecución
+        (<code>last_analyzed_ts</code>) para que ninguna quede rezagada.</li>
+        <li><strong>Análisis concurrente:</strong> envía <code>_analyze_strategy</code> a un
+        <code>ThreadPoolExecutor</code> y espera con <code>wait(timeout=…)</code>; las que no
+        terminan a tiempo se marcan como timeout. Si solo hay 1 worker, va en serie.</li>
+        <li>Aplica las señales bajo <code>ORDER_EXECUTION_LOCK</code>, hasta
+        <code>MAX_ORDERS_PER_ITERATION</code> órdenes por ciclo.</li>
+      </ul>
+
+      <div class="callout note">
+        <div class="callout-title">ℹ Espera del loop</div>
+        <p>El intervalo de espera <strong>no</strong> es <code>SLEEP_SECONDS</code>:
+        <code>run_bot_loop</code> usa <code>timeframe_to_seconds(min_timeframe)</code> — p.ej. 60 s si
+        la estrategia más rápida es M1.</p>
+      </div>
+
+      <h2>Enrutado: v1 vs legacy</h2>
+      <p>
+        Se usa la ruta v1 cuando <code>STRATEGY_RUNTIME_MODE == "v1_only"</code> <strong>y</strong>
+        <code>PLAN_EXECUTOR_ENABLED</code> <strong>y</strong> la persistencia está activa. En ese
+        caso cada estrategia pasa por <code>_run_v1_strategy_cycle</code> (ver
+        <a href="runtime-v1.html">Runtime v1</a>). Si no, se usa la ruta legacy:
+      </p>
+      <div class="kv">
+        <div class="k">pyramiding + buy + ATR&gt;0</div><div class="v"><code>trading.apply_pyramid_signal</code> (con lote dinámico si <code>dynamic_sizing</code> y <code>volume_ratio &gt; 0</code>).</div>
+        <div class="k">resto de señales</div><div class="v"><code>trading.apply_signal</code> con <code>LOT</code>, <code>SL_POINTS</code>, <code>TP_POINTS</code>.</div>
+      </div>
+
+      <h2>Análisis de una estrategia</h2>
+      <p>
+        <code>_analyze_strategy</code> aplica <code>apply_strategy_processing</code> y luego
+        <code>get_strategy_signal_payload</code> (pasando <code>params</code> si el módulo los acepta).
+        Devuelve <code>signal, reason, pyramiding, atr_value, dynamic_sizing, volume_ratio</code> o un
+        <code>error</code>.
+      </p>
+
+      <h2>Concurrencia y límites</h2>
+      <div class="kv">
+        <div class="k">max_workers</div><div class="v"><code>STRATEGY_MAX_WORKERS</code> (o 8); acotado al nº de estrategias.</div>
+        <div class="k">analysis_timeout</div><div class="v"><code>STRATEGY_ANALYSIS_TIMEOUT_SECONDS</code> (mín. 1 s).</div>
+        <div class="k">max_orders_per_iteration</div><div class="v"><code>MAX_ORDERS_PER_ITERATION</code>, acotado al nº de estrategias.</div>
+        <div class="k">magic number</div><div class="v">override &gt; <code>MAGIC_NUMBER</code> del módulo &gt; <code>base·1000 + (crc32(key) % 997 + 1)</code> en multi-estrategia.</div>
+      </div>
+
+      <div class="src-note">Fuente (código): <code>main.py</code> (<code>run_bot_loop</code>, <code>_analyze_strategy</code>, <code>load_active_strategies</code>, <code>main</code>), <code>strategy_runtime.py</code>.</div>
+
+      <div class="page-nav">
+        <a class="prev" href="strategy-builder.html"><span>Anterior</span>← Strategy Builder</a>
+        <a class="next" href="runtime-v1.html"><span>Siguiente</span>Runtime v1 →</a>
+      </div>
+    </article>
+
+    <footer>
+      <span>Trading Agent · Wiki técnica derivada del código fuente.</span>
+      <span>Reconstruida desde 0, por fases.</span>
+    </footer>
+  </main>
+
+  <script src="assets/wiki.js"></script>
+</body>
+</html>

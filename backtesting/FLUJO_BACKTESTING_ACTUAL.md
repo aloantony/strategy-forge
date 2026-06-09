@@ -11,38 +11,48 @@ En la versión actual hay un único motor operativo de backtesting dentro del pa
 - [backtesting/runtime.py](./runtime.py)
 - [backtesting/cli.py](./cli.py)
 - [backtesting/__main__.py](./__main__.py)
+- [src/application/backtest_service.py](../src/application/backtest_service.py)
 - [strategy_runtime.py](../strategy_runtime.py)
 - [gui_charts.py](../gui_charts.py)
+- [src/data/factory.py](../src/data/factory.py)
 - [tests/test_backtest_runtime.py](../tests/test_backtest_runtime.py)
 - [tests/test_backtesting_cli.py](../tests/test_backtesting_cli.py)
+- [tests/test_backtest_service.py](../tests/test_backtest_service.py)
 
 Si solo quieres entender **qué usa hoy la interfaz gráfica**, céntrate en este recorrido:
 
-1. La pestaña `Backtest` de la GUI recoge estrategia, símbolo, rango de fechas y balance inicial.
-2. La GUI construye un `request` y llama a `backtesting.run_backtest(...)`.
-3. `backtesting.runtime` carga histórico MT5, aplica el pipeline de datos y evalúa la estrategia vela a vela.
-4. El motor simula entradas, salidas, reversals, piramidación y cierre forzado al final del rango.
-5. Devuelve un `result` con `final_balance`, `total_profit`, `% return`, `closed_trades`, `win_rate`, `max_drawdown` y detalle de `trades`.
+1. La pestaña `Backtest` de la GUI recoge estrategia, símbolo, rango de fechas, balance inicial y fuente de datos.
+2. La GUI delega validación, construcción del `request` y resolución de datasource en `src.application.BacktestService`.
+3. `BacktestService` llama a `backtesting.run_backtest(...)` o `backtesting.run_backtest_comparison(...)`.
+4. `backtesting.runtime` carga histórico desde el datasource elegido, aplica el pipeline de datos y evalúa la estrategia vela a vela.
+5. El motor simula entradas, salidas, reversals, piramidación y cierre forzado al final del rango.
+6. Devuelve un `result` con `final_balance`, `total_profit`, `% return`, `closed_trades`, `win_rate`, `max_drawdown` y detalle de `trades`.
 
 ## Qué usa la GUI hoy
 
-La pestaña `Backtest` importa directamente:
+La pestaña `Backtest` importa:
 
-- `gui_charts.py` -> `from backtesting import run_backtest`
+- `gui_charts.py` -> `from src.application import BacktestService`
+- `src/application/backtest_service.py` -> `from backtesting import run_backtest, run_backtest_comparison`
+- `src/application/backtest_service.py` -> `from src.data.factory import build_data_source, resolve_symbol_for_request`
 
 Y el flujo real es:
 
 1. La GUI prepara el formulario y el estado visual.
-2. Al pulsar `Ejecutar backtest`, valida fechas, balance, estrategia y símbolo.
-3. Arranca un hilo en segundo plano para no bloquear la interfaz.
-4. Ese hilo ejecuta `backtesting.runtime.run_backtest(request)`.
-5. Al terminar, la GUI pinta el resultado o el error.
+2. Al pulsar `Ejecutar backtest`, valida payload básico de JSON y carga la estrategia seleccionada.
+3. `BacktestService.prepare_run(...)` valida fechas, balance, símbolo, estrategia y fuente de datos.
+4. `BacktestService.prepare_run(...)` construye el `request` runtime y el datasource concreto.
+5. Arranca un hilo en segundo plano para no bloquear la interfaz.
+6. Ese hilo ejecuta `BacktestService.execute_run(request, data_source)`.
+7. Al terminar, la GUI pinta el resultado o el error.
 
 Referencias:
 
 - `gui_charts.py::_get_backtest_payload()`
 - `gui_charts.py::_on_backtest_run()`
 - `gui_charts.py::_run_backtest_worker()`
+- `src/application/backtest_service.py::BacktestService.prepare_run()`
+- `src/application/backtest_service.py::BacktestService.execute_run()`
 - `gui_charts.py::window.renderBacktestPanel`
 
 ## Entradas del backtest runtime
@@ -63,6 +73,7 @@ Campos relevantes:
 - `lot`
 - `sl_points`
 - `tp_points`
+- `data_provider`
 
 La clase `BacktestRequest.from_dict(...)` resuelve defaults y valida:
 
@@ -74,6 +85,19 @@ La clase `BacktestRequest.from_dict(...)` resuelve defaults y valida:
 Referencia:
 
 - `backtesting/runtime.py::BacktestRequest`
+
+## Capa de aplicación
+
+`BacktestService` es la capa reutilizable entre la GUI, tests y futuros entrypoints. Su responsabilidad es mantener fuera de `gui_charts.py` la lógica de proceso:
+
+- normalizar fechas en UTC
+- validar balance, símbolo y estrategia cargada
+- resolver `mt5` o `dukascopy` mediante `src.data.factory.build_data_source(...)`
+- traducir símbolo MT5 a símbolo del proveedor cuando hace falta
+- construir los requests de `run_backtest` y `run_backtest_comparison`
+- normalizar excepciones de ejecución a `{"status": "error", "error": "..."}`
+
+La GUI sigue siendo el origen visual del proceso, pero no debe ser la dueña de estas reglas.
 
 ## Cómo se resuelve la estrategia
 
@@ -276,12 +300,14 @@ La GUI sigue este recorrido:
 
 1. construye las opciones de estrategia, símbolo, presets y formulario
 2. muestra la pestaña `Backtest`
-3. al enviar, valida:
-   - estrategia
+3. al enviar, carga la estrategia seleccionada desde el registro GUI
+4. delega en `BacktestService`:
    - símbolo
    - balance inicial
    - rango de fechas
-4. crea el `request`
+   - fuente de datos
+   - request runtime
+   - datasource concreto
 5. lanza un hilo
 6. recibe `result`
 7. vuelve a pintar:
@@ -304,6 +330,7 @@ Referencias:
 - `gui_charts.py::_get_backtest_payload()`
 - `gui_charts.py::_on_backtest_run()`
 - `gui_charts.py::_run_backtest_worker()`
+- `src/application/backtest_service.py::BacktestService`
 
 ## Flujo desde CLI
 
@@ -408,6 +435,7 @@ Los tests más útiles para entender el comportamiento actual son:
 
 - `tests/test_backtest_runtime.py`
 - `tests/test_backtesting_cli.py`
+- `tests/test_backtest_service.py`
 
 Cubren:
 

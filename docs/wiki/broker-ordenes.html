@@ -1,0 +1,159 @@
+<!DOCTYPE html>
+<html lang="es" data-theme="light">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Broker y órdenes · Trading Agent Wiki</title>
+  <link rel="stylesheet" href="assets/style.css" />
+</head>
+<body>
+  <button class="nav-toggle" aria-label="Abrir menú">☰</button>
+  <div class="nav-backdrop"></div>
+
+  <aside class="sidebar">
+    <a class="brand" href="index.html">
+      <span class="brand-mark">◆</span>
+      <span class="brand-name">Trading Agent<small>MT5 · Wiki</small></span>
+    </a>
+    <nav>
+      <span class="nav-group">Introducción</span>
+      <a href="index.html">Inicio</a>
+      <a href="arquitectura.html">Arquitectura</a>
+      <a href="configuracion.html">Configuración</a>
+      <a href="despliegue.html">Despliegue</a>
+      <span class="nav-group">Datos y ejecución</span>
+      <a href="datos.html">Datos de mercado</a>
+      <a href="broker-ordenes.html">Broker y órdenes</a>
+      <span class="nav-group">Estrategias</span>
+      <a href="estrategias.html">Estrategias</a>
+      <a href="strategy-builder.html">Strategy Builder</a>
+      <span class="nav-group">Runtime</span>
+      <a href="runtime-live.html">Runtime live</a>
+      <a href="runtime-v1.html">Runtime v1</a>
+      <a href="persistencia.html">Persistencia</a>
+      <span class="nav-group">Herramientas</span>
+      <a href="backtesting.html">Backtesting</a>
+      <a href="gui.html">Interfaz (GUI)</a>
+      <span class="nav-group">Proyecto</span>
+      <a href="testing.html">Testing</a>
+      <a href="versiones.html">Versiones</a>
+      <a href="glosario.html">Glosario</a>
+    </nav>
+    <div class="sidebar-foot">
+      <span>Wiki · desde código</span>
+      <button class="theme-toggle" type="button"><span class="ico">☾</span><span class="label">Oscuro</span></button>
+    </div>
+  </aside>
+
+  <main>
+    <article class="content">
+      <span class="eyebrow">Datos y ejecución</span>
+      <h1>Broker y órdenes</h1>
+      <p class="lead">
+        Toda la ejecución pasa por el contrato <code>IBrokerAdapter</code>. Hoy la única
+        implementación es <code>MT5BrokerAdapter</code>, que traduce el contrato a llamadas MT5
+        apoyándose en los helpers de <code>trading.py</code>.
+      </p>
+
+      <div class="figure">
+        <svg class="diagram" viewBox="0 0 900 96" role="img" aria-label="Delegación de la ejecución">
+          <defs><marker id="arrow" markerWidth="9" markerHeight="9" refX="7" refY="3" orient="auto" markerUnits="strokeWidth"><path d="M0,0 L7,3 L0,6 Z"></path></marker></defs>
+          <rect class="box" x="0" y="24" width="170" height="48" rx="9"></rect>
+          <text class="lbl" x="85" y="52" text-anchor="middle">main.py / runtime</text>
+          <rect class="box accent" x="220" y="24" width="170" height="48" rx="9"></rect>
+          <text class="lbl" x="305" y="52" text-anchor="middle">IBrokerAdapter</text>
+          <rect class="box" x="440" y="24" width="180" height="48" rx="9"></rect>
+          <text class="lbl" x="530" y="52" text-anchor="middle">MT5BrokerAdapter</text>
+          <rect class="box" x="670" y="24" width="120" height="48" rx="9"></rect>
+          <text class="lbl" x="730" y="52" text-anchor="middle">trading.py</text>
+          <rect class="box ext" x="820" y="24" width="80" height="48" rx="9"></rect>
+          <text class="lbl" x="860" y="52" text-anchor="middle">MT5</text>
+          <path class="edge" d="M170,48 L216,48" marker-end="url(#arrow)"></path>
+          <path class="edge" d="M390,48 L436,48" marker-end="url(#arrow)"></path>
+          <path class="edge" d="M620,48 L666,48" marker-end="url(#arrow)"></path>
+          <path class="edge" d="M790,48 L816,48" marker-end="url(#arrow)"></path>
+        </svg>
+      </div>
+
+      <h2>Contrato <code>IBrokerAdapter</code></h2>
+      <div class="table-wrap">
+        <table>
+          <thead><tr><th>Grupo</th><th>Métodos (firma real)</th></tr></thead>
+          <tbody>
+            <tr><td>Órdenes</td><td><code>send_order</code>, <code>close_position</code>, <code>modify_sl</code>, <code>modify_tp</code></td></tr>
+            <tr><td>Señales</td><td><code>apply_signal</code>, <code>apply_pyramid_signal</code></td></tr>
+            <tr><td>Estado</td><td><code>is_market_open</code>, <code>get_open_positions</code>, <code>get_account_info</code>, <code>get_instrument_info</code></td></tr>
+          </tbody>
+        </table>
+      </div>
+      <p>Devuelve dataclasses tipadas de <code>src/broker/interface.py</code>:</p>
+      <div class="kv">
+        <div class="k">OrderResult</div><div class="v"><code>success, retcode, order_id, deal_id, comment, price, volume</code></div>
+        <div class="k">AccountInfo</div><div class="v"><code>balance, equity, margin, free_margin, margin_level, currency</code></div>
+        <div class="k">InstrumentInfo</div><div class="v"><code>symbol, tick_size, tick_value, point, digits, volume_min/max/step, …, filling_mode, trade_exemode</code></div>
+      </div>
+
+      <h2><code>MT5BrokerAdapter</code></h2>
+      <p>Cada operación delega en <code>trading.py</code>. Detalles reales:</p>
+      <ul>
+        <li><code>send_order</code>: <code>order_type=0</code> → BUY al <em>ask</em>, en otro caso SELL al <em>bid</em>; aplica <code>normalize_volume</code>, <code>adjust_stops</code>, <code>choose_filling_mode</code> y envía con <code>deviation=20</code> y reintento de filling.</li>
+        <li><code>close_position</code>: cierra todas las posiciones de ese <code>magic</code> con orden contraria.</li>
+        <li><code>modify_tp</code>: <strong>preserva el SL actual</strong> al cambiar el TP (y viceversa).</li>
+        <li><code>get_open_positions</code> → <code>trading.get_all_positions</code> (ordenadas por hora de apertura).</li>
+        <li><code>get_account_info</code>: mapea <code>margin_free</code> de MT5 a <code>free_margin</code>.</li>
+      </ul>
+
+      <h2>Helpers de <code>trading.py</code></h2>
+      <div class="table-wrap">
+        <table>
+          <thead><tr><th>Función</th><th>Qué hace</th></tr></thead>
+          <tbody>
+            <tr><td><code>is_market_open(symbol)</code></td><td>Comprueba <code>trade_mode</code>, frescura del tick (obsoleto &gt; 300 s), ticks "del futuro" (tolerancia 60 s, compensa offset de broker hasta 14 h) y spread &gt; 0.</td></tr>
+            <tr><td><code>apply_signal(...)</code></td><td>Si está plano abre; si la señal es opuesta cierra y reabre; si coincide no hace nada. Devuelve un dict solo si alguna acción tuvo éxito.</td></tr>
+            <tr><td><code>apply_pyramid_signal(...)</code></td><td>Solo largos: entrada inicial o pirámide cuando <code>ask ≥ última_entrada + 0.5·ATR</code>; <code>SL = ask − 1·ATR</code>, <code>TP = ask + 2·ATR</code>.</td></tr>
+            <tr><td><code>normalize_volume(vol, info)</code></td><td>Ajusta el volumen a <code>min/step/max</code> del símbolo.</td></tr>
+            <tr><td><code>adjust_stops(...)</code></td><td>Aleja SL/TP si violan <code>trade_stops_level</code>/<code>trade_freeze_level</code>.</td></tr>
+            <tr><td><code>order_send_with_filling_retry(...)</code></td><td>Prueba el filling indicado, luego los permitidos y por último <code>RETURN/FOK/IOC</code>; ante comentario inválido recae en <code>TAOPEN</code>/<code>TACLOSE</code>.</td></tr>
+            <tr><td><code>get_open_position_direction / get_position_info / get_all_positions</code></td><td>Consultas de posiciones por símbolo + magic.</td></tr>
+          </tbody>
+        </table>
+      </div>
+
+      <h2>Gestión de riesgo</h2>
+      <div class="kv">
+        <div class="k">calculate_dynamic_lot(...)</div><div class="v">Riesgo fraccional: <code>target_risk_pct = min(volume_ratio·0.005, 0.01)</code> → tope del <strong>1%</strong> del balance; <code>risk_per_lot = ATR·(tick_value/tick_size)</code>.</div>
+        <div class="k">check_aggregate_risk(...)</div><div class="v"><code>AGGREGATE_RISK_LIMIT = 0.03</code> → el riesgo total (posiciones largas + nueva entrada) no debe superar el <strong>3%</strong> del balance.</div>
+      </div>
+
+      <h2>Comentario de orden (atribución)</h2>
+      <p>
+        Cada orden lleva metadatos compactos en el comentario de MT5 (≤ 31 caracteres) para
+        reconstruir el motivo desde el historial. Lo arma <code>src/broker/comment.py</code> y lo
+        parsea <code>decode_trade_comment</code> en <code>trading.py</code>:
+      </p>
+      <pre><code>TA|o|s=&lt;strategy&gt;|r=&lt;reason&gt;     # ejemplo: TA|o|s=ema_rsi|r=cross_up
+
+  TA   prefijo del bot
+  o/c  acción: open / close
+  s=   token de estrategia (máx. 10, [a-z0-9_])
+  r=   token de motivo     (máx. 24, [a-z0-9_])</code></pre>
+      <p>Si excede los 31 caracteres prioriza conservar la acción y un motivo legible; como último
+      recurso usa <code>TAOPEN</code> / <code>TACLOSE</code>.</p>
+
+      <div class="src-note">Fuente (código): <code>src/broker/interface.py</code>, <code>src/broker/mt5_adapter.py</code>, <code>src/broker/comment.py</code>, <code>trading.py</code>.</div>
+
+      <div class="page-nav">
+        <a class="prev" href="datos.html"><span>Anterior</span>← Datos de mercado</a>
+        <a class="next" href="estrategias.html"><span>Siguiente</span>Estrategias →</a>
+      </div>
+    </article>
+
+    <footer>
+      <span>Trading Agent · Wiki técnica derivada del código fuente.</span>
+      <span>Reconstruida desde 0, por fases.</span>
+    </footer>
+  </main>
+
+  <script src="assets/wiki.js"></script>
+</body>
+</html>

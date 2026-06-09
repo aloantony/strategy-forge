@@ -1,0 +1,157 @@
+<!DOCTYPE html>
+<html lang="es" data-theme="light">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Strategy Builder · Trading Agent Wiki</title>
+  <link rel="stylesheet" href="assets/style.css" />
+</head>
+<body>
+  <button class="nav-toggle" aria-label="Abrir menú">☰</button>
+  <div class="nav-backdrop"></div>
+
+  <aside class="sidebar">
+    <a class="brand" href="index.html">
+      <span class="brand-mark">◆</span>
+      <span class="brand-name">Trading Agent<small>MT5 · Wiki</small></span>
+    </a>
+    <nav>
+      <span class="nav-group">Introducción</span>
+      <a href="index.html">Inicio</a>
+      <a href="arquitectura.html">Arquitectura</a>
+      <a href="configuracion.html">Configuración</a>
+      <a href="despliegue.html">Despliegue</a>
+      <span class="nav-group">Datos y ejecución</span>
+      <a href="datos.html">Datos de mercado</a>
+      <a href="broker-ordenes.html">Broker y órdenes</a>
+      <span class="nav-group">Estrategias</span>
+      <a href="estrategias.html">Estrategias</a>
+      <a href="strategy-builder.html">Strategy Builder</a>
+      <span class="nav-group">Runtime</span>
+      <a href="runtime-live.html">Runtime live</a>
+      <a href="runtime-v1.html">Runtime v1</a>
+      <a href="persistencia.html">Persistencia</a>
+      <span class="nav-group">Herramientas</span>
+      <a href="backtesting.html">Backtesting</a>
+      <a href="gui.html">Interfaz (GUI)</a>
+      <span class="nav-group">Proyecto</span>
+      <a href="testing.html">Testing</a>
+      <a href="versiones.html">Versiones</a>
+      <a href="glosario.html">Glosario</a>
+    </nav>
+    <div class="sidebar-foot">
+      <span>Wiki · desde código</span>
+      <button class="theme-toggle" type="button"><span class="ico">☾</span><span class="label">Oscuro</span></button>
+    </div>
+  </aside>
+
+  <main>
+    <article class="content">
+      <span class="eyebrow">Estrategias</span>
+      <h1>Strategy Builder</h1>
+      <p class="lead">
+        <code>strategy_builder/generator.py</code> genera un módulo de estrategia (<code>.py</code> +
+        <code>.json</code>) a partir de una configuración JSON validada. Es lo que usa el editor
+        visual de la GUI. El módulo no es importado por las estrategias (regla de aislamiento).
+      </p>
+
+      <div class="figure">
+        <svg class="diagram" viewBox="0 0 900 96" role="img" aria-label="Flujo del generador">
+          <defs><marker id="arrow" markerWidth="9" markerHeight="9" refX="7" refY="3" orient="auto" markerUnits="strokeWidth"><path d="M0,0 L7,3 L0,6 Z"></path></marker></defs>
+          <rect class="box" x="0" y="24" width="170" height="48" rx="9"></rect>
+          <text class="lbl" x="85" y="52" text-anchor="middle">Config JSON</text>
+          <rect class="box" x="220" y="24" width="190" height="48" rx="9"></rect>
+          <text class="lbl" x="315" y="52" text-anchor="middle">validate_strategy_config</text>
+          <rect class="box accent" x="460" y="24" width="190" height="48" rx="9"></rect>
+          <text class="lbl" x="555" y="46" text-anchor="middle">render_strategy_source</text>
+          <text class="sub" x="555" y="62" text-anchor="middle">+ ast.parse()</text>
+          <rect class="box ext" x="700" y="24" width="200" height="48" rx="9"></rect>
+          <text class="lbl" x="800" y="46" text-anchor="middle">strategy_&lt;name&gt;.py</text>
+          <text class="sub" x="800" y="62" text-anchor="middle">+ .json</text>
+          <path class="edge" d="M170,48 L216,48" marker-end="url(#arrow)"></path>
+          <path class="edge" d="M410,48 L456,48" marker-end="url(#arrow)"></path>
+          <path class="edge" d="M650,48 L696,48" marker-end="url(#arrow)"></path>
+        </svg>
+      </div>
+
+      <h2>Puntos de entrada</h2>
+      <div class="table-wrap">
+        <table>
+          <thead><tr><th>Función</th><th>Qué hace</th></tr></thead>
+          <tbody>
+            <tr><td><code>generate_strategy_file(config, …)</code></td><td>Renderiza y escribe <code>strategy_&lt;name&gt;.py</code> + <code>.json</code> de forma atómica.</td></tr>
+            <tr><td><code>render_strategy_source(config)</code></td><td>Devuelve el código Python como string; valida con <code>ast.parse</code> antes de retornar.</td></tr>
+            <tr><td><code>build_strategy_module(config, …)</code></td><td>Compila el módulo en memoria (preview del Builder, sin escribir a disco).</td></tr>
+            <tr><td><code>handle_save_new / handle_save_edit</code></td><td>Flujos completos de crear/editar: sanea el nombre, gestiona colisiones, asigna/preserva el magic number.</td></tr>
+            <tr><td><code>validate_strategy_config(config, …)</code></td><td>Valida (y normaliza) la configuración; lanza <code>ValidationError</code>.</td></tr>
+          </tbody>
+        </table>
+      </div>
+      <p>Excepciones: <code>ValidationError</code>, <code>NameCollisionError</code> (subclase) y
+      <code>GeneratorError</code> (fallo al renderizar/escribir).</p>
+
+      <h2>Esquema de la configuración</h2>
+      <div class="table-wrap">
+        <table>
+          <thead><tr><th>Campo</th><th>Regla (real)</th></tr></thead>
+          <tbody>
+            <tr><td><code>schema_version</code></td><td>Debe ser <code>1</code>.</td></tr>
+            <tr><td><code>name</code></td><td>Regex <code>^[a-z][a-z0-9_]*$</code>.</td></tr>
+            <tr><td><code>display_name</code></td><td>1–80 caracteres.</td></tr>
+            <tr><td><code>description</code></td><td>≤ 500 caracteres.</td></tr>
+            <tr><td><code>timeframe</code></td><td>Uno de <code>M1, M5, M15, M30, H1, H4, D1</code>.</td></tr>
+            <tr><td><code>magic_number</code></td><td>Entero <code>10000–99999</code>.</td></tr>
+            <tr><td><code>indicators[]</code></td><td>Cada uno <code>{id, pre_computed, params, columns}</code> con <code>id</code> válido.</td></tr>
+            <tr><td><code>buy_condition</code> / <code>sell_condition</code></td><td>Árbol de condiciones (ver abajo).</td></tr>
+            <tr><td><code>payload_extra_fields[]</code></td><td>Campos extra para el payload (literal o columna).</td></tr>
+          </tbody>
+        </table>
+      </div>
+
+      <h2>Indicadores y operadores válidos</h2>
+      <div class="pill-row">
+        <span class="badge">EMA</span><span class="badge">RSI</span><span class="badge">BB</span>
+        <span class="badge">DONCHIAN</span><span class="badge">ATR</span><span class="badge">VWAP</span>
+        <span class="badge">VOLUME_RATIO</span><span class="badge">SMA</span><span class="badge">HMA</span>
+        <span class="badge">SUPERTREND</span><span class="badge">TCI</span><span class="badge">ADX_DI</span>
+      </div>
+      <p>Operadores permitidos: <code>&lt;　&gt;　&lt;=　&gt;=　==　!=</code>. Las columnas siempre
+      disponibles (<code>ALWAYS_AVAILABLE_COLUMNS</code>) incluyen OHLC, OHLC4/HLC3/HL2,
+      <code>tick_volume</code>, <code>average/atr/upper/lower</code>, <code>hma</code>,
+      <code>supertrend*</code> y <code>tci*</code>.</p>
+
+      <h2>Árbol de condiciones</h2>
+      <pre><code>// hoja
+{ "type": "condition", "left": "adx_14", "op": ">", "right": 25 }
+
+// grupo (mínimo 2 hijos)
+{ "type": "AND", "children": [ {...}, {...} ] }   // o "OR"</code></pre>
+      <p>El generador emite dos formas de cada condición: una escalar
+      (<code>df.iloc[-2]["col"]</code>) para <code>get_last_signal</code> y una vectorizada
+      (Series booleanas) para <code>compute_signals</code>.</p>
+
+      <h2>Qué genera</h2>
+      <p>El código resultante contiene, en orden: docstring, <code>import pandas</code>, constantes de
+      módulo (<code>TIMEFRAME</code>, <code>MAGIC_NUMBER</code>, periodos), bloque <code>PARAMS</code>,
+      <code>OBJECT_TREE_ITEMS</code>, <code>DATA_WINDOW_FIELDS</code>, helpers (<code>_rsi</code>,
+      <code>_atr</code>, <code>_adx_di</code>, …), <code>prepare_dataframe</code> (si hay indicadores a
+      calcular), <code>compute_signals</code>, <code>get_last_signal_payload</code> y
+      <code>get_last_signal</code>. Antes de escribir nada, el código pasa por <code>ast.parse</code>.</p>
+
+      <div class="src-note">Fuente (código): <code>strategy_builder/generator.py</code>.</div>
+
+      <div class="page-nav">
+        <a class="prev" href="estrategias.html"><span>Anterior</span>← Estrategias</a>
+        <a class="next" href="runtime-live.html"><span>Siguiente</span>Runtime live →</a>
+      </div>
+    </article>
+
+    <footer>
+      <span>Trading Agent · Wiki técnica derivada del código fuente.</span>
+      <span>Reconstruida desde 0, por fases.</span>
+    </footer>
+  </main>
+
+  <script src="assets/wiki.js"></script>
+</body>
+</html>

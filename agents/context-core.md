@@ -25,11 +25,11 @@ If blocked, ambiguous, or missing info: **stop and escalate to Jarvis**.
 
 ---
 
-## Active Sprints
+## Active Architecture Direction
 
-**Sprint A — Backtest GUI** (TASK-027 → 033): Enrich the Backtest tab with trade table, equity curve, drawdown chart, strategy comparison, CSV export. Daniel specs → Grace specs → Felix implements.
+**Application Services Extraction**: the GUI remains a visual entrypoint, but business processes move into reusable services under `src/application/` and backend/runtime modules. Backtest request construction now starts in `src/application/backtest_service.py`; further process changes should follow this pattern.
 
-**Sprint B — Broker Abstraction** (TASK-034 → 040): `IBrokerAdapter` + `IDataFeed` + `IHistoricalDataSource` to decouple from MT5. TASK-034 and TASK-040 (Daniel, spec/spike only) run in parallel with Sprint A. Rest of Sprint B waits for Sprint A completion.
+Routing rule: visual-only GUI work → Grace/Felix. Process orchestration, service extraction, backtesting, runtime, broker/data, persistence → Daniel/Alex when non-trivial.
 
 ---
 

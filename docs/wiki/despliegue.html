@@ -1,0 +1,184 @@
+<!DOCTYPE html>
+<html lang="es" data-theme="light">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Despliegue · Trading Agent Wiki</title>
+  <link rel="stylesheet" href="assets/style.css" />
+</head>
+<body>
+  <button class="nav-toggle" aria-label="Abrir menú">☰</button>
+  <div class="nav-backdrop"></div>
+
+  <aside class="sidebar">
+    <a class="brand" href="index.html">
+      <span class="brand-mark">◆</span>
+      <span class="brand-name">Trading Agent<small>MT5 · Wiki</small></span>
+    </a>
+    <nav>
+      <span class="nav-group">Introducción</span>
+      <a href="index.html">Inicio</a>
+      <a href="arquitectura.html">Arquitectura</a>
+      <a href="configuracion.html">Configuración</a>
+      <a href="despliegue.html">Despliegue</a>
+      <span class="nav-group">Datos y ejecución</span>
+      <a href="datos.html">Datos de mercado</a>
+      <a href="broker-ordenes.html">Broker y órdenes</a>
+      <span class="nav-group">Estrategias</span>
+      <a href="estrategias.html">Estrategias</a>
+      <a href="strategy-builder.html">Strategy Builder</a>
+      <span class="nav-group">Runtime</span>
+      <a href="runtime-live.html">Runtime live</a>
+      <a href="runtime-v1.html">Runtime v1</a>
+      <a href="persistencia.html">Persistencia</a>
+      <span class="nav-group">Herramientas</span>
+      <a href="backtesting.html">Backtesting</a>
+      <a href="gui.html">Interfaz (GUI)</a>
+      <span class="nav-group">Proyecto</span>
+      <a href="testing.html">Testing</a>
+      <a href="versiones.html">Versiones</a>
+      <a href="glosario.html">Glosario</a>
+    </nav>
+    <div class="sidebar-foot">
+      <span>Wiki · desde código</span>
+      <button class="theme-toggle" type="button"><span class="ico">☾</span><span class="label">Oscuro</span></button>
+    </div>
+  </aside>
+
+  <main>
+    <article class="content">
+      <span class="eyebrow">Despliegue</span>
+      <h1>Entornos y dependencias</h1>
+      <p class="lead">
+        El bot necesita un MetaTrader 5 conectado para datos y órdenes. En Windows habla con MT5
+        directamente; fuera de Windows lo hace contra un Windows remoto vía <code>mt5linux</code>. La
+        persistencia es un fichero SQLite local.
+      </p>
+
+      <h2>Requisitos</h2>
+      <div class="kv">
+        <div class="k">Python</div><div class="v">3.9 o superior (lo verifica <code>install.py</code>).</div>
+        <div class="k">MetaTrader 5</div><div class="v">Terminal con la cuenta conectada y el símbolo visible en Market Watch.</div>
+        <div class="k">Instalación</div><div class="v"><code>pip install -r requirements.txt</code> — o <code>python install.py</code>, que valida la versión e imprime los comandos por plataforma.</div>
+      </div>
+
+      <h2>Dependencias</h2>
+      <p>Contenido literal de <code>requirements.txt</code> (los marcadores de plataforma están en el propio archivo):</p>
+      <div class="table-wrap">
+        <table>
+          <thead><tr><th>Paquete</th><th>Condición</th><th>Para qué</th></tr></thead>
+          <tbody>
+            <tr><td><code>MetaTrader5</code></td><td><code>sys_platform == "win32"</code></td><td>API nativa de MT5 en Windows.</td></tr>
+            <tr><td><code>mt5linux</code></td><td><code>sys_platform != "win32"</code></td><td>Proxy hacia un MT5 remoto en Windows.</td></tr>
+            <tr><td><code>pandas</code></td><td>—</td><td>DataFrames de OHLCV e indicadores.</td></tr>
+            <tr><td><code>matplotlib</code></td><td>—</td><td>Gráficos de resultados.</td></tr>
+            <tr><td><code>customtkinter</code></td><td>—</td><td>Framework de la GUI.</td></tr>
+            <tr><td><code>lightweight-charts</code></td><td>—</td><td>Widget de gráfico estilo TradingView.</td></tr>
+            <tr><td><code>dukascopy-python</code></td><td><code>&gt;=4.0.1</code></td><td>Fuente histórica alternativa (Dukascopy).</td></tr>
+          </tbody>
+        </table>
+      </div>
+
+      <h2>Entorno principal (Windows)</h2>
+      <div class="figure">
+        <svg class="diagram" viewBox="0 0 720 250" role="img" aria-label="Topología en Windows">
+          <defs><marker id="arrow" markerWidth="9" markerHeight="9" refX="7" refY="3" orient="auto" markerUnits="strokeWidth"><path d="M0,0 L7,3 L0,6 Z"></path></marker></defs>
+          <rect class="box ext" x="20" y="22" width="470" height="208" rx="11"></rect>
+          <text class="sub" x="40" y="44" text-anchor="start">Windows workstation</text>
+          <rect class="box" x="50" y="64" width="190" height="60" rx="9"></rect>
+          <text class="lbl" x="145" y="90" text-anchor="middle">Python · Trading Agent</text>
+          <text class="sub" x="145" y="107" text-anchor="middle">gui_charts.py / main.py</text>
+          <rect class="box" x="290" y="64" width="170" height="60" rx="9"></rect>
+          <text class="lbl" x="375" y="90" text-anchor="middle">MetaTrader 5</text>
+          <text class="sub" x="375" y="107" text-anchor="middle">terminal conectado</text>
+          <rect class="box" x="50" y="156" width="190" height="54" rx="9"></rect>
+          <text class="lbl" x="145" y="180" text-anchor="middle">SQLite</text>
+          <text class="sub" x="145" y="197" text-anchor="middle">trading_bot.db</text>
+          <rect class="box ext" x="560" y="80" width="140" height="60" rx="9"></rect>
+          <text class="lbl" x="630" y="106" text-anchor="middle">Dukascopy</text>
+          <text class="sub" x="630" y="123" text-anchor="middle">internet</text>
+          <path class="edge" d="M240,94 L286,94" marker-end="url(#arrow)"></path>
+          <text class="sub" x="263" y="86" text-anchor="middle">MetaTrader5</text>
+          <path class="edge" d="M145,124 L145,152" marker-end="url(#arrow)"></path>
+          <path class="edge" d="M460,100 L556,108" marker-end="url(#arrow)"></path>
+          <text class="sub" x="510" y="96" text-anchor="middle">histórico opc.</text>
+        </svg>
+      </div>
+      <p class="figcaption">El proceso Python usa el paquete <code>MetaTrader5</code> para datos y órdenes, persiste en <code>trading_bot.db</code> y opcionalmente descarga histórico de Dukascopy.</p>
+
+      <h2>Mac / Linux (MT5 remoto)</h2>
+      <p>MT5 no corre nativo fuera de Windows. <code>src/mt5_import.py</code> detecta la plataforma: en
+      <code>win32</code> importa <code>MetaTrader5</code>; en otro caso instancia
+      <code>mt5linux.MetaTrader5(host, port)</code> con <code>MT5LINUX_HOST</code>/<code>MT5LINUX_PORT</code>.</p>
+      <div class="figure">
+        <svg class="diagram" viewBox="0 0 720 196" role="img" aria-label="Topología Mac/Linux con MT5 remoto">
+          <defs><marker id="arrow2" markerWidth="9" markerHeight="9" refX="7" refY="3" orient="auto" markerUnits="strokeWidth"><path d="M0,0 L7,3 L0,6 Z"></path></marker></defs>
+          <rect class="box ext" x="20" y="26" width="300" height="150" rx="11"></rect>
+          <text class="sub" x="40" y="48" text-anchor="start">Mac / Linux</text>
+          <rect class="box" x="50" y="64" width="240" height="48" rx="9"></rect>
+          <text class="lbl" x="170" y="92" text-anchor="middle">Python · Trading Agent</text>
+          <rect class="box" x="50" y="120" width="240" height="44" rx="9"></rect>
+          <text class="lbl" x="170" y="147" text-anchor="middle">mt5linux · cliente</text>
+          <rect class="box ext" x="400" y="26" width="300" height="150" rx="11"></rect>
+          <text class="sub" x="420" y="48" text-anchor="start">Windows remoto</text>
+          <rect class="box" x="430" y="64" width="240" height="48" rx="9"></rect>
+          <text class="lbl" x="550" y="92" text-anchor="middle">mt5linux · servidor</text>
+          <rect class="box" x="430" y="120" width="240" height="44" rx="9"></rect>
+          <text class="lbl" x="550" y="147" text-anchor="middle">MetaTrader 5</text>
+          <path class="edge accent" d="M320,108 L400,108" marker-end="url(#arrow2)"></path>
+          <text class="sub" x="360" y="100" text-anchor="middle">TCP :18812</text>
+        </svg>
+      </div>
+      <p>Según <code>install.py</code>, en el Windows remoto se arranca el servidor:</p>
+      <pre><code>pip install mt5linux
+python -c "from mt5linux import MetaTrader5Server; MetaTrader5Server().start()"</code></pre>
+      <div class="callout note">
+        <div class="callout-title">ℹ GUI en Linux</div>
+        <p><code>install.py</code> recuerda que la GUI necesita <code>libwebkit2gtk</code>: Ubuntu/Debian
+        <code>sudo apt install libwebkit2gtk-4.0-dev</code> · Fedora <code>webkitgtk4</code> · Arch
+        <code>webkit2gtk</code>.</p>
+      </div>
+
+      <h2>Puntos de entrada</h2>
+      <div class="table-wrap">
+        <table>
+          <thead><tr><th>Comando</th><th>Uso</th></tr></thead>
+          <tbody>
+            <tr><td><code>python gui_charts.py</code></td><td>Modo principal con GUI.</td></tr>
+            <tr><td><code>python main.py</code></td><td>Loop live sin GUI.</td></tr>
+            <tr><td><code>python -m backtesting runtime --help</code></td><td>CLI de backtesting.</td></tr>
+            <tr><td><code>python scripts/debug.py …</code></td><td>Runner de depuración (subcomandos <code>datasource</code>, <code>backtest</code>, <code>factory</code>) sin GUI.</td></tr>
+          </tbody>
+        </table>
+      </div>
+
+      <h2>Artefactos locales</h2>
+      <div class="kv">
+        <div class="k">strategies/</div><div class="v">Estrategias Python y sus configuraciones <code>.json</code> generadas.</div>
+        <div class="k">trading_bot.db</div><div class="v">Base SQLite por defecto (<code>PERSISTENCE_DB_PATH</code>).</div>
+        <div class="k">src/data/symbols.json</div><div class="v">Mapeo de símbolos canónicos ↔ proveedor (MT5 / Dukascopy / file).</div>
+      </div>
+
+      <div class="callout important">
+        <div class="callout-title">⚑ Antes de arrancar</div>
+        <p>MT5 abierto y con cuenta conectada. El símbolo debe existir y estar visible en Market
+        Watch; su prefijo depende del broker (p.ej. <code>#Germany40</code> vs <code>DE40</code>).</p>
+      </div>
+
+      <div class="src-note">Fuente (código): <code>requirements.txt</code>, <code>install.py</code>, <code>src/mt5_import.py</code>, <code>mt5_connection.py</code>, <code>scripts/debug.py</code>.</div>
+
+      <div class="page-nav">
+        <a class="prev" href="configuracion.html"><span>Anterior</span>← Configuración</a>
+        <a class="next" href="datos.html"><span>Siguiente</span>Datos de mercado →</a>
+      </div>
+    </article>
+
+    <footer>
+      <span>Trading Agent · Wiki técnica derivada del código fuente.</span>
+      <span>Reconstruida desde 0, por fases.</span>
+    </footer>
+  </main>
+
+  <script src="assets/wiki.js"></script>
+</body>
+</html>

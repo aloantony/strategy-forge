@@ -1,0 +1,174 @@
+<!DOCTYPE html>
+<html lang="es" data-theme="light">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Runtime v1 · Trading Agent Wiki</title>
+  <link rel="stylesheet" href="assets/style.css" />
+</head>
+<body>
+  <button class="nav-toggle" aria-label="Abrir menú">☰</button>
+  <div class="nav-backdrop"></div>
+
+  <aside class="sidebar">
+    <a class="brand" href="index.html">
+      <span class="brand-mark">◆</span>
+      <span class="brand-name">Trading Agent<small>MT5 · Wiki</small></span>
+    </a>
+    <nav>
+      <span class="nav-group">Introducción</span>
+      <a href="index.html">Inicio</a>
+      <a href="arquitectura.html">Arquitectura</a>
+      <a href="configuracion.html">Configuración</a>
+      <a href="despliegue.html">Despliegue</a>
+      <span class="nav-group">Datos y ejecución</span>
+      <a href="datos.html">Datos de mercado</a>
+      <a href="broker-ordenes.html">Broker y órdenes</a>
+      <span class="nav-group">Estrategias</span>
+      <a href="estrategias.html">Estrategias</a>
+      <a href="strategy-builder.html">Strategy Builder</a>
+      <span class="nav-group">Runtime</span>
+      <a href="runtime-live.html">Runtime live</a>
+      <a href="runtime-v1.html">Runtime v1</a>
+      <a href="persistencia.html">Persistencia</a>
+      <span class="nav-group">Herramientas</span>
+      <a href="backtesting.html">Backtesting</a>
+      <a href="gui.html">Interfaz (GUI)</a>
+      <span class="nav-group">Proyecto</span>
+      <a href="testing.html">Testing</a>
+      <a href="versiones.html">Versiones</a>
+      <a href="glosario.html">Glosario</a>
+    </nav>
+    <div class="sidebar-foot">
+      <span>Wiki · desde código</span>
+      <button class="theme-toggle" type="button"><span class="ico">☾</span><span class="label">Oscuro</span></button>
+    </div>
+  </aside>
+
+  <main>
+    <article class="content">
+      <span class="eyebrow">Runtime</span>
+      <h1>Runtime v1 (planes)</h1>
+      <p class="lead">
+        El runtime v1 convierte cada decisión de estrategia en un <em>plan</em> estructurado, lo
+        valida, lo ejecuta contra el broker y persiste todo. Vive en <code>src/runtime/</code> y se
+        orquesta desde <code>main._run_v1_strategy_cycle</code>.
+      </p>
+
+      <h2>Pipeline</h2>
+      <div class="figure">
+        <svg class="diagram" viewBox="0 0 960 172" role="img" aria-label="Pipeline del runtime v1">
+          <defs>
+            <marker id="arrow" markerWidth="9" markerHeight="9" refX="7" refY="3" orient="auto" markerUnits="strokeWidth"><path d="M0,0 L7,3 L0,6 Z"></path></marker>
+            <marker id="up" markerWidth="9" markerHeight="9" refX="3" refY="0" orient="auto" markerUnits="strokeWidth"><path d="M0,7 L6,7 L3,0 Z"></path></marker>
+          </defs>
+          <rect class="box accent" x="0" y="14" width="160" height="60" rx="9"></rect>
+          <text class="lbl" x="80" y="40" text-anchor="middle">decide()</text>
+          <text class="sub" x="80" y="57" text-anchor="middle">v1 o adapter</text>
+          <rect class="box" x="200" y="14" width="160" height="60" rx="9"></rect>
+          <text class="lbl" x="280" y="40" text-anchor="middle">PlanInterpreter</text>
+          <text class="sub" x="280" y="57" text-anchor="middle">valida + resuelve</text>
+          <rect class="box" x="400" y="14" width="160" height="60" rx="9"></rect>
+          <text class="lbl" x="480" y="40" text-anchor="middle">ExecutionEngine</text>
+          <text class="sub" x="480" y="57" text-anchor="middle">ejecuta + persiste</text>
+          <rect class="box" x="600" y="14" width="160" height="60" rx="9"></rect>
+          <text class="lbl" x="680" y="40" text-anchor="middle">IBrokerAdapter</text>
+          <text class="sub" x="680" y="57" text-anchor="middle">frontera broker</text>
+          <rect class="box ext" x="800" y="14" width="160" height="60" rx="9"></rect>
+          <text class="lbl" x="880" y="40" text-anchor="middle">MetaTrader 5</text>
+          <text class="sub" x="880" y="57" text-anchor="middle">órdenes</text>
+          <path class="edge" d="M160,44 L196,44" marker-end="url(#arrow)"></path>
+          <path class="edge" d="M360,44 L396,44" marker-end="url(#arrow)"></path>
+          <path class="edge" d="M560,44 L596,44" marker-end="url(#arrow)"></path>
+          <path class="edge" d="M760,44 L796,44" marker-end="url(#arrow)"></path>
+          <rect class="box dash" x="0" y="118" width="360" height="46" rx="9"></rect>
+          <text class="lbl" x="180" y="139" text-anchor="middle">ContextBuilder + StateStore</text>
+          <text class="sub" x="180" y="155" text-anchor="middle">contexto + estado (SQLite)</text>
+          <path class="edge accent" d="M80,118 L80,78" marker-end="url(#up)"></path>
+        </svg>
+      </div>
+
+      <h2>El ciclo (<code>_run_v1_strategy_cycle</code>)</h2>
+      <ol>
+        <li><strong>Cargar estado:</strong> <code>StrategyStateStore.load(instance_id)</code> → <code>(state, revision)</code>.</li>
+        <li><strong>Construir contexto:</strong> <code>StrategyContextBuilder.build(...)</code>.</li>
+        <li><strong>initial_state:</strong> si <code>revision == 0</code> y el módulo es v1 con <code>initial_state</code>.</li>
+        <li><strong>decidir:</strong> <code>module.decide(context, state)</code> (v1) o <code>LegacyStrategyAdapter.decide(...)</code> (legacy). Devuelve <code>{plan, next_state}</code>.</li>
+        <li><strong>persistir plan</strong> (status <code>validated</code>) y evento <code>plan_received</code>.</li>
+        <li><strong>ejecutar</strong> si <code>PLAN_EXECUTOR_ENABLED</code> + mercado abierto + hay acciones: <code>PlanInterpreter.validate_and_normalize</code> → <code>ExecutionEngine.execute_plan</code> (bajo <code>ORDER_EXECUTION_LOCK</code>).</li>
+        <li><strong>persistir next_state</strong> con <code>revision + 1</code>.</li>
+      </ol>
+
+      <h2>El contexto (<code>StrategyContextBuilder</code>)</h2>
+      <p>El dict que recibe <code>decide()</code> tiene estas secciones:</p>
+      <div class="kv">
+        <div class="k">run</div><div class="v">modo, iteration_id, strategy_key, símbolo, timeframe, revisiones.</div>
+        <div class="k">clock</div><div class="v">now_utc, broker_time, trading_day, weekday, market_open.</div>
+        <div class="k">market</div><div class="v"><code>quote</code> (bid/ask/mid/spread) y <code>frames[tf].bars</code> (cada barra con OHLCV + <code>indicators</code>).</div>
+        <div class="k">instrument</div><div class="v">point, tick_size, tick_value, volúmenes, stop/freeze level.</div>
+        <div class="k">account</div><div class="v">balance, equity, margin_used/free, currency.</div>
+        <div class="k">portfolio</div><div class="v">exposición bruta/neta y riesgo por símbolo/estrategia.</div>
+        <div class="k">execution</div><div class="v"><code>owned_legs</code>, <code>owned_entry_groups</code>, <code>broker_positions</code>.</div>
+        <div class="k">engine</div><div class="v">capacidades + <code>max_actions_per_cycle = 20</code>.</div>
+      </div>
+
+      <h2>Adaptador legacy</h2>
+      <p>
+        <code>LegacyStrategyAdapter.decide</code> reconstruye el DataFrame desde
+        <code>market.frames</code>, ejecuta el pipeline legacy y traduce la señal a acciones:
+        <code>buy</code>/<code>sell</code> abren la posición correspondiente (cerrando antes la
+        opuesta); <code>none</code> no genera acciones. El plan lleva
+        <code>meta.origin = "legacy_adapter"</code> y <code>meta.legacy_signal</code>.
+      </p>
+
+      <h2>PlanInterpreter</h2>
+      <p>Valida el plan y normaliza cada acción. Tipos de acción soportados:</p>
+      <div class="pill-row">
+        <span class="badge">open_position</span><span class="badge">add_to_position</span>
+        <span class="badge">close_position</span><span class="badge">reduce_position</span>
+        <span class="badge">move_stop_loss</span><span class="badge">move_take_profit</span>
+        <span class="badge">place_pending_order</span><span class="badge">cancel_pending_order</span>
+        <span class="badge">replace_pending_order</span>
+      </div>
+      <div class="table-wrap">
+        <table>
+          <thead><tr><th>Spec</th><th>Modos</th></tr></thead>
+          <tbody>
+            <tr><td><code>size_spec</code></td><td><code>fixed_lots</code>, <code>risk_pct_of_equity</code>, <code>volume</code>, <code>formula</code> (<code>volume_ratio_based</code>).</td></tr>
+            <tr><td><code>stop_spec</code></td><td><code>price</code>, <code>price_offset</code>/<code>points_from_entry</code>, <code>atr_multiple</code>, <code>break_even(_plus)</code>.</td></tr>
+            <tr><td><code>take_profit_spec</code></td><td><code>price</code>, <code>price_offset</code>, <code>rr_multiple</code>, <code>multi_target</code>.</td></tr>
+          </tbody>
+        </table>
+      </div>
+      <p>Si el plan es estructuralmente inválido lanza <code>PlanValidationError</code> y el plan se
+      marca <code>rejected_structural</code>.</p>
+
+      <h2>ExecutionEngine</h2>
+      <p>
+        Ejecuta las acciones normalizadas contra el <code>IBrokerAdapter</code> y persiste los
+        <strong>recursos canónicos</strong>: por cada apertura crea un <code>leg</code>, su
+        <code>entry_group</code> y un <code>fill</code>; al cerrar actualiza legs/grupos. Genera un
+        <code>execution_report</code> y un <code>action_report</code> por acción, más eventos en el
+        <code>event_log</code>. Estados de acción posibles: <code>executed</code>,
+        <code>rejected_broker</code>, <code>rejected_technical</code>, <code>not_supported</code>,
+        <code>error</code>. Todo el almacenamiento se describe en
+        <a href="persistencia.html">Persistencia</a>.
+      </p>
+
+      <div class="src-note">Fuente (código): <code>main.py</code> (<code>_run_v1_strategy_cycle</code>), <code>src/runtime/{adapter,context_builder,plan_interpreter,execution_engine,state_store}.py</code>.</div>
+
+      <div class="page-nav">
+        <a class="prev" href="runtime-live.html"><span>Anterior</span>← Runtime live</a>
+        <a class="next" href="persistencia.html"><span>Siguiente</span>Persistencia →</a>
+      </div>
+    </article>
+
+    <footer>
+      <span>Trading Agent · Wiki técnica derivada del código fuente.</span>
+      <span>Reconstruida desde 0, por fases.</span>
+    </footer>
+  </main>
+
+  <script src="assets/wiki.js"></script>
+</body>
+</html>

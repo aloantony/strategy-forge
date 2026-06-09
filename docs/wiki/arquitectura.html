@@ -1,0 +1,149 @@
+<!DOCTYPE html>
+<html lang="es" data-theme="light">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Arquitectura · Trading Agent Wiki</title>
+  <link rel="stylesheet" href="assets/style.css" />
+</head>
+<body>
+  <button class="nav-toggle" aria-label="Abrir menú">☰</button>
+  <div class="nav-backdrop"></div>
+
+  <aside class="sidebar">
+    <a class="brand" href="index.html">
+      <span class="brand-mark">◆</span>
+      <span class="brand-name">Trading Agent<small>MT5 · Wiki</small></span>
+    </a>
+    <nav>
+      <span class="nav-group">Introducción</span>
+      <a href="index.html">Inicio</a>
+      <a href="arquitectura.html">Arquitectura</a>
+      <a href="configuracion.html">Configuración</a>
+      <a href="despliegue.html">Despliegue</a>
+      <span class="nav-group">Datos y ejecución</span>
+      <a href="datos.html">Datos de mercado</a>
+      <a href="broker-ordenes.html">Broker y órdenes</a>
+      <span class="nav-group">Estrategias</span>
+      <a href="estrategias.html">Estrategias</a>
+      <a href="strategy-builder.html">Strategy Builder</a>
+      <span class="nav-group">Runtime</span>
+      <a href="runtime-live.html">Runtime live</a>
+      <a href="runtime-v1.html">Runtime v1</a>
+      <a href="persistencia.html">Persistencia</a>
+      <span class="nav-group">Herramientas</span>
+      <a href="backtesting.html">Backtesting</a>
+      <a href="gui.html">Interfaz (GUI)</a>
+      <span class="nav-group">Proyecto</span>
+      <a href="testing.html">Testing</a>
+      <a href="versiones.html">Versiones</a>
+      <a href="glosario.html">Glosario</a>
+    </nav>
+    <div class="sidebar-foot">
+      <span>Wiki · desde código</span>
+      <button class="theme-toggle" type="button"><span class="ico">☾</span><span class="label">Oscuro</span></button>
+    </div>
+  </aside>
+
+  <main>
+    <article class="content">
+      <span class="eyebrow">Arquitectura</span>
+      <h1>Capas, flujo y módulos</h1>
+      <p class="lead">
+        El sistema separa la presentación (GUI) de la lógica de proceso. Las entradas delegan en
+        servicios de aplicación, que orquestan los runtimes; estos hablan con los sistemas externos
+        siempre a través de adapters con interfaz definida.
+      </p>
+
+      <h2>Capas del sistema</h2>
+      <div class="figure">
+        <svg class="diagram" viewBox="0 0 720 372" role="img" aria-label="Capas del sistema">
+          <defs>
+            <marker id="down" markerWidth="9" markerHeight="9" refX="3" refY="7" orient="auto" markerUnits="strokeWidth"><path d="M0,0 L6,0 L3,7 Z"></path></marker>
+          </defs>
+          <rect class="box" x="30" y="6" width="660" height="54" rx="9"></rect>
+          <text class="lbl" x="360" y="30" text-anchor="middle">Entradas</text>
+          <text class="sub" x="360" y="47" text-anchor="middle">gui_charts.py · python -m backtesting · main.py</text>
+          <rect class="box accent" x="30" y="78" width="660" height="54" rx="9"></rect>
+          <text class="lbl" x="360" y="102" text-anchor="middle">Servicios de aplicación</text>
+          <text class="sub" x="360" y="119" text-anchor="middle">src/application/ — BacktestService</text>
+          <rect class="box" x="30" y="150" width="660" height="54" rx="9"></rect>
+          <text class="lbl" x="360" y="174" text-anchor="middle">Runtimes</text>
+          <text class="sub" x="360" y="191" text-anchor="middle">backtesting/ · src/runtime/ · strategy_runtime.py</text>
+          <rect class="box" x="30" y="222" width="660" height="54" rx="9"></rect>
+          <text class="lbl" x="360" y="246" text-anchor="middle">Adapters</text>
+          <text class="sub" x="360" y="263" text-anchor="middle">src/broker/ · src/data/ · trading.py · data_feed.py</text>
+          <rect class="box ext" x="30" y="294" width="660" height="54" rx="9"></rect>
+          <text class="lbl" x="360" y="318" text-anchor="middle">Sistemas externos</text>
+          <text class="sub" x="360" y="335" text-anchor="middle">MetaTrader 5 · Dukascopy · SQLite / ficheros</text>
+          <path class="edge" d="M360,60 L360,74" marker-end="url(#down)"></path>
+          <path class="edge" d="M360,132 L360,146" marker-end="url(#down)"></path>
+          <path class="edge" d="M360,204 L360,218" marker-end="url(#down)"></path>
+          <path class="edge" d="M360,276 L360,290" marker-end="url(#down)"></path>
+        </svg>
+      </div>
+      <p class="figcaption">Cada capa conoce a la inmediatamente inferior; los sistemas externos nunca se tocan directamente desde la GUI.</p>
+
+      <div class="callout note">
+        <div class="callout-title">★ Regla de servicios reutilizables</div>
+        <p>Según el <code>README.md</code>: «la GUI es la entrada visual, pero la lógica de proceso
+        debe vivir en servicios reutilizables bajo <code>src/application/</code> y en los runtimes de
+        <code>main.py</code>, <code>backtesting/</code> y <code>src/runtime/</code>». La GUI presenta
+        estado y captura intención; no orquesta procesos.</p>
+      </div>
+
+      <h2>Mapa de módulos</h2>
+      <div class="table-wrap">
+        <table>
+          <thead><tr><th>Módulo</th><th>Responsabilidad (según el código)</th></tr></thead>
+          <tbody>
+            <tr><td><code>config.py</code></td><td>Constantes de configuración: símbolo, lote, stops, estrategias, indicadores, hilos y flags del runtime v1.</td></tr>
+            <tr><td><code>main.py</code></td><td>Carga de estrategias (<code>load_active_strategies</code>), loop live (<code>run_bot_loop</code>) y enrutado legacy/v1.</td></tr>
+            <tr><td><code>gui_charts.py</code></td><td><code>TradingBotGUI</code>: interfaz visual sobre Lightweight Charts.</td></tr>
+            <tr><td><code>strategy_runtime.py</code></td><td>Contrato común: mapa de timeframes, normalización de señales y preparación de DataFrame.</td></tr>
+            <tr><td><code>trading.py</code></td><td>Helpers de órdenes MT5: filling mode, volumen, stops, retry, señales y riesgo.</td></tr>
+            <tr><td><code>data_feed.py</code></td><td>Obtención de OHLCV y cálculo de columnas derivadas (indicadores).</td></tr>
+            <tr><td><code>mt5_connection.py</code> · <code>src/mt5_import.py</code></td><td>Inicialización/validación de MT5 e import condicional por plataforma.</td></tr>
+            <tr><td><code>src/application/</code></td><td><code>BacktestService</code>: orquesta peticiones de backtest para GUI/CLI/tests.</td></tr>
+            <tr><td><code>src/broker/</code></td><td><code>IBrokerAdapter</code>, <code>MT5BrokerAdapter</code> y codificación de comentarios de orden.</td></tr>
+            <tr><td><code>src/data/</code></td><td><code>IDataFeed</code>/<code>IHistoricalDataSource</code>, fuentes MT5/Dukascopy/File y factory.</td></tr>
+            <tr><td><code>src/runtime/</code></td><td>Runtime v1: adapter legacy, context builder, plan interpreter, execution engine y state store.</td></tr>
+            <tr><td><code>src/persistence/</code></td><td>SQLite: capa de acceso (DAL/UnitOfWork), esquema y migraciones.</td></tr>
+            <tr><td><code>backtesting/</code></td><td>Motor de backtest (<code>BacktestEngine</code>) y CLI <code>python -m backtesting runtime</code>.</td></tr>
+            <tr><td><code>strategy_builder/</code></td><td>Generador de estrategias <code>.py</code>/<code>.json</code> desde configuración.</td></tr>
+            <tr><td><code>strategies/</code></td><td>Estrategias Python independientes.</td></tr>
+          </tbody>
+        </table>
+      </div>
+
+      <h2>Caminos de ejecución</h2>
+      <p>
+        El loop live de <code>main.py</code> decide el camino según
+        <code>config.STRATEGY_RUNTIME_MODE</code>, que el propio <code>config.py</code> documenta con
+        tres valores:
+      </p>
+      <div class="kv">
+        <div class="k">legacy</div><div class="v">Comportamiento clásico sin cambios (el runtime v1 no se usa).</div>
+        <div class="k">dual</div><div class="v">Legacy + trazabilidad + adaptador v1 (recomendado durante la transición).</div>
+        <div class="k">v1_only</div><div class="v">Solo estrategias con <code>decide()</code> y <code>STRATEGY_API_VERSION = 1</code> (valor actual).</div>
+      </div>
+      <p>El detalle del enrutado y del pipeline de planes está en
+      <a href="runtime-live.html">Runtime live</a> y <a href="runtime-v1.html">Runtime v1</a>.</p>
+
+      <div class="src-note">Fuente (código): <code>README.md</code>, <code>config.py</code>, <code>main.py</code>, estructura de <code>src/</code>.</div>
+
+      <div class="page-nav">
+        <a class="prev" href="index.html"><span>Anterior</span>← Inicio</a>
+        <a class="next" href="configuracion.html"><span>Siguiente</span>Configuración →</a>
+      </div>
+    </article>
+
+    <footer>
+      <span>Trading Agent · Wiki técnica derivada del código fuente.</span>
+      <span>Reconstruida desde 0, por fases.</span>
+    </footer>
+  </main>
+
+  <script src="assets/wiki.js"></script>
+</body>
+</html>

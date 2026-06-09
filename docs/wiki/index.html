@@ -1,0 +1,196 @@
+<!DOCTYPE html>
+<html lang="es" data-theme="light">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Inicio · Trading Agent Wiki</title>
+  <link rel="stylesheet" href="assets/style.css" />
+</head>
+<body>
+  <button class="nav-toggle" aria-label="Abrir menú">☰</button>
+  <div class="nav-backdrop"></div>
+
+  <aside class="sidebar">
+    <a class="brand" href="index.html">
+      <span class="brand-mark">◆</span>
+      <span class="brand-name">Trading Agent<small>MT5 · Wiki</small></span>
+    </a>
+    <nav>
+      <span class="nav-group">Introducción</span>
+      <a href="index.html">Inicio</a>
+      <a href="arquitectura.html">Arquitectura</a>
+      <a href="configuracion.html">Configuración</a>
+      <a href="despliegue.html">Despliegue</a>
+      <span class="nav-group">Datos y ejecución</span>
+      <a href="datos.html">Datos de mercado</a>
+      <a href="broker-ordenes.html">Broker y órdenes</a>
+      <span class="nav-group">Estrategias</span>
+      <a href="estrategias.html">Estrategias</a>
+      <a href="strategy-builder.html">Strategy Builder</a>
+      <span class="nav-group">Runtime</span>
+      <a href="runtime-live.html">Runtime live</a>
+      <a href="runtime-v1.html">Runtime v1</a>
+      <a href="persistencia.html">Persistencia</a>
+      <span class="nav-group">Herramientas</span>
+      <a href="backtesting.html">Backtesting</a>
+      <a href="gui.html">Interfaz (GUI)</a>
+      <span class="nav-group">Proyecto</span>
+      <a href="testing.html">Testing</a>
+      <a href="versiones.html">Versiones</a>
+      <a href="glosario.html">Glosario</a>
+    </nav>
+    <div class="sidebar-foot">
+      <span>Wiki · desde código</span>
+      <button class="theme-toggle" type="button"><span class="ico">☾</span><span class="label">Oscuro</span></button>
+    </div>
+  </aside>
+
+  <main>
+    <article class="content">
+      <span class="eyebrow">Trading Agent · MetaTrader 5</span>
+      <h1>Bot de trading modular con GUI estilo TradingView</h1>
+      <p class="lead">
+        Bot para MetaTrader 5 que ejecuta varias estrategias enchufables a la vez, las activa o
+        desactiva sin reiniciar y permite hacer backtesting desde la interfaz o la terminal. Esta
+        wiki está construida <strong>analizando el código fuente</strong>: cada página cita los
+        módulos <code>.py</code> de los que sale su contenido.
+      </p>
+
+      <div class="pill-row">
+        <span class="badge">MetaTrader 5</span>
+        <span class="badge">Python 3.9+</span>
+        <span class="badge">Estrategias enchufables</span>
+        <span class="badge">Backtesting</span>
+        <span class="badge accent">Runtime v1 (planes)</span>
+      </div>
+
+      <h2>Qué puedes hacer</h2>
+      <div class="card-grid">
+        <div class="card">
+          <span class="card-icon">◰</span>
+          <h3>Operar desde la GUI</h3>
+          <p>Gráfico de velas, indicadores, Data Window y panel de estrategias (<code>gui_charts.py</code>).</p>
+        </div>
+        <div class="card">
+          <span class="card-icon">⛁</span>
+          <h3>Varias estrategias a la vez</h3>
+          <p>Análisis concurrente con scheduling justo; cada estrategia es un módulo Python aislado.</p>
+        </div>
+        <div class="card">
+          <span class="card-icon">↻</span>
+          <h3>Activar sin reiniciar</h3>
+          <p>Enciende o apaga estrategias en caliente desde la pestaña <em>Estrategias</em>.</p>
+        </div>
+        <div class="card">
+          <span class="card-icon">◷</span>
+          <h3>Backtesting reproducible</h3>
+          <p>Mismo motor desde GUI o CLI, con datos de MT5 o Dukascopy.</p>
+        </div>
+      </div>
+
+      <h2>Flujo general</h2>
+      <div class="figure">
+        <svg class="diagram" viewBox="0 0 960 120" role="img" aria-label="Flujo general de ejecución">
+          <defs>
+            <marker id="arrow" markerWidth="9" markerHeight="9" refX="7" refY="3" orient="auto" markerUnits="strokeWidth"><path d="M0,0 L7,3 L0,6 Z"></path></marker>
+          </defs>
+          <rect class="box" x="0" y="30" width="160" height="60" rx="9"></rect>
+          <text class="lbl" x="80" y="56" text-anchor="middle">Trader / Dev</text>
+          <text class="sub" x="80" y="73" text-anchor="middle">interacción</text>
+          <rect class="box" x="200" y="30" width="160" height="60" rx="9"></rect>
+          <text class="lbl" x="280" y="56" text-anchor="middle">GUI · CLI · main.py</text>
+          <text class="sub" x="280" y="73" text-anchor="middle">entrada</text>
+          <rect class="box accent" x="400" y="30" width="160" height="60" rx="9"></rect>
+          <text class="lbl" x="480" y="56" text-anchor="middle">Application</text>
+          <text class="sub" x="480" y="73" text-anchor="middle">src/application</text>
+          <rect class="box" x="600" y="30" width="160" height="60" rx="9"></rect>
+          <text class="lbl" x="680" y="56" text-anchor="middle">Runtime</text>
+          <text class="sub" x="680" y="73" text-anchor="middle">estrategias + planes</text>
+          <rect class="box ext" x="800" y="30" width="160" height="60" rx="9"></rect>
+          <text class="lbl" x="880" y="56" text-anchor="middle">Broker → MT5</text>
+          <text class="sub" x="880" y="73" text-anchor="middle">ejecución</text>
+          <path class="edge" d="M160,60 L196,60" marker-end="url(#arrow)"></path>
+          <path class="edge" d="M360,60 L396,60" marker-end="url(#arrow)"></path>
+          <path class="edge" d="M560,60 L596,60" marker-end="url(#arrow)"></path>
+          <path class="edge" d="M760,60 L796,60" marker-end="url(#arrow)"></path>
+        </svg>
+      </div>
+      <p class="figcaption">La GUI es la entrada visual; la lógica de proceso vive en servicios reutilizables y en los runtimes.</p>
+
+      <div class="callout important">
+        <div class="callout-title">⚑ Antes de lanzar el bot</div>
+        <p>Abre MetaTrader 5 y deja la cuenta conectada. El bot usa MT5 directamente para datos y
+        órdenes (<code>mt5_connection.initialize_mt5()</code> falla si MT5 no está disponible).</p>
+      </div>
+
+      <h2>Tres modos de ejecución</h2>
+      <div class="table-wrap">
+        <table>
+          <thead><tr><th>Modo</th><th>Comando</th><th>Para qué</th></tr></thead>
+          <tbody>
+            <tr><td><strong>GUI</strong></td><td><code>python gui_charts.py</code></td><td>Operación visual y control en vivo (entrada principal).</td></tr>
+            <tr><td><strong>Headless</strong></td><td><code>python main.py</code></td><td>Loop de trading sin GUI, útil para depurar.</td></tr>
+            <tr><td><strong>Backtest CLI</strong></td><td><code>python -m backtesting runtime --help</code></td><td>Backtesting reproducible desde terminal.</td></tr>
+          </tbody>
+        </table>
+      </div>
+
+      <h2>Inicio rápido (GUI)</h2>
+      <ol>
+        <li>Instala dependencias: <code>pip install -r requirements.txt</code> (o <code>python install.py</code>).</li>
+        <li>Ajusta <code>config.py</code>: <code>SYMBOL</code>, <code>LOT</code>, <code>SL_POINTS</code>, <code>TP_POINTS</code>, <code>ACTIVE_STRATEGIES</code>.</li>
+        <li>Lanza la interfaz: <code>python gui_charts.py</code></li>
+        <li>En la pestaña <em>Estrategias</em>, pulsa <em>Iniciar motor</em>.</li>
+        <li>Monitoriza operaciones y ajusta en tiempo real.</li>
+      </ol>
+
+      <h2>Mapa del repositorio</h2>
+      <p>Carpetas y archivos en alcance de esta wiki (excluye <code>docs/</code>, cachés y herramientas de proyecto).</p>
+      <pre><code>trading-agent/
+├── config.py              Configuración central (símbolo, lote, SL/TP, estrategias, flags v1)
+├── main.py                Loop live headless + carga de estrategias
+├── gui_charts.py          GUI principal (Lightweight Charts)
+├── strategy_runtime.py    Contrato común: timeframes, señales, preparación de datos
+├── trading.py             Helpers de órdenes MT5 (filling, stops, riesgo, comentarios)
+├── data_feed.py           Datos de mercado + columnas derivadas (indicadores)
+├── mt5_connection.py      Inicialización y validación de símbolo MT5
+├── backtest.py            Backtester legacy (en desuso)
+├── install.py             Instalador cross-platform
+│
+├── src/
+│   ├── mt5_import.py       Import condicional MetaTrader5 / mt5linux
+│   ├── application/        Servicios de proceso (BacktestService)
+│   ├── broker/             IBrokerAdapter + MT5BrokerAdapter + comment
+│   ├── data/               Fuentes de datos (MT5 / Dukascopy / File) + factory + symbols.json
+│   ├── runtime/            Runtime v1: adapter, context, plan, execution, state
+│   └── persistence/        SQLite: dal, schema, migrations
+│
+├── backtesting/            Motor de backtest + CLI (python -m backtesting)
+├── strategy_builder/       Generador de estrategias desde JSON
+├── strategies/             Estrategias Python independientes
+├── scripts/debug.py        Utilidad de depuración
+└── tests/                  Suite de tests (pytest)</code></pre>
+
+      <div class="callout warning">
+        <div class="callout-title">⚠ Recomendaciones de seguridad</div>
+        <p>Prueba primero en cuenta demo. Empieza con lotaje bajo. Verifica <code>SYMBOL</code>,
+        lote y stops de <code>config.py</code> antes de operar en real.</p>
+      </div>
+
+      <div class="src-note">Fuente (código): <code>README.md</code>, <code>config.py</code>, <code>main.py</code>, <code>mt5_connection.py</code>, inventario del repositorio.</div>
+
+      <div class="page-nav">
+        <a class="disabled" href="#"></a>
+        <a class="next" href="arquitectura.html"><span>Siguiente</span>Arquitectura →</a>
+      </div>
+    </article>
+
+    <footer>
+      <span>Trading Agent · Wiki técnica derivada del código fuente.</span>
+      <span>Reconstruida desde 0, por fases.</span>
+    </footer>
+  </main>
+
+  <script src="assets/wiki.js"></script>
+</body>
+</html>

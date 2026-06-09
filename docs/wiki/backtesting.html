@@ -1,0 +1,163 @@
+<!DOCTYPE html>
+<html lang="es" data-theme="light">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Backtesting · Trading Agent Wiki</title>
+  <link rel="stylesheet" href="assets/style.css" />
+</head>
+<body>
+  <button class="nav-toggle" aria-label="Abrir menú">☰</button>
+  <div class="nav-backdrop"></div>
+
+  <aside class="sidebar">
+    <a class="brand" href="index.html">
+      <span class="brand-mark">◆</span>
+      <span class="brand-name">Trading Agent<small>MT5 · Wiki</small></span>
+    </a>
+    <nav>
+      <span class="nav-group">Introducción</span>
+      <a href="index.html">Inicio</a>
+      <a href="arquitectura.html">Arquitectura</a>
+      <a href="configuracion.html">Configuración</a>
+      <a href="despliegue.html">Despliegue</a>
+      <span class="nav-group">Datos y ejecución</span>
+      <a href="datos.html">Datos de mercado</a>
+      <a href="broker-ordenes.html">Broker y órdenes</a>
+      <span class="nav-group">Estrategias</span>
+      <a href="estrategias.html">Estrategias</a>
+      <a href="strategy-builder.html">Strategy Builder</a>
+      <span class="nav-group">Runtime</span>
+      <a href="runtime-live.html">Runtime live</a>
+      <a href="runtime-v1.html">Runtime v1</a>
+      <a href="persistencia.html">Persistencia</a>
+      <span class="nav-group">Herramientas</span>
+      <a href="backtesting.html">Backtesting</a>
+      <a href="gui.html">Interfaz (GUI)</a>
+      <span class="nav-group">Proyecto</span>
+      <a href="testing.html">Testing</a>
+      <a href="versiones.html">Versiones</a>
+      <a href="glosario.html">Glosario</a>
+    </nav>
+    <div class="sidebar-foot">
+      <span>Wiki · desde código</span>
+      <button class="theme-toggle" type="button"><span class="ico">☾</span><span class="label">Oscuro</span></button>
+    </div>
+  </aside>
+
+  <main>
+    <article class="content">
+      <span class="eyebrow">Herramientas</span>
+      <h1>Backtesting</h1>
+      <p class="lead">
+        El motor de <code>backtesting/runtime.py</code> simula vela a vela usando el mismo contrato
+        de estrategia que el runtime y las mismas fuentes de datos. Se ejecuta desde la GUI o la CLI,
+        con datos de MT5 o Dukascopy.
+      </p>
+
+      <h2>Cómo simula (<code>BacktestEngine</code>)</h2>
+      <ul>
+        <li>Construye el DataFrame de mercado con <em>warmup</em> previo y aplica el procesamiento de la estrategia.</li>
+        <li>La señal se calcula sobre la vela cerrada y se aplica en la <strong>apertura de la vela siguiente</strong> (patrón <code>pending_signal</code>).</li>
+        <li>En cada vela: comprueba SL/TP, marca equity y, si hay señal pendiente, la ejecuta.</li>
+        <li>Dos modos de posición: <code>standard</code> (invierte al recibir señal opuesta) y <code>advanced</code> (pirámide solo de compras, con SL/TP por ATR).</li>
+        <li>Motivos de salida: <code>SL</code>, <code>TP</code>, <code>REVERSAL</code>, <code>END_OF_RANGE</code>. El PnL usa <code>tick_value/tick_size</code>.</li>
+      </ul>
+
+      <h2>La petición (<code>BacktestRequest</code>)</h2>
+      <div class="table-wrap">
+        <table>
+          <thead><tr><th>Campo</th><th>Significado / default</th></tr></thead>
+          <tbody>
+            <tr><td><code>strategy_key, strategy_label, module</code></td><td>Estrategia a evaluar.</td></tr>
+            <tr><td><code>symbol</code></td><td>Instrumento.</td></tr>
+            <tr><td><code>timeframe_value</code></td><td>Constante MT5 del timeframe.</td></tr>
+            <tr><td><code>start_date, end_date</code></td><td>Rango en UTC.</td></tr>
+            <tr><td><code>initial_balance</code></td><td>Balance inicial (&gt; 0).</td></tr>
+            <tr><td><code>warmup_bars</code></td><td>Velas de calentamiento; por defecto <code>max(BARS_HISTORY, 500)</code> = 500.</td></tr>
+            <tr><td><code>lot, sl_points, tp_points</code></td><td>Tamaño y stops.</td></tr>
+            <tr><td><code>spread_points, slippage_points, commission_per_lot</code></td><td>Costes de simulación (default <code>0.0</code>).</td></tr>
+            <tr><td><code>data_provider</code></td><td><code>"mt5"</code> (default) | <code>"dukascopy"</code>.</td></tr>
+          </tbody>
+        </table>
+      </div>
+      <p>Funciones públicas: <code>run_backtest(request, data_source=None)</code> y
+      <code>run_backtest_comparison(...)</code> (agrupa estrategias por timeframe, reutiliza el
+      DataFrame y devuelve la clave <code>strategies</code> con un resumen por estrategia).</p>
+
+      <h2>Métricas devueltas</h2>
+      <p>El resultado <code>status: "success"</code> incluye, entre otros:</p>
+      <div class="pill-row">
+        <span class="badge">total_return_pct</span><span class="badge">final_balance</span>
+        <span class="badge">total_profit</span><span class="badge">win_rate</span>
+        <span class="badge">closed_trades</span><span class="badge">winning/losing_trades</span>
+        <span class="badge">max_drawdown</span><span class="badge">profit_factor</span>
+        <span class="badge">avg_win / avg_loss</span><span class="badge">expectancy</span>
+        <span class="badge">trades[]</span><span class="badge">equity_curve[]</span>
+        <span class="badge">drawdown_curve[]</span>
+      </div>
+      <p>Cada trade incluye <code>entry/exit_time</code>, <code>entry/exit_price</code>,
+      <code>direction</code>, <code>volume</code>, <code>profit</code>, <code>reason</code>,
+      <code>mode</code>; cada punto de equity es <code>{time, equity, balance}</code>.</p>
+
+      <h2>CLI: <code>python -m backtesting runtime</code></h2>
+      <pre><code>python -m backtesting runtime \
+  --strategy-module strategies.strategy_primera_estrategia \
+  --symbol "#Germany40" --timeframe H1 \
+  --start 2024-01-01 --end 2024-12-31 \
+  --initial-balance 10000 --lot 0.01 \
+  --sl-points 300 --tp-points 500 \
+  --data-source dukascopy</code></pre>
+      <div class="table-wrap">
+        <table>
+          <thead><tr><th>Argumento</th><th>Default</th></tr></thead>
+          <tbody>
+            <tr><td><code>--strategy-key / --strategy-module / --strategy-label</code></td><td>De <code>config</code> / vacío.</td></tr>
+            <tr><td><code>--symbol</code></td><td><code>config.SYMBOL</code></td></tr>
+            <tr><td><code>--timeframe</code></td><td>Vacío → timeframe de la estrategia o M1.</td></tr>
+            <tr><td><code>--start</code> / <code>--end</code></td><td>Requeridos (<code>--end</code> se toma a fin de día).</td></tr>
+            <tr><td><code>--initial-balance</code></td><td><code>10000.0</code></td></tr>
+            <tr><td><code>--warmup-bars</code></td><td><code>0</code> → el motor usa 500.</td></tr>
+            <tr><td><code>--lot / --sl-points / --tp-points</code></td><td>De <code>config</code>.</td></tr>
+            <tr><td><code>--data-source</code></td><td><code>mt5</code> (o <code>dukascopy</code>).</td></tr>
+          </tbody>
+        </table>
+      </div>
+      <div class="callout note">
+        <div class="callout-title">ℹ El CLI no expone costes</div>
+        <p><code>spread_points</code>, <code>slippage_points</code> y <code>commission_per_lot</code>
+        existen en <code>BacktestRequest</code> pero <strong>no</strong> son argumentos del CLI;
+        solo se fijan vía dict (p.ej. desde la GUI). El resultado se imprime como JSON.</p>
+      </div>
+
+      <h2>Orquestación: <code>BacktestService</code></h2>
+      <p>
+        <code>src/application/backtest_service.py</code> aísla la construcción y validación de la
+        petición de la UI. Valida símbolo, fechas (parseadas de hora local a UTC) y balance; resuelve
+        la fuente de datos; y fija <code>warmup_bars = max(BARS_HISTORY, 500)</code>.
+      </p>
+      <pre><code>service = BacktestService()
+prepared = service.prepare_run(payload, strategy_entry)     # valida + resuelve datasource
+result   = service.execute_run(prepared.request, prepared.data_source)</code></pre>
+      <p>Métodos: <code>prepare_run</code>, <code>prepare_comparison</code> (≥ 2 estrategias),
+      <code>execute_run</code>, <code>execute_comparison</code>, <code>parse_date</code>,
+      <code>dukascopy_available</code>. <code>backtest.py</code> en la raíz es el backtester legacy,
+      en desuso.</p>
+
+      <div class="src-note">Fuente (código): <code>backtesting/runtime.py</code>, <code>backtesting/cli.py</code>, <code>src/application/backtest_service.py</code>.</div>
+
+      <div class="page-nav">
+        <a class="prev" href="persistencia.html"><span>Anterior</span>← Persistencia</a>
+        <a class="next" href="gui.html"><span>Siguiente</span>Interfaz (GUI) →</a>
+      </div>
+    </article>
+
+    <footer>
+      <span>Trading Agent · Wiki técnica derivada del código fuente.</span>
+      <span>Reconstruida desde 0, por fases.</span>
+    </footer>
+  </main>
+
+  <script src="assets/wiki.js"></script>
+</body>
+</html>

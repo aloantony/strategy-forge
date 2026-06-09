@@ -1,0 +1,196 @@
+<!DOCTYPE html>
+<html lang="es" data-theme="light">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Estrategias · Trading Agent Wiki</title>
+  <link rel="stylesheet" href="assets/style.css" />
+</head>
+<body>
+  <button class="nav-toggle" aria-label="Abrir menú">☰</button>
+  <div class="nav-backdrop"></div>
+
+  <aside class="sidebar">
+    <a class="brand" href="index.html">
+      <span class="brand-mark">◆</span>
+      <span class="brand-name">Trading Agent<small>MT5 · Wiki</small></span>
+    </a>
+    <nav>
+      <span class="nav-group">Introducción</span>
+      <a href="index.html">Inicio</a>
+      <a href="arquitectura.html">Arquitectura</a>
+      <a href="configuracion.html">Configuración</a>
+      <a href="despliegue.html">Despliegue</a>
+      <span class="nav-group">Datos y ejecución</span>
+      <a href="datos.html">Datos de mercado</a>
+      <a href="broker-ordenes.html">Broker y órdenes</a>
+      <span class="nav-group">Estrategias</span>
+      <a href="estrategias.html">Estrategias</a>
+      <a href="strategy-builder.html">Strategy Builder</a>
+      <span class="nav-group">Runtime</span>
+      <a href="runtime-live.html">Runtime live</a>
+      <a href="runtime-v1.html">Runtime v1</a>
+      <a href="persistencia.html">Persistencia</a>
+      <span class="nav-group">Herramientas</span>
+      <a href="backtesting.html">Backtesting</a>
+      <a href="gui.html">Interfaz (GUI)</a>
+      <span class="nav-group">Proyecto</span>
+      <a href="testing.html">Testing</a>
+      <a href="versiones.html">Versiones</a>
+      <a href="glosario.html">Glosario</a>
+    </nav>
+    <div class="sidebar-foot">
+      <span>Wiki · desde código</span>
+      <button class="theme-toggle" type="button"><span class="ico">☾</span><span class="label">Oscuro</span></button>
+    </div>
+  </aside>
+
+  <main>
+    <article class="content">
+      <span class="eyebrow">Estrategias</span>
+      <h1>Sistema de estrategias</h1>
+      <p class="lead">
+        Las estrategias viven en <code>strategies/</code> como módulos Python independientes. El
+        runtime las descubre, prepara su DataFrame y les pide una señal. Hay dos APIs: la legacy
+        (v0) basada en señales y la v1 basada en <code>decide()</code>.
+      </p>
+
+      <div class="pill-row">
+        <span class="badge buy">buy</span>
+        <span class="badge sell">sell</span>
+        <span class="badge">none</span>
+        <span class="badge accent">df.iloc[-2] = vela cerrada</span>
+      </div>
+
+      <h2>Qué invoca el runtime</h2>
+      <p>
+        <code>strategy_runtime.apply_strategy_processing</code> llama, si existen,
+        <code>prepare_dataframe(df)</code> y luego <code>compute_dir1_and_signals(df, enable)</code>
+        <em>o</em> <code>compute_signals(df, enable)</code>. Después,
+        <code>get_strategy_signal_payload</code> intenta <code>get_last_signal_payload(...)</code> y,
+        si no existe, <code>get_last_signal(...)</code>.
+      </p>
+
+      <h2>Contrato mínimo (API v0)</h2>
+      <pre><code>def get_last_signal(df: pd.DataFrame, verbose: bool = False) -> str:
+    # Devuelve "buy", "sell" o "none". Usa df.iloc[-2] (vela cerrada).
+    if df is None or len(df) &lt; 3:
+        return "none"
+    row = df.iloc[-2]
+    ...
+    return "none"</code></pre>
+
+      <h3>Funciones y atributos opcionales</h3>
+      <div class="table-wrap">
+        <table>
+          <thead><tr><th>Función / atributo</th><th>Para qué</th></tr></thead>
+          <tbody>
+            <tr><td><code>get_last_signal_payload(df, verbose) -&gt; dict</code></td><td>Devuelve <code>{"signal", "reason", …}</code>. El runtime normaliza estos campos: <code>pyramiding</code>, <code>atr_value</code>, <code>dynamic_sizing</code>, <code>volume_ratio</code>, <code>sl_atr_mult</code> (1.0), <code>tp_atr_mult</code> (2.0), <code>pyramid_atr_mult</code> (0.5). El <code>reason</code> se recorta a 160 caracteres.</td></tr>
+            <tr><td><code>prepare_dataframe(df) -&gt; df</code></td><td>Añade columnas de indicadores propios.</td></tr>
+            <tr><td><code>compute_signals(df, enable_signals)</code> / <code>compute_dir1_and_signals(...)</code></td><td>Añade <code>up_sig</code> / <code>dn_sig</code> para los marcadores de la GUI.</td></tr>
+            <tr><td><code>TIMEFRAME</code> o <code>get_timeframe()</code></td><td>Timeframe de la estrategia (override del global).</td></tr>
+            <tr><td><code>MAGIC_NUMBER</code></td><td>Override del magic number autogenerado.</td></tr>
+            <tr><td><code>DATA_WINDOW_FIELDS</code></td><td>Campos a mostrar en la Data Window de la GUI.</td></tr>
+            <tr><td><code>PARAMS</code></td><td>Esquema de parámetros configurables (ver abajo).</td></tr>
+          </tbody>
+        </table>
+      </div>
+
+      <h2>Parámetros (<code>PARAMS</code>)</h2>
+      <p>
+        Si el módulo define <code>PARAMS</code>, <code>main.py</code> lo valida con
+        <code>_validate_params_schema</code>: cada entrada debe ser
+        <code>{type: "int"|"float", default, min, max, label}</code> con <code>min ≤ default ≤ max</code>.
+        Los valores por defecto se fusionan con un fichero <code>&lt;módulo&gt;.params.json</code>
+        (si existe, con <em>clamp</em> a los límites). Si la función de señal acepta un kwarg
+        <code>params</code> (o <code>**kwargs</code>), el runtime se lo pasa.
+      </p>
+      <pre><code>PARAMS = {
+    "rsi_length": {"type": "int", "default": 14, "min": 2, "max": 50, "label": "RSI length"},
+}
+
+def get_last_signal_payload(df, verbose=False, params=None):
+    length = (params or {}).get("rsi_length", 14)
+    ...</code></pre>
+
+      <h2>API v1 (<code>decide</code> / plan)</h2>
+      <p>
+        Una estrategia v1 se marca con <code>STRATEGY_API_VERSION = 1</code> e implementa
+        <code>decide(context, state)</code>, que devuelve <code>{"plan": …, "next_state": …}</code>.
+        Opcionalmente <code>initial_state(context)</code> se llama en la primera iteración.
+      </p>
+      <pre><code>STRATEGY_API_VERSION = 1
+
+def initial_state(context: dict) -> dict:      # opcional
+    return {"holdings": 0}
+
+def decide(context: dict, state: dict) -> dict:
+    return {"plan": {"actions": [...], "reason": "..."}, "next_state": state}</code></pre>
+      <div class="callout note">
+        <div class="callout-title">ℹ Coexistencia v0 / v1</div>
+        <p>Con <code>STRATEGY_RUNTIME_MODE = "v1_only"</code>, <code>load_active_strategies</code>
+        descarta los módulos que no sean v1. Las estrategias v0 siguen funcionando porque el
+        <code>LegacyStrategyAdapter</code> presenta <code>get_last_signal</code> como un
+        <code>decide()</code>. Detalle en <a href="runtime-v1.html">Runtime v1</a>.</p>
+      </div>
+
+      <h2>Descubrimiento y magic number</h2>
+      <ul>
+        <li><strong>Descubrimiento:</strong> <code>load_active_strategies</code> escanea
+        <code>STRATEGY_DIR</code>, resuelve <code>ACTIVE_STRATEGIES</code> (o la clave por defecto, o
+        la primera encontrada) y prueba referencias como <code>strategies.&lt;key&gt;</code> y
+        <code>strategies.strategy_&lt;key&gt;</code>.</li>
+        <li><strong>Magic number:</strong> override explícito &gt; <code>MAGIC_NUMBER</code> del módulo
+        &gt; base de <code>config</code>. En multi-estrategia: <code>base·1000 + (crc32(key) % 997 + 1)</code>.</li>
+      </ul>
+
+      <div class="callout warning">
+        <div class="callout-title">⚠ Regla de aislamiento</div>
+        <p>Según el <code>README.md</code>, una estrategia debe mantenerse desacoplada: evita importar
+        <code>config</code>, <code>data_feed</code>, <code>trading</code>, <code>mt5_connection</code>
+        o la GUI. Recibe un DataFrame preparado y devuelve señales, sin IO ni conexiones.</p>
+      </div>
+
+      <h2>Ejemplo real: ADX + DI</h2>
+      <p>
+        <code>strategies/strategy_primera_estrategia.py</code> (generada por el Strategy Builder)
+        solo importa <code>pandas</code>. Define <code>TIMEFRAME = "H1"</code>,
+        <code>MAGIC_NUMBER = 42501</code> y añade en <code>prepare_dataframe</code> las columnas
+        <code>atr_14, atr_pct_14, adx_14, plus_di_14, minus_di_14, plus_di_cross_14,
+        minus_di_cross_14, volume_ratio_20</code>.
+      </p>
+      <pre><code>def get_last_signal(df, verbose=False):
+    if df is None or len(df) &lt; 3:
+        return "none"
+    if df.iloc[-2]["adx_14"] &gt; 25 and df.iloc[-2]["plus_di_cross_14"] &gt; 0:
+        return "buy"
+    elif df.iloc[-2]["adx_14"] &lt; 0:
+        return "sell"
+    return "none"
+
+def get_last_signal_payload(df, verbose=False):
+    signal = get_last_signal(df, verbose=verbose)
+    if signal == "buy":
+        return {"signal": "buy", "reason": "...",
+                "pyramiding": True, "dynamic_sizing": True,
+                "atr_value": df.iloc[-2]["atr_14"],
+                "volume_ratio": df.iloc[-2]["volume_ratio_20"]}
+    return {"signal": signal, "reason": "..."}</code></pre>
+
+      <div class="src-note">Fuente (código): <code>strategy_runtime.py</code>, <code>main.py</code> (<code>load_active_strategies</code>, <code>_validate_params_schema</code>), <code>strategies/strategy_primera_estrategia.py</code>, <code>README.md</code>.</div>
+
+      <div class="page-nav">
+        <a class="prev" href="broker-ordenes.html"><span>Anterior</span>← Broker y órdenes</a>
+        <a class="next" href="strategy-builder.html"><span>Siguiente</span>Strategy Builder →</a>
+      </div>
+    </article>
+
+    <footer>
+      <span>Trading Agent · Wiki técnica derivada del código fuente.</span>
+      <span>Reconstruida desde 0, por fases.</span>
+    </footer>
+  </main>
+
+  <script src="assets/wiki.js"></script>
+</body>
+</html>

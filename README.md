@@ -14,10 +14,13 @@ Bot de trading modular para MetaTrader 5 con interfaz visual estilo TradingView 
 ```mermaid
 flowchart LR
     A[MetaTrader 5 conectado] --> B[Trading Agent GUI]
-    B --> C[Estrategias activas]
-    C --> D[Señal: buy / sell / none]
+    B --> S[Application services]
+    S --> C[Estrategias activas]
+    C --> D[Señal / plan]
     D --> E[Ejecución en MT5]
 ```
+
+La GUI es la entrada visual, pero la lógica de proceso debe vivir en servicios reutilizables bajo `src/application/` y en los runtimes de `main.py`, `backtesting/` y `src/runtime/`.
 
 > [!IMPORTANT]
 > Abre MetaTrader 5 y deja la cuenta conectada antes de lanzar el bot.
@@ -124,9 +127,7 @@ En la pestaña `Estrategias`:
 
 ## Estrategias incluidas
 
-- `strategies.strategy_ema_rsi_trend`
-- `strategies.strategy_bollinger_rsi_reversion`
-- `strategies.strategy_donchian_breakout`
+- `strategies.strategy_primera_estrategia`
 
 ## Modo consola (opcional, sin GUI)
 
@@ -136,11 +137,19 @@ También puedes ejecutar el bot en modo script:
 python main.py
 ```
 
+## Documentación para developers
+
+La documentación técnica vive en `docs/DocsTradingSystemObsidian/`:
+
+- arquitectura y diagramas: `docs/DocsTradingSystemObsidian/architecture/`
+- diseño por subsistema: `docs/DocsTradingSystemObsidian/design/`
+- roles de agentes y cómo pedir correcciones: `docs/DocsTradingSystemObsidian/agents/`
+
+Regla arquitectónica actual: nuevas funcionalidades de proceso deben ir primero a servicios de aplicación reutilizables, y la GUI debe limitarse a presentar estado y capturar intención del usuario.
+
 ## Recomendaciones de seguridad
 
 - Prueba primero en cuenta demo.
 - Empieza con lotaje bajo.
 - Verifica símbolo y horario de mercado antes de operar en real.
-- Si expones `feedback_server.py` en internet, restringe `GET /feedback/list`:
-  - `FEEDBACK_LIST_ALLOWED_IPS=TU_IP_PUBLICA` (una o varias IP/CIDR separadas por coma).
-  - o `FEEDBACK_LIST_LOCAL_ONLY=true` para permitir solo localhost.
+- No ejecutes en real sin revisar el `SYMBOL`, el lote y los stops de `config.py`.

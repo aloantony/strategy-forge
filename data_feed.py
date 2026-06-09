@@ -4,7 +4,7 @@ Obtención y procesamiento de datos de mercado.
 
 import pandas as pd
 import numpy as np
-import MetaTrader5 as mt5
+from src.mt5_import import mt5
 import config
 
 
@@ -21,6 +21,10 @@ def get_rates_df(symbol: str, timeframe, bars: int) -> pd.DataFrame:
     Returns:
         pd.DataFrame: DataFrame con columnas time, open, high, low, close.
     """
+    if mt5 is None:
+        raise RuntimeError(
+            "get_rates_df requiere MT5. Para backtesting sin MT5 usa --data-source dukascopy."
+        )
     rates = mt5.copy_rates_from_pos(symbol, timeframe, 0, bars)
     if rates is None or len(rates) == 0:
         raise Exception(f"No se pudieron obtener datos para {symbol}")

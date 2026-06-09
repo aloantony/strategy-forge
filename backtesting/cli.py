@@ -13,7 +13,7 @@ import sys
 import zlib
 from datetime import datetime
 
-import MetaTrader5 as mt5
+from src.mt5_import import mt5
 
 import config
 import mt5_connection
@@ -96,6 +96,10 @@ def _build_parser() -> argparse.ArgumentParser:
     runtime_parser.add_argument("--lot", type=float, default=float(getattr(config, "LOT", 0.01) or 0.01))
     runtime_parser.add_argument("--sl-points", type=float, default=float(getattr(config, "SL_POINTS", 0.0) or 0.0))
     runtime_parser.add_argument("--tp-points", type=float, default=float(getattr(config, "TP_POINTS", 0.0) or 0.0))
+    runtime_parser.add_argument(
+        "--data-source", default="mt5", choices=["mt5", "dukascopy"],
+        help="Fuente de datos históricos. 'dukascopy' no requiere MT5.",
+    )
 
     return parser
 
@@ -130,12 +134,26 @@ def _run_runtime(args) -> int:
     if int(args.warmup_bars or 0) > 0:
         request["warmup_bars"] = int(args.warmup_bars)
 
-    mt5_connection.initialize_mt5()
-    try:
-        mt5_connection.check_symbol(request["symbol"])
-        result = runtime.run_backtest(request)
-    finally:
-        mt5.shutdown()
+    data_source_name = str(getattr(args, "data_source", "mt5") or "mt5").strip().lower()
+
+    if data_source_name == "mt5":
+        if mt5 is None:
+            print(
+                "ERROR: MT5 no disponible. Usa --data-source dukascopy para backtesting sin MT5.",
+                file=sys.stderr,
+            )
+            return 1
+        mt5_connection.initialize_mt5()
+        try:
+            mt5_connection.check_symbol(request["symbol"])
+            result = runtime.run_backtest(request)
+        finally:
+            mt5.shutdown()
+    else:
+        from src.data.factory import build_data_source, resolve_symbol_for_request
+        ds = build_data_source(data_source_name, request["symbol"])
+        request["symbol"] = resolve_symbol_for_request(data_source_name, request["symbol"])
+        result = runtime.run_backtest(request, data_source=ds)
 
     print(json.dumps(result, ensure_ascii=False, indent=2, default=str))
     return 0 if result.get("status") == "success" else 1

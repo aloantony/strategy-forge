@@ -1,0 +1,151 @@
+<!DOCTYPE html>
+<html lang="es" data-theme="light">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Glosario · Trading Agent Wiki</title>
+  <link rel="stylesheet" href="assets/style.css" />
+</head>
+<body>
+  <button class="nav-toggle" aria-label="Abrir menú">☰</button>
+  <div class="nav-backdrop"></div>
+
+  <aside class="sidebar">
+    <a class="brand" href="index.html">
+      <span class="brand-mark">◆</span>
+      <span class="brand-name">Trading Agent<small>MT5 · Wiki</small></span>
+    </a>
+    <nav>
+      <span class="nav-group">Introducción</span>
+      <a href="index.html">Inicio</a>
+      <a href="arquitectura.html">Arquitectura</a>
+      <a href="configuracion.html">Configuración</a>
+      <a href="despliegue.html">Despliegue</a>
+      <span class="nav-group">Datos y ejecución</span>
+      <a href="datos.html">Datos de mercado</a>
+      <a href="broker-ordenes.html">Broker y órdenes</a>
+      <span class="nav-group">Estrategias</span>
+      <a href="estrategias.html">Estrategias</a>
+      <a href="strategy-builder.html">Strategy Builder</a>
+      <span class="nav-group">Runtime</span>
+      <a href="runtime-live.html">Runtime live</a>
+      <a href="runtime-v1.html">Runtime v1</a>
+      <a href="persistencia.html">Persistencia</a>
+      <span class="nav-group">Herramientas</span>
+      <a href="backtesting.html">Backtesting</a>
+      <a href="gui.html">Interfaz (GUI)</a>
+      <span class="nav-group">Proyecto</span>
+      <a href="testing.html">Testing</a>
+      <a href="versiones.html">Versiones</a>
+      <a href="glosario.html">Glosario</a>
+    </nav>
+    <div class="sidebar-foot">
+      <span>Wiki · desde código</span>
+      <button class="theme-toggle" type="button"><span class="ico">☾</span><span class="label">Oscuro</span></button>
+    </div>
+  </aside>
+
+  <main>
+    <article class="content">
+      <span class="eyebrow">Proyecto</span>
+      <h1>Glosario</h1>
+      <p class="lead">
+        Vocabulario derivado del código, agrupado por área. Cada término aparece tal y como lo usa el
+        repositorio.
+      </p>
+
+      <h2>Estrategias y señales</h2>
+      <div class="table-wrap">
+        <table>
+          <thead><tr><th>Término</th><th>Significado</th></tr></thead>
+          <tbody>
+            <tr><td>Strategy</td><td>Módulo Python en <code>strategies/</code> que recibe un <code>DataFrame</code> y devuelve una señal o un payload.</td></tr>
+            <tr><td>Signal</td><td>Valor normalizado: <span class="badge buy">buy</span> <span class="badge sell">sell</span> <span class="badge">none</span></td></tr>
+            <tr><td>Signal payload</td><td>Dict con <code>signal</code>, <code>reason</code> y campos como <code>pyramiding</code>, <code>atr_value</code>, <code>dynamic_sizing</code>, <code>volume_ratio</code>.</td></tr>
+            <tr><td>Closed candle</td><td>Última vela cerrada (<code>df.iloc[-2]</code>); las estrategias deciden sobre ella.</td></tr>
+            <tr><td>PARAMS</td><td>Esquema de parámetros editables de una estrategia (<code>{type, default, min, max, label}</code>).</td></tr>
+            <tr><td>Magic number</td><td>Identificador con el que MT5 agrupa las órdenes de una estrategia.</td></tr>
+            <tr><td>Pyramiding</td><td>Añadir tamaño a una posición ganadora (solo largos en <code>trading.py</code>).</td></tr>
+          </tbody>
+        </table>
+      </div>
+
+      <h2>Runtime v1 y planes</h2>
+      <div class="table-wrap">
+        <table>
+          <thead><tr><th>Término</th><th>Significado</th></tr></thead>
+          <tbody>
+            <tr><td>decide()</td><td>Función de una estrategia v1 que devuelve <code>{plan, next_state}</code>.</td></tr>
+            <tr><td>Context</td><td>Dict que recibe <code>decide()</code>: run, clock, market, instrument, account, portfolio, execution, engine.</td></tr>
+            <tr><td>Plan</td><td>Decisión estructurada con una lista de <code>actions</code> y un <code>reason</code>.</td></tr>
+            <tr><td>Action / Normalized action</td><td>Operación pedida (open/close/reduce/move SL-TP…) y su versión validada por el <code>PlanInterpreter</code>.</td></tr>
+            <tr><td>LegacyStrategyAdapter</td><td>Envuelve una estrategia v0 y la presenta como <code>decide()</code>.</td></tr>
+            <tr><td>Execution report / Action report</td><td>Resultado persistido de ejecutar un plan y de cada acción.</td></tr>
+            <tr><td>State store</td><td>Carga/guarda el estado de la instancia con revisión (concurrencia optimista).</td></tr>
+          </tbody>
+        </table>
+      </div>
+
+      <h2>Recursos canónicos y persistencia</h2>
+      <div class="table-wrap">
+        <table>
+          <thead><tr><th>Término</th><th>Significado</th></tr></thead>
+          <tbody>
+            <tr><td>Entry group</td><td>Grupo canónico de entradas relacionadas.</td></tr>
+            <tr><td>Leg</td><td>Posición o parte de posición (volumen, SL/TP, estado).</td></tr>
+            <tr><td>Fill</td><td>Ejecución real o simulada (<code>open</code> / <code>reduce</code> / <code>close</code>).</td></tr>
+            <tr><td>Pending order</td><td>Orden pendiente (limit/stop) modelada en persistencia.</td></tr>
+            <tr><td>Event log</td><td>Registro append-only de eventos del runtime.</td></tr>
+            <tr><td>Unit of Work</td><td>Transacción (<code>uow.immediate()</code>) con commit al salir y rollback ante error.</td></tr>
+          </tbody>
+        </table>
+      </div>
+
+      <h2>Datos y broker</h2>
+      <div class="table-wrap">
+        <table>
+          <thead><tr><th>Término</th><th>Significado</th></tr></thead>
+          <tbody>
+            <tr><td>Data feed</td><td>Fuente live enriquecida (<code>IDataFeed.get_enriched_df</code>).</td></tr>
+            <tr><td>Data source</td><td>Fuente histórica para backtest (<code>IHistoricalDataSource</code>): MT5, Dukascopy o File.</td></tr>
+            <tr><td>Broker adapter</td><td>Implementación de <code>IBrokerAdapter</code>; hoy <code>MT5BrokerAdapter</code>.</td></tr>
+            <tr><td>Símbolo canónico</td><td>Nombre neutral en <code>symbols.json</code> que se traduce al ticker de cada proveedor.</td></tr>
+            <tr><td>Filling mode</td><td>Política de ejecución del broker (FOK / IOC / RETURN); se negocia con reintentos.</td></tr>
+            <tr><td>Comentario de orden</td><td><code>TA|o|s=&lt;estrategia&gt;|r=&lt;motivo&gt;</code> (≤ 31 caracteres) para atribuir trades.</td></tr>
+          </tbody>
+        </table>
+      </div>
+
+      <h2>Indicadores y métricas</h2>
+      <div class="table-wrap">
+        <table>
+          <thead><tr><th>Término</th><th>Significado</th></tr></thead>
+          <tbody>
+            <tr><td>OHLC4 / HLC3 / HL2</td><td>Precios agregados de la vela usados como fuente (<code>SOURCE_MODE</code>).</td></tr>
+            <tr><td>ATR</td><td>Average True Range: volatilidad; base de bandas, stops y sizing.</td></tr>
+            <tr><td>Supertrend / TCI / HMA</td><td>Indicadores extra calculados por <code>data_feed.py</code> (principalmente para la GUI).</td></tr>
+            <tr><td>Warmup bars</td><td>Velas previas para inicializar indicadores en backtest (por defecto 500).</td></tr>
+            <tr><td>Drawdown</td><td>Caída desde un máximo de equity; <code>max_drawdown</code> es la peor observada.</td></tr>
+            <tr><td>Profit factor / Expectancy</td><td>Beneficio bruto ÷ pérdida bruta; y resultado medio esperado por operación.</td></tr>
+            <tr><td>Riesgo agregado</td><td><code>check_aggregate_risk</code>: límite del 3% del balance sobre el riesgo total.</td></tr>
+          </tbody>
+        </table>
+      </div>
+
+      <div class="src-note">Fuente (código): <code>strategy_runtime.py</code>, <code>src/runtime/*</code>, <code>src/persistence/schema.py</code>, <code>data_feed.py</code>, <code>trading.py</code>, <code>backtesting/runtime.py</code>.</div>
+
+      <div class="page-nav">
+        <a class="prev" href="versiones.html"><span>Anterior</span>← Versiones</a>
+        <a class="next disabled" href="#"></a>
+      </div>
+    </article>
+
+    <footer>
+      <span>Trading Agent · Wiki técnica derivada del código fuente.</span>
+      <span>Reconstruida desde 0, por fases.</span>
+    </footer>
+  </main>
+
+  <script src="assets/wiki.js"></script>
+</body>
+</html>

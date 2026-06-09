@@ -4,7 +4,7 @@ Simula operaciones con datos históricos y calcula métricas de rendimiento.
 """
 
 import pandas as pd
-import MetaTrader5 as mt5
+from src.mt5_import import mt5
 from datetime import datetime, timedelta
 import importlib
 import config
@@ -92,6 +92,11 @@ class BacktestEngine:
             sl_points: Stop Loss en puntos.
             tp_points: Take Profit en puntos.
         """
+        if mt5 is None:
+            raise RuntimeError(
+                "backtest.py requiere MT5. Para backtesting cross-platform usa: "
+                "python -m backtesting runtime --data-source dukascopy"
+            )
         self.symbol = symbol
         self.timeframe = timeframe
         self.lot = lot

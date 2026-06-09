@@ -224,3 +224,77 @@ def test_backtest_incomplete_pyramiding_payload_falls_back_to_standard(monkeypat
     assert result["trades"][0]["mode"] == "standard"
     assert result["trades"][0]["entry_price"] == pytest.approx(100.0)
     assert result["trades"][0]["exit_price"] == pytest.approx(100.5)
+
+
+def test_backtest_mtf_mode_uses_required_frames_and_advanced_payload(monkeypatch):
+    df = pd.DataFrame(
+        [
+            {"time": _utc(2026, 4, 1, 9, 0), "open": 99.0, "high": 99.5, "low": 98.5, "close": 99.0},
+            {"time": _utc(2026, 4, 1, 9, 1), "open": 99.5, "high": 100.0, "low": 99.0, "close": 99.7},
+            {"time": _utc(2026, 4, 1, 9, 2), "open": 100.0, "high": 100.6, "low": 99.8, "close": 100.4},
+            {"time": _utc(2026, 4, 1, 9, 3), "open": 100.7, "high": 101.2, "low": 100.3, "close": 101.0},
+            {"time": _utc(2026, 4, 1, 9, 4), "open": 101.3, "high": 101.8, "low": 100.9, "close": 101.6},
+        ]
+    )
+
+    class StrategyModule:
+        TIMEFRAME = "M1"
+        PRIMARY_TIMEFRAME = "M1"
+        REQUIRED_TIMEFRAMES = ["M1", "M2"]
+
+        @staticmethod
+        def prepare_frames(frames):
+            return frames
+
+        @staticmethod
+        def get_last_signal_payload_mtf(frames, verbose=False):
+            m1 = frames["M1"]
+            m2 = frames["M2"]
+            if len(m2) < 2:
+                return {"signal": "none"}
+            planned = {2: 0, 3: 1}.get(len(m1) - 1)
+            if planned is None:
+                return {"signal": "none"}
+            return {
+                "signal": "buy",
+                "reason": f"mtf-tier-{planned}",
+                "pyramiding": True,
+                "atr_value": 1.0,
+                "sl_atr_mult": 1.5,
+                "tp_atr_mult": 20.0,
+                "pyramid_atr_mult": 0.5,
+                "entry_index": planned,
+                "max_entries": 2,
+                "risk_pct": 0.0,
+                "block_id": "A",
+                "tier_id": f"tier_{planned + 1}",
+            }
+
+    monkeypatch.setattr(backtest_runtime, "_build_market_dataframe", lambda *args, **kwargs: df.copy())
+
+    result = backtest_runtime.run_backtest(
+        {
+            "strategy_key": "mtf",
+            "strategy_label": "MTF",
+            "module": StrategyModule,
+            "symbol": "TEST",
+            "timeframe_value": backtest_runtime.TIMEFRAME_MAP["M5"],
+            "start_date": _utc(2026, 4, 1, 9, 2),
+            "end_date": _utc(2026, 4, 1, 9, 4),
+            "initial_balance": 1000.0,
+            "warmup_bars": 10,
+            "lot": 0.1,
+            "sl_points": 5.0,
+            "tp_points": 10.0,
+        },
+        data_source=_MockDataSource(),
+    )
+
+    assert result["status"] == "success"
+    assert result["timeframe"] == "M5"
+    assert result["closed_trades"] == 2
+    assert [trade["mode"] for trade in result["trades"]] == ["advanced", "advanced"]
+    assert [trade["signal_reason"] for trade in result["trades"]] == ["mtf-tier-0", "mtf-tier-1"]
+    assert [trade["entry_price"] for trade in result["trades"]] == pytest.approx([100.0, 100.7])
+    assert [trade["exit_price"] for trade in result["trades"]] == pytest.approx([101.6, 101.6])
+    assert result["final_balance"] == pytest.approx(1000.25)

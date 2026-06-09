@@ -13,10 +13,15 @@ This module is NOT imported by generated strategies (isolation rule).
 import ast
 import copy
 import json
+import logging
 import random
 import re
 import types
 from pathlib import Path
+
+from src.runtime.timeframes import TIMEFRAME_MINUTES
+
+logger = logging.getLogger(__name__)
 
 # ---------------------------------------------------------------------------
 # Constants
@@ -33,12 +38,12 @@ ALWAYS_AVAILABLE_COLUMNS = {
     "tci", "tci_signal", "tci_hist",
 }
 
-VALID_TIMEFRAMES = {"M1", "M5", "M15", "M30", "H1", "H4", "D1"}
+VALID_TIMEFRAMES = set(TIMEFRAME_MINUTES)
 
 VALID_INDICATOR_IDS = {
     "EMA", "RSI", "BB", "DONCHIAN", "ATR", "VWAP",
     "VOLUME_RATIO", "SMA", "HMA", "SUPERTREND", "TCI",
-    "ADX_DI",
+    "ADX_DI", "VORTEX",
 }
 
 # ---------------------------------------------------------------------------
@@ -74,6 +79,10 @@ def generate_strategy_file(config: dict, strategies_dir: Path = None, is_new: bo
     if strategies_dir is None:
         strategies_dir = STRATEGIES_DIR
 
+    if _is_mtf_config(config):
+        from strategy_builder.mtf_generator import generate_mtf_strategy_file
+        return generate_mtf_strategy_file(config, strategies_dir=strategies_dir)
+
     py_content = render_strategy_source(config)
 
     name = config["name"]
@@ -89,6 +98,10 @@ def generate_strategy_file(config: dict, strategies_dir: Path = None, is_new: bo
 
 def render_strategy_source(config: dict) -> str:
     """Render a validated StrategyConfig into Python source code."""
+    if _is_mtf_config(config):
+        from strategy_builder.mtf_generator import render_mtf_strategy_source
+        return render_mtf_strategy_source(config)
+
     name = config["name"]
     if not name:
         raise GeneratorError("Strategy name is required to render source.")
@@ -105,9 +118,9 @@ def render_strategy_source(config: dict) -> str:
     custom_indicators = [ind for ind in indicators if not ind["pre_computed"]]
     needs_prepare = len(custom_indicators) > 0
     needs_volume = any(ind["id"] in ("VWAP", "VOLUME_RATIO") for ind in custom_indicators)
-    needs_high_low = any(ind["id"] in ("DONCHIAN", "ATR", "VWAP", "ADX_DI") for ind in custom_indicators)
+    needs_high_low = any(ind["id"] in ("DONCHIAN", "ATR", "VWAP", "ADX_DI", "VORTEX") for ind in custom_indicators)
     needs_close = any(
-        ind["id"] in ("EMA", "RSI", "BB", "ATR", "VWAP", "VOLUME_RATIO", "SMA", "ADX_DI")
+        ind["id"] in ("EMA", "RSI", "BB", "ATR", "VWAP", "VOLUME_RATIO", "SMA", "ADX_DI", "VORTEX")
         for ind in custom_indicators
     )
 
@@ -157,7 +170,11 @@ def build_strategy_module(
     Useful for Builder previews without writing files to disk.
     """
     preview_config = copy.deepcopy(config)
-    validate_strategy_config(preview_config, is_new=is_new, strategies_dir=strategies_dir)
+    if _is_mtf_config(preview_config):
+        from strategy_builder.mtf_generator import validate_mtf_strategy_config
+        validate_mtf_strategy_config(preview_config, is_new=is_new, strategies_dir=strategies_dir)
+    else:
+        validate_strategy_config(preview_config, is_new=is_new, strategies_dir=strategies_dir)
     py_content = render_strategy_source(preview_config)
 
     module = types.ModuleType(module_name)
@@ -174,6 +191,7 @@ def handle_save_new(raw_config: dict, strategies_dir: Path = None) -> Path:
     if strategies_dir is None:
         strategies_dir = STRATEGIES_DIR
 
+    raw_config = dict(raw_config)
     raw_config["name"] = sanitize_name(raw_config.get("display_name", ""), strategies_dir)
     name = raw_config["name"]
     py_path = strategies_dir / f"strategy_{name}.py"
@@ -188,11 +206,15 @@ def handle_save_new(raw_config: dict, strategies_dir: Path = None) -> Path:
             f"A Builder strategy named '{name}' already exists. Use Edit to modify it."
         )
 
-    raw_config["magic_number"] = generate_magic_number()
-    raw_config["schema_version"] = 1
+    raw_config["magic_number"] = generate_magic_number(strategies_dir)
+    raw_config["schema_version"] = _requested_schema_version(raw_config)
 
-    validate_strategy_config(raw_config, is_new=True, strategies_dir=strategies_dir)
-    return generate_strategy_file(raw_config, strategies_dir=strategies_dir, is_new=True)
+    if _is_mtf_config(raw_config):
+        from strategy_builder.mtf_generator import validate_mtf_strategy_config
+        validate_mtf_strategy_config(raw_config, is_new=True, strategies_dir=strategies_dir)
+    else:
+        validate_strategy_config(raw_config, is_new=True, strategies_dir=strategies_dir)
+    return generate_strategy_file(raw_config, strategies_dir=strategies_dir)
 
 
 def handle_save_edit(raw_config: dict, original_name: str, strategies_dir: Path = None) -> Path:
@@ -203,6 +225,7 @@ def handle_save_edit(raw_config: dict, original_name: str, strategies_dir: Path 
     if strategies_dir is None:
         strategies_dir = STRATEGIES_DIR
 
+    raw_config = dict(raw_config)
     stored_json_path = strategies_dir / f"strategy_{original_name}.json"
     stored_config = json.loads(stored_json_path.read_text(encoding="utf-8"))
     preserved_magic = stored_config["magic_number"]
@@ -211,15 +234,19 @@ def handle_save_edit(raw_config: dict, original_name: str, strategies_dir: Path 
                              exclude_name=original_name)
     raw_config["name"] = new_name
     raw_config["magic_number"] = preserved_magic
-    raw_config["schema_version"] = 1
+    raw_config["schema_version"] = _requested_schema_version(raw_config)
 
     if new_name != original_name:
         new_py = strategies_dir / f"strategy_{new_name}.py"
         if new_py.exists():
             raise NameCollisionError(f"Name '{new_name}' is already taken.")
 
-    validate_strategy_config(raw_config, is_new=False, strategies_dir=strategies_dir)
-    py_path = generate_strategy_file(raw_config, strategies_dir=strategies_dir, is_new=False)
+    if _is_mtf_config(raw_config):
+        from strategy_builder.mtf_generator import validate_mtf_strategy_config
+        validate_mtf_strategy_config(raw_config, is_new=False, strategies_dir=strategies_dir)
+    else:
+        validate_strategy_config(raw_config, is_new=False, strategies_dir=strategies_dir)
+    py_path = generate_strategy_file(raw_config, strategies_dir=strategies_dir)
 
     if new_name != original_name:
         old_py = strategies_dir / f"strategy_{original_name}.py"
@@ -235,6 +262,19 @@ def handle_save_edit(raw_config: dict, original_name: str, strategies_dir: Path 
 # ---------------------------------------------------------------------------
 # Validator
 # ---------------------------------------------------------------------------
+
+
+def _requested_schema_version(config: dict) -> int:
+    if str(config.get("mode") or "").strip().lower() in {"multi_timeframe", "mtf"}:
+        return 2
+    try:
+        return int(config.get("schema_version") or 1)
+    except (TypeError, ValueError):
+        return 1
+
+
+def _is_mtf_config(config: dict) -> bool:
+    return _requested_schema_version(config) == 2
 
 
 def validate_strategy_config(
@@ -332,18 +372,52 @@ def validate_strategy_config(
     _validate_condition_node(config["buy_condition"], available, "buy_condition")
     _validate_condition_node(config["sell_condition"], available, "sell_condition")
 
+    # payload_extra_fields validation — these are interpolated into generated source,
+    # so column references must resolve to a real column (no silent runtime failure / injection).
+    _validate_payload_extra_fields(config.get("payload_extra_fields", []), available)
+
     # Identical buy/sell warning
     if (json.dumps(config["buy_condition"], sort_keys=True) ==
             json.dumps(config["sell_condition"], sort_keys=True)):
-        print(
-            "WARNING: Buy and sell conditions are identical "
+        logger.warning(
+            "Buy and sell conditions are identical "
             "— strategy will always trade buy on conflict."
         )
 
     # VWAP on D1 warning
     has_vwap = any(ind["id"] == "VWAP" for ind in config["indicators"])
     if has_vwap and config["timeframe"] == "D1":
-        print("WARNING: VWAP is not meaningful on D1 timeframe.")
+        logger.warning("VWAP is not meaningful on D1 timeframe.")
+
+
+def _validate_payload_extra_fields(fields, available_columns: set) -> None:
+    if not isinstance(fields, list):
+        raise ValidationError("payload_extra_fields must be a list.")
+    seen_keys: set = set()
+    for i, field in enumerate(fields):
+        path = f"payload_extra_fields[{i}]"
+        if not isinstance(field, dict):
+            raise ValidationError(f"{path}: must be an object.")
+        key = field.get("key")
+        if not isinstance(key, str) or not re.match(r'^[a-z_][a-z0-9_]*$', key):
+            raise ValidationError(
+                f"{path}: invalid key '{key}'. Use lowercase letters, digits, underscores."
+            )
+        if key in seen_keys:
+            raise ValidationError(f"{path}: duplicate key '{key}'.")
+        seen_keys.add(key)
+        field_type = field.get("type")
+        if field_type not in ("literal", "column"):
+            raise ValidationError(
+                f"{path}: type must be 'literal' or 'column' (got '{field_type}')."
+            )
+        if "value" not in field:
+            raise ValidationError(f"{path}: missing 'value'.")
+        if field_type == "column" and field["value"] not in available_columns:
+            raise ValidationError(
+                f"{path}: column '{field['value']}' not available. "
+                f"Add the corresponding indicator."
+            )
 
 
 def _validate_condition_node(node: dict, available_columns: set, path: str) -> None:
@@ -383,9 +457,41 @@ def _validate_condition_node(node: dict, available_columns: set, path: str) -> N
 # ---------------------------------------------------------------------------
 
 
-def generate_magic_number() -> int:
-    """Return a random 5-digit magic number (10000–99999)."""
-    return random.randint(10000, 99999)
+def generate_magic_number(strategies_dir: Path = None) -> int:
+    """Return a random 5-digit magic number (10000–99999) not already in use.
+
+    Scans strategy_*.json companions in strategies_dir to avoid collisions, so
+    each generated strategy gets a unique magic for correct order attribution.
+    """
+    if strategies_dir is None:
+        strategies_dir = STRATEGIES_DIR
+
+    used = _used_magic_numbers(strategies_dir)
+    # 90000 possible values; with a sane number of strategies this terminates fast.
+    if len(used) >= (99999 - 10000 + 1):
+        raise GeneratorError("No free magic numbers available in range 10000–99999.")
+    while True:
+        magic = random.randint(10000, 99999)
+        if magic not in used:
+            return magic
+
+
+def _used_magic_numbers(strategies_dir: Path) -> set:
+    """Collect magic numbers already declared in strategy_*.json companions."""
+    used: set = set()
+    try:
+        json_paths = strategies_dir.glob("strategy_*.json")
+    except Exception:
+        return used
+    for json_path in json_paths:
+        try:
+            data = json.loads(json_path.read_text(encoding="utf-8"))
+        except Exception:
+            continue
+        magic = data.get("magic_number")
+        if isinstance(magic, int):
+            used.add(magic)
+    return used
 
 
 def sanitize_name(display_name: str, strategies_dir: Path = None, exclude_name: str = None) -> str:
@@ -554,6 +660,9 @@ def _emit_module_constants(timeframe: str, magic_number: int, indicators: list) 
         elif ind_id == "ADX_DI":
             period = int(p["period"])
             lines.append(f"ADX_DI_{period}_PERIOD = {period}")
+        elif ind_id == "VORTEX":
+            period = int(p["period"])
+            lines.append(f"VORTEX_{period}_PERIOD = {period}")
         # VWAP, HMA, SUPERTREND, TCI: no user params → no constants
 
     return "\n".join(lines)
@@ -632,6 +741,13 @@ def _emit_params_block(indicators: list) -> str:
             entries.append((
                 f"adx_di_{period}_period",
                 f"ADX/DI {period} Period",
+                "int", period, 2, 200,
+            ))
+        elif ind_id == "VORTEX":
+            period = int(p["period"])
+            entries.append((
+                f"vortex_{period}_period",
+                f"Vortex {period} Period",
                 "int", period, 2, 200,
             ))
         # VWAP, HMA, SUPERTREND, TCI: no user-editable params → no entries
@@ -829,6 +945,23 @@ def _emit_data_window_fields(indicators: list) -> str:
             entries.append(
                 f'{{"key": "minus_di_cross_{period}", "label": "-DI Cross ({period})", "format": "int", "section": "ADX"}}'
             )
+        elif ind_id == "VORTEX":
+            period = int(p["period"])
+            entries.append(
+                f'{{"key": "vi_plus_{period}", "label": "VI+ ({period})", "format": "number", "section": "Vortex"}}'
+            )
+            entries.append(
+                f'{{"key": "vi_minus_{period}", "label": "VI- ({period})", "format": "number", "section": "Vortex"}}'
+            )
+            entries.append(
+                f'{{"key": "vortex_dir_{period}", "label": "Vortex Dir ({period})", "format": "int", "section": "Vortex"}}'
+            )
+            entries.append(
+                f'{{"key": "vortex_cross_up_{period}", "label": "Vortex Cross Up ({period})", "format": "int", "section": "Vortex"}}'
+            )
+            entries.append(
+                f'{{"key": "vortex_cross_down_{period}", "label": "Vortex Cross Down ({period})", "format": "int", "section": "Vortex"}}'
+            )
 
     # Always-last: signal columns
     entries.append(
@@ -903,6 +1036,25 @@ def _adx_di(high: pd.Series, low: pd.Series, close: pd.Series, length: int):
     minus_cross = ((minus_di > plus_di)  & (mprev <= pprev)).astype(int)
     return adx, plus_di, minus_di, plus_cross, minus_cross"""
 
+_TEMPLATE_VORTEX = """\
+def _vortex(high: pd.Series, low: pd.Series, close: pd.Series, length: int):
+    prev_close = close.shift(1)
+    tr = pd.concat(
+        [(high - low).abs(),
+         (high - prev_close).abs(),
+         (low  - prev_close).abs()],
+        axis=1,
+    ).max(axis=1)
+    vm_plus  = (high - low.shift(1)).abs()
+    vm_minus = (low  - high.shift(1)).abs()
+    tr_sum   = tr.rolling(length).sum().replace(0.0, float("nan"))
+    vi_plus  = vm_plus.rolling(length).sum() / tr_sum
+    vi_minus = vm_minus.rolling(length).sum() / tr_sum
+    direction = pd.Series(-1, index=high.index, dtype="int64").mask(vi_plus > vi_minus, 1)
+    cross_up = ((vi_plus > vi_minus) & (vi_plus.shift(1) <= vi_minus.shift(1))).astype(int)
+    cross_down = ((vi_minus > vi_plus) & (vi_minus.shift(1) <= vi_plus.shift(1))).astype(int)
+    return vi_plus, vi_minus, direction, cross_up, cross_down"""
+
 _TEMPLATE_INTRADAY_VWAP = """\
 def _intraday_vwap(df: pd.DataFrame,
                    high: pd.Series, low: pd.Series,
@@ -933,6 +1085,8 @@ def _emit_helper_functions(indicators: list) -> str:
         blocks.append(_TEMPLATE_INTRADAY_VWAP)
     if "ADX_DI" in custom_ids:
         blocks.append(_TEMPLATE_ADX_DI)
+    if "VORTEX" in custom_ids:
+        blocks.append(_TEMPLATE_VORTEX)
 
     return "\n\n".join(blocks)
 
@@ -995,6 +1149,14 @@ def _emit_indicator_computation_block(ind: dict) -> list:
             f"    adx_{period}, plus_di_{period}, minus_di_{period}, "
             f"plus_di_cross_{period}, minus_di_cross_{period} = "
             f"_adx_di(high, low, close, {period})",
+        ]
+
+    elif ind_id == "VORTEX":
+        period = int(p["period"])
+        return [
+            f"    vi_plus_{period}, vi_minus_{period}, vortex_dir_{period}, "
+            f"vortex_cross_up_{period}, vortex_cross_down_{period} = "
+            f"_vortex(high, low, close, {period})",
         ]
 
     else:

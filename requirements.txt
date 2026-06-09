@@ -1,4 +1,5 @@
-MetaTrader5
+MetaTrader5; sys_platform == "win32"
+mt5linux; sys_platform != "win32"
 pandas
 matplotlib
 customtkinter
