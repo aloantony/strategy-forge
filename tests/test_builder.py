@@ -14,8 +14,8 @@ import pandas as pd
 
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
-import strategy_runtime
-from strategy_builder.generator import (
+from backend.strategy import runtime as strategy_runtime
+from backend.strategy_builder.generator import (
     GeneratorError,
     NameCollisionError,
     ValidationError,

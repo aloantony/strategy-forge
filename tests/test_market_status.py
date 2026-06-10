@@ -15,7 +15,7 @@ sys.dont_write_bytecode = True
 
 
 ROOT = Path(__file__).resolve().parent.parent
-TRADING_PATH = ROOT / "trading.py"
+TRADING_PATH = ROOT / "backend" / "brokers" / "mt5" / "trading.py"
 sys.path.insert(0, str(ROOT))
 
 

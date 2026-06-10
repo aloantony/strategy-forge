@@ -6,7 +6,7 @@ import types
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
-from backtesting import cli
+from backend.backtesting import cli
 
 
 def test_cli_runtime_command_routes_to_runtime_runner(monkeypatch, capsys):

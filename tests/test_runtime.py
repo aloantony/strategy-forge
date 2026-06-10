@@ -7,11 +7,11 @@ import types
 import pytest
 import pandas as pd
 
-from src.runtime.adapter import LegacyStrategyAdapter, _extract_signal_payload, _get_owned_side
-from src.runtime.plan_interpreter import PlanInterpreter, PlanValidationError
-from src.runtime.state_store import StrategyStateStore
-from src.persistence import bootstrap_persistence, UnitOfWork
-from src.persistence.dal import _new_id
+from backend.runtime.adapter import LegacyStrategyAdapter, _extract_signal_payload, _get_owned_side
+from backend.runtime.plan_interpreter import PlanInterpreter, PlanValidationError
+from backend.runtime.state_store import StrategyStateStore
+from backend.persistence import bootstrap_persistence, UnitOfWork
+from backend.persistence.dal import _new_id
 
 
 # ---------------------------------------------------------------------------

@@ -5,7 +5,7 @@ import types
 
 import pytest
 
-from src.application.backtest_service import BacktestService
+from backend.application.backtest_service import BacktestService
 
 
 class DummyConfig:

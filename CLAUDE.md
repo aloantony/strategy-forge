@@ -4,7 +4,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Overview
 
-This is a MetaTrader 5 (MT5) trading bot with a TradingView-style GUI. It runs multiple pluggable trading strategies concurrently and executes orders automatically. The GUI is a visual entrypoint, not the architectural owner of business processes; reusable process logic belongs in `src/application/`, `main.py`, `backtesting/`, and `src/runtime/`.
+This is a trading bot with a TradingView-style GUI. It runs multiple pluggable trading strategies concurrently and executes orders automatically. The backend is broker-agnostic (`IBrokerAdapter`): MT5 is one optional adapter (Windows); a `paper` adapter allows running on Linux/servers without MT5. The GUI is a visual entrypoint, not the architectural owner of business processes; reusable process logic belongs in `backend/application/`, `backend/main.py`, `backend/backtesting/`, and `backend/runtime/`.
 
 ## Commands
 
@@ -12,14 +12,14 @@ This is a MetaTrader 5 (MT5) trading bot with a TradingView-style GUI. It runs m
 # Install dependencies
 pip install -r requirements.txt
 
-# Run the bot (main entry point)
+# Run the desktop GUI (main entry point)
 python gui_charts.py
 
 # Run bot without GUI (headless loop, for debugging)
-python main.py
+python -m backend.main
 
 # Run current backtesting from the package
-python -m backtesting runtime --help
+python -m backend.backtesting runtime --help
 ```
 
 ## Documentation
@@ -38,31 +38,36 @@ Key docs:
 ### Execution Flow
 
 ```
-GUI / CLI / main.py
+GUI / CLI / backend.main
     ↓
-src/application/      → process services shared by entrypoints
+backend/application/   → process services shared by entrypoints
     ↓
-runtime packages      → backtesting/, src/runtime/, strategy_runtime.py
+runtime packages       → backend/backtesting/, backend/runtime/, backend/strategy/runtime.py
     ↓
-adapters              → src/broker/, src/data/, trading.py, data_feed.py
+adapters               → backend/brokers/ (mt5, paper), backend/data/
     ↓
-external systems      → MT5, Dukascopy, SQLite/local files
+external systems       → MT5 (optional), Dukascopy, SQLite/local files
 ```
+
+Hard rule: `backend/core`, `backend/application`, `backend/runtime` and the (future) `server/` must not
+import MT5 directly — only through `IBrokerAdapter`/`IHistoricalDataSource`. MT5 code lives in
+`backend/brokers/mt5/` and `backend/data/mt5_*`, guarded by `backend/brokers/mt5_import.py` (mt5 is
+`None` when unavailable). `tests/test_backend_no_mt5.py` enforces this.
 
 ### Key Files
 
-- **config.py** — Central config: symbol, lot size, SL/TP points, active strategies, indicator params, thread settings
-- **src/application/** — Application services shared by GUI/CLI/tests; `BacktestService` owns backtest request construction and datasource resolution
-- **main.py** — Strategy loader (dynamic module resolution), main trading loop, magic number generation per strategy
-- **trading.py** — Order execution; encodes trade metadata in comment strings (`"TAo|s=strategy|r=reason"`)
-- **data_feed.py** — `get_rates_df()` fetches OHLCV, adds derived columns (OHLC4, HLC3, ATR bands, MAs)
-- **backtesting/** — backtesting package: `runtime.py` for the GUI/runtime-aligned engine and `python -m backtesting runtime` for CLI entrypoints
-- **strategy_builder/generator.py** — Strategy `.py` file generator; called by the GUI's Strategy Builder to create/overwrite strategy modules from a JSON config
-- **gui_charts.py** — Large GUI file; Strategy Builder UI, strategy enable/disable, Data Window, performance metrics, and visual event handling
+- **backend/core/config.py** — Central config: symbol, lot size, SL/TP points, active strategies, indicator params, thread settings; `BROKER` selects the adapter (`mt5`/`paper`/auto)
+- **backend/application/** — Application services shared by GUI/CLI/tests; `BacktestService` owns backtest request construction and datasource resolution
+- **backend/main.py** — Strategy loader (dynamic module resolution), main trading loop, magic number generation per strategy
+- **backend/brokers/** — `interface.py` (`IBrokerAdapter`), `factory.py` (selection), `paper.py` (in-memory broker), `mt5/` (adapter + legacy `trading.py`/`connection.py`)
+- **backend/data/** — `IHistoricalDataSource` + sources (mt5, dukascopy, file) + `data_feed.py` (`get_rates_df()` OHLCV + derived columns)
+- **backend/backtesting/** — backtesting package: `runtime.py` for the GUI/runtime-aligned engine and `python -m backend.backtesting runtime` for CLI entrypoints
+- **backend/strategy_builder/generator.py** — Strategy `.py` file generator; called by the GUI's Strategy Builder to create/overwrite strategy modules from a JSON config
+- **gui_charts.py** — Large GUI file (desktop frontend, pending split into `frontend/desktop/`); Strategy Builder UI, strategy enable/disable, Data Window, performance metrics, and visual event handling
 
 ### Service Extraction Rule
 
-Do not add new business process orchestration directly to `gui_charts.py`. Add it to `src/application/` or an existing runtime/backend module, then call it from the GUI. GUI changes that remain visual still go through Grace/Felix; process/service changes go through Daniel/Alex when non-trivial.
+Do not add new business process orchestration directly to `gui_charts.py`. Add it to `backend/application/` or an existing runtime/backend module, then call it from the GUI. GUI changes that remain visual still go through Grace/Felix; process/service changes go through Daniel/Alex when non-trivial.
 
 ### Strategy System
 

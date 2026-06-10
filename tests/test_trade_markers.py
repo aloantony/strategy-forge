@@ -10,7 +10,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
-from src.analytics.trade_history import (
+from backend.analytics.trade_history import (
     build_round_trips,
     points_from_price_delta,
     resolve_exit_cause,

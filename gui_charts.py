@@ -7,7 +7,7 @@ from lightweight_charts import Chart
 from lightweight_charts.util import parse_event_message
 import pandas as pd
 import numpy as np
-from src.mt5_import import mt5
+from backend.brokers.mt5_import import mt5
 import threading
 import time
 import asyncio
@@ -26,14 +26,14 @@ from datetime import datetime, timedelta, timezone
 import json
 from urllib.parse import unquote
 
-import config
-import mt5_connection
-import data_feed
-import trading
-from src.application import BacktestService
-from src.broker.mt5_adapter import MT5BrokerAdapter
-from src.analytics import trade_history
-from strategy_runtime import (
+from backend.core import config
+from backend.brokers.mt5 import connection as mt5_connection
+from backend.data import data_feed
+from backend.brokers.mt5 import trading
+from backend.application import BacktestService
+from backend.brokers.mt5.adapter import MT5BrokerAdapter
+from backend.analytics import trade_history
+from backend.strategy.runtime import (
     apply_mtf_strategy_processing as runtime_apply_mtf_strategy_processing,
     apply_strategy_processing as runtime_apply_strategy_processing,
     build_timeframe_frames as runtime_build_timeframe_frames,
@@ -6820,7 +6820,7 @@ class TradingBotGUI:
         module = getattr(self, "_strategy_builder_module_cache", None)
         if module is not None:
             return module
-        module = importlib.import_module("strategy_builder.generator")
+        module = importlib.import_module("backend.strategy_builder.generator")
         self._strategy_builder_module_cache = module
         return module
 

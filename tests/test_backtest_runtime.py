@@ -10,9 +10,9 @@ import pytest
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
-from backtesting import runtime as backtest_runtime
-import strategy_runtime
-from src.broker.interface import InstrumentInfo
+from backend.backtesting import runtime as backtest_runtime
+from backend.strategy import runtime as strategy_runtime
+from backend.brokers.interface import InstrumentInfo
 
 
 def _utc(year: int, month: int, day: int, hour: int, minute: int = 0) -> datetime:

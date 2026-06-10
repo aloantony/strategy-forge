@@ -46,7 +46,7 @@ def _print_section(title):
 
 def cmd_datasource(args):
     """Descarga OHLCV de la fuente indicada e imprime resultado."""
-    from src.data.factory import build_data_source, resolve_symbol_for_request
+    from backend.data.factory import build_data_source, resolve_symbol_for_request
 
     end = _now_utc()
     start = end - timedelta(days=args.days)
@@ -77,8 +77,8 @@ def cmd_datasource(args):
 
 def cmd_backtest(args):
     """Ejecuta un backtest completo e imprime métricas."""
-    from src.data.factory import build_data_source, resolve_symbol_for_request
-    from backtesting.runtime import run_backtest
+    from backend.data.factory import build_data_source, resolve_symbol_for_request
+    from backend.backtesting.runtime import run_backtest
     import importlib, config
 
     end = _now_utc()
@@ -90,7 +90,7 @@ def cmd_backtest(args):
         ds = build_data_source(args.source, args.symbol)
         request_symbol = resolve_symbol_for_request(args.source, args.symbol)
 
-        from backtesting.runtime import resolve_timeframe_value
+        from backend.backtesting.runtime import resolve_timeframe_value
         module = importlib.import_module(f"strategies.{args.strategy}")
 
         request = {
@@ -137,7 +137,7 @@ def cmd_backtest(args):
 
 def cmd_factory(args):
     """Prueba la resolución de símbolo y disponibilidad de fuentes."""
-    from src.data.factory import resolve_canonical_symbol, resolve_symbol_for_request, build_data_source
+    from backend.data.factory import resolve_canonical_symbol, resolve_symbol_for_request, build_data_source
 
     _print_section(f"factory  symbol={args.symbol}")
 

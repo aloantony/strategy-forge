@@ -7,9 +7,9 @@ import tempfile
 import os
 import pytest
 
-from src.persistence import bootstrap_persistence, UnitOfWork
-from src.persistence.migrations import apply_pending_migrations, MigrationError
-from src.persistence.dal import (
+from backend.persistence import bootstrap_persistence, UnitOfWork
+from backend.persistence.migrations import apply_pending_migrations, MigrationError
+from backend.persistence.dal import (
     StrategyInstancesRepository,
     PlansRepository,
     StrategyStateRepository,

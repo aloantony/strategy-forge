@@ -10,7 +10,7 @@ import pytest
 from datetime import datetime, timezone
 from unittest.mock import patch
 
-from src.data.dukascopy_historical_source import DukascopyHistoricalDataSource
+from backend.data.dukascopy_historical_source import DukascopyHistoricalDataSource
 
 START = datetime(2024, 1, 2, 9, 0, tzinfo=timezone.utc)
 END = datetime(2024, 1, 2, 10, 0, tzinfo=timezone.utc)
@@ -35,7 +35,7 @@ def _mock_fetch_df(n: int = 5) -> pd.DataFrame:
 # Contrato de columnas
 # ---------------------------------------------------------------------------
 
-@patch("src.data.dukascopy_historical_source.dukascopy_fetch")
+@patch("backend.data.dukascopy_historical_source.dukascopy_fetch")
 def test_columns_exact(mock_fetch):
     mock_fetch.return_value = _mock_fetch_df()
     df = DukascopyHistoricalDataSource().get_rates_df("GER40", "M1", START, END)
@@ -49,7 +49,7 @@ def test_columns_exact(mock_fetch):
 # Tipos de datos
 # ---------------------------------------------------------------------------
 
-@patch("src.data.dukascopy_historical_source.dukascopy_fetch")
+@patch("backend.data.dukascopy_historical_source.dukascopy_fetch")
 def test_dtypes(mock_fetch):
     mock_fetch.return_value = _mock_fetch_df()
     df = DukascopyHistoricalDataSource().get_rates_df("GER40", "M1", START, END)
@@ -66,7 +66,7 @@ def test_dtypes(mock_fetch):
 # Columna time — timezone UTC
 # ---------------------------------------------------------------------------
 
-@patch("src.data.dukascopy_historical_source.dukascopy_fetch")
+@patch("backend.data.dukascopy_historical_source.dukascopy_fetch")
 def test_time_has_utc_timezone(mock_fetch):
     mock_fetch.return_value = _mock_fetch_df()
     df = DukascopyHistoricalDataSource().get_rates_df("GER40", "M1", START, END)
@@ -74,7 +74,7 @@ def test_time_has_utc_timezone(mock_fetch):
     assert str(df["time"].dt.tz) == "UTC"
 
 
-@patch("src.data.dukascopy_historical_source.dukascopy_fetch")
+@patch("backend.data.dukascopy_historical_source.dukascopy_fetch")
 def test_time_naive_input_gets_localized(mock_fetch):
     """Si dukascopy devuelve timestamps sin tz, el adapter los localiza a UTC."""
     timestamps = pd.date_range("2024-01-02 09:00", periods=3, freq="1min")  # sin tz
@@ -97,7 +97,7 @@ def test_time_naive_input_gets_localized(mock_fetch):
 # Orden ASC por time
 # ---------------------------------------------------------------------------
 
-@patch("src.data.dukascopy_historical_source.dukascopy_fetch")
+@patch("backend.data.dukascopy_historical_source.dukascopy_fetch")
 def test_sorted_ascending_by_time(mock_fetch):
     mock_fetch.return_value = _mock_fetch_df().iloc[::-1]  # devolver en orden inverso
     df = DukascopyHistoricalDataSource().get_rates_df("GER40", "M1", START, END)
@@ -108,28 +108,28 @@ def test_sorted_ascending_by_time(mock_fetch):
 # tick_volume / spread / real_volume
 # ---------------------------------------------------------------------------
 
-@patch("src.data.dukascopy_historical_source.dukascopy_fetch")
+@patch("backend.data.dukascopy_historical_source.dukascopy_fetch")
 def test_tick_volume_nonnegative(mock_fetch):
     mock_fetch.return_value = _mock_fetch_df()
     df = DukascopyHistoricalDataSource().get_rates_df("GER40", "M1", START, END)
     assert (df["tick_volume"] >= 0).all()
 
 
-@patch("src.data.dukascopy_historical_source.dukascopy_fetch")
+@patch("backend.data.dukascopy_historical_source.dukascopy_fetch")
 def test_spread_zero(mock_fetch):
     mock_fetch.return_value = _mock_fetch_df()
     df = DukascopyHistoricalDataSource().get_rates_df("GER40", "M1", START, END)
     assert (df["spread"] == 0).all()
 
 
-@patch("src.data.dukascopy_historical_source.dukascopy_fetch")
+@patch("backend.data.dukascopy_historical_source.dukascopy_fetch")
 def test_real_volume_zero(mock_fetch):
     mock_fetch.return_value = _mock_fetch_df()
     df = DukascopyHistoricalDataSource().get_rates_df("GER40", "M1", START, END)
     assert (df["real_volume"] == 0).all()
 
 
-@patch("src.data.dukascopy_historical_source.dukascopy_fetch")
+@patch("backend.data.dukascopy_historical_source.dukascopy_fetch")
 def test_volume_mapped_to_tick_volume(mock_fetch):
     """Verifica que el campo 'volume' de Dukascopy se mapea correctamente a tick_volume."""
     mock_fetch.return_value = _mock_fetch_df(n=3)
@@ -141,27 +141,27 @@ def test_volume_mapped_to_tick_volume(mock_fetch):
 # Manejo de errores
 # ---------------------------------------------------------------------------
 
-@patch("src.data.dukascopy_historical_source.dukascopy_fetch")
+@patch("backend.data.dukascopy_historical_source.dukascopy_fetch")
 def test_unknown_symbol_raises_value_error(mock_fetch):
     with pytest.raises(ValueError, match="no encontrado en symbols.json"):
         DukascopyHistoricalDataSource().get_rates_df("UNKNOWN_XYZ", "M1", START, END)
 
 
-@patch("src.data.dukascopy_historical_source.dukascopy_fetch")
+@patch("backend.data.dukascopy_historical_source.dukascopy_fetch")
 def test_empty_response_raises_runtime_error(mock_fetch):
     mock_fetch.return_value = pd.DataFrame()
     with pytest.raises(RuntimeError):
         DukascopyHistoricalDataSource().get_rates_df("GER40", "M1", START, END)
 
 
-@patch("src.data.dukascopy_historical_source.dukascopy_fetch")
+@patch("backend.data.dukascopy_historical_source.dukascopy_fetch")
 def test_none_response_raises_runtime_error(mock_fetch):
     mock_fetch.return_value = None
     with pytest.raises(RuntimeError):
         DukascopyHistoricalDataSource().get_rates_df("GER40", "M1", START, END)
 
 
-@patch("src.data.dukascopy_historical_source.dukascopy_fetch")
+@patch("backend.data.dukascopy_historical_source.dukascopy_fetch")
 def test_unsupported_timeframe_raises_value_error(mock_fetch):
     with pytest.raises(ValueError, match="Timeframe no soportado"):
         DukascopyHistoricalDataSource().get_rates_df("GER40", "TICK", START, END)
@@ -169,7 +169,7 @@ def test_unsupported_timeframe_raises_value_error(mock_fetch):
 
 def test_no_dukascopy_installed_raises_runtime_error():
     """Si dukascopy_fetch es None (paquete no instalado), debe lanzar RuntimeError."""
-    with patch("src.data.dukascopy_historical_source.dukascopy_fetch", None):
+    with patch("backend.data.dukascopy_historical_source.dukascopy_fetch", None):
         with pytest.raises(RuntimeError, match="dukascopy-python no está instalado"):
             DukascopyHistoricalDataSource().get_rates_df("GER40", "M1", START, END)
 
