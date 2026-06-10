@@ -6,7 +6,8 @@ dukascopy-python>=4.0.1
 # --- Servidor (API REST + WebSocket) ---
 fastapi
 uvicorn[standard]
-httpx  # cliente HTTP (tests TestClient y futuro ApiClient del frontend)
+httpx       # cliente HTTP (TestClient y ApiClient del frontend)
+websockets  # cliente WS del frontend (frontend/desktop/api_client.py)
 
 # --- Frontend desktop ---
 matplotlib

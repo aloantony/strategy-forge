@@ -1015,3 +1015,11 @@ KeyError: 'task_id'
 2026-06-10T00:53:00Z hook fired | file=C:\RealProjects\TradingAgent\trading-agent\tests\test_backend_no_mt5.py | pid=500
 2026-06-10T00:54:09Z hook fired | file=C:\RealProjects\TradingAgent\trading-agent\CLAUDE.md | pid=47
 2026-06-10T00:54:47Z hook fired | file=C:\RealProjects\TradingAgent\trading-agent\docs\DocsTradingSystemObsidian\architecture\overview.md | pid=233
+2026-06-10T10:44:23Z hook fired | file=C:\Users\aloan\.claude\projects\C--RealProjects-TradingAgent-trading-agent\memory\project_broker_roadmap.md | pid=829
+2026-06-10T10:44:40Z hook fired | file=C:\Users\aloan\.claude\projects\C--RealProjects-TradingAgent-trading-agent\memory\project_repo_reorg.md | pid=684
+2026-06-10T10:44:55Z hook fired | file=C:\Users\aloan\.claude\projects\C--RealProjects-TradingAgent-trading-agent\memory\MEMORY.md | pid=838
+2026-06-10T10:45:14Z hook fired | file=C:\RealProjects\TradingAgent\trading-agent\frontend\__init__.py | pid=1892
+2026-06-10T10:45:15Z hook fired | file=C:\RealProjects\TradingAgent\trading-agent\frontend\desktop\__init__.py | pid=1835
+2026-06-10T10:45:39Z hook fired | file=C:\RealProjects\TradingAgent\trading-agent\frontend\desktop\api_client.py | pid=968
+2026-06-10T10:45:58Z hook fired | file=C:\RealProjects\TradingAgent\trading-agent\tests\test_api_client.py | pid=1321
+2026-06-10T10:46:33Z hook fired | file=C:\RealProjects\TradingAgent\trading-agent\requirements.txt | pid=283
