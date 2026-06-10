@@ -20,16 +20,19 @@ sources:
 
 ```mermaid
 flowchart TB
-  UI["UI Layer\ngui_charts.py"]
-  App["Application Services\nsrc/application"]
-  Entrypoints["Entrypoints\nmain.py, backtesting/cli.py"]
-  Strategy["Strategy Layer\nstrategies/, strategy_runtime.py"]
-  Runtime["Runtime Layer\nsrc/runtime"]
-  BrokerData["Broker/Data Layer\nsrc/broker, src/data, trading.py, data_feed.py"]
-  Persistence["Persistence Layer\nsrc/persistence, SQLite"]
-  External["External Systems\nMT5, Dukascopy, local files"]
+  UI["Frontends\ngui_charts.py (desktop), futuros web/movil"]
+  Server["Server Layer\nserver/ (FastAPI REST + WebSocket)"]
+  App["Application Services\nbackend/application"]
+  Entrypoints["Entrypoints\nbackend/main.py, backend/backtesting/cli.py"]
+  Strategy["Strategy Layer\nstrategies/, backend/strategy/runtime.py"]
+  Runtime["Runtime Layer\nbackend/runtime"]
+  BrokerData["Broker/Data Layer\nbackend/brokers (mt5, paper), backend/data"]
+  Persistence["Persistence Layer\nbackend/persistence, SQLite"]
+  External["External Systems\nMT5 (opcional), Dukascopy, local files"]
 
+  UI --> Server
   UI --> App
+  Server --> App
   Entrypoints --> App
   App --> Strategy
   App --> Runtime
@@ -45,14 +48,19 @@ flowchart TB
 
 | Capa | Responsabilidad | Archivos principales |
 | --- | --- | --- |
-| UI | Presentacion, eventos visuales, graficos y captura de intencion del usuario. | `gui_charts.py` |
-| Application Services | Validacion y orquestacion reusable fuera de la GUI. | `src/application/` |
-| Entrypoints | Arranque de modos consola/CLI y loop live. | `main.py`, `backtesting/cli.py` |
-| Strategy | Contrato comun y modulos de estrategia. | `strategy_runtime.py`, `strategies/` |
-| Runtime v1 | Decision estructurada, planes, ejecucion y estado. | `src/runtime/` |
-| Broker/Data | Adaptadores a MT5, fuentes historicas y datos enriquecidos. | `src/broker/`, `src/data/`, `trading.py`, `data_feed.py` |
-| Persistence | SQLite, migraciones, repositorios y event log. | `src/persistence/` |
+| Frontends | Presentacion, eventos visuales, graficos y captura de intencion del usuario. | `gui_charts.py` (desktop; pendiente split a `frontend/desktop/`) |
+| Server | API REST + WebSocket para conectar multiples frontends; broker-agnostico, Linux-ready. | `server/` (`uvicorn server.app:app`) |
+| Application Services | Validacion y orquestacion reusable fuera de la GUI. | `backend/application/` |
+| Entrypoints | Arranque de modos consola/CLI y loop live. | `backend/main.py`, `backend/backtesting/cli.py` |
+| Strategy | Contrato comun y modulos de estrategia. | `backend/strategy/runtime.py`, `strategies/` |
+| Runtime v1 | Decision estructurada, planes, ejecucion y estado. | `backend/runtime/` |
+| Broker/Data | Adaptadores de broker (`IBrokerAdapter`: mt5/paper via factory) y fuentes de datos. | `backend/brokers/`, `backend/data/` |
+| Persistence | SQLite, migraciones, repositorios y event log. | `backend/persistence/` |
 | Agent Ops | Specs, reviews, tareas y roles. | `agents/` |
+
+Regla dura: `backend/core`, `backend/application`, `backend/runtime` y `server/` no importan MT5
+directamente; MT5 vive en `backend/brokers/mt5/` y `backend/data/mt5_*` como adaptador opcional
+(`tests/test_backend_no_mt5.py` lo verifica). En Linux la app corre con el broker `paper`.
 
 ## Principios De Diseno
 
