@@ -1,0 +1,96 @@
+<!DOCTYPE html>
+<html lang="es" data-theme="dark">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>trading-agent</title>
+  <link rel="stylesheet" href="/css/app.css" />
+  <script src="/vendor/lightweight-charts.js"></script>
+</head>
+<body>
+  <header id="topbar">
+    <div class="brand">trading<span>—</span>agent</div>
+
+    <div class="controls">
+      <label class="field">
+        <span>Símbolo</span>
+        <input id="symbol-input" type="text" spellcheck="false" />
+      </label>
+      <label class="field">
+        <span>Timeframe</span>
+        <select id="timeframe-select"></select>
+      </label>
+      <span id="market-badge" class="badge" title="Estado del mercado">
+        <span class="dot"></span><span id="market-text">—</span>
+      </span>
+    </div>
+
+    <div class="account" id="account-summary">
+      <div class="metric"><span>Balance</span><strong id="acct-balance">—</strong></div>
+      <div class="metric"><span>Equity</span><strong id="acct-equity">—</strong></div>
+      <div class="metric"><span>Broker</span><strong id="acct-broker">—</strong></div>
+      <button id="theme-toggle" class="ghost" title="Cambiar tema">◐</button>
+    </div>
+  </header>
+
+  <main id="layout">
+    <section id="chart-wrap">
+      <div id="chart"></div>
+      <div id="chart-status" class="hint"></div>
+    </section>
+
+    <aside id="sidebar">
+      <nav id="tabs">
+        <button class="tab active" data-panel="positions">Posiciones</button>
+        <button class="tab" data-panel="strategies">Estrategias</button>
+        <button class="tab" data-panel="backtest">Backtest</button>
+      </nav>
+
+      <section id="panel-positions" class="panel active">
+        <h2 class="panel-title">Posiciones abiertas</h2>
+        <div id="positions-list" class="list"></div>
+        <p id="positions-empty" class="hint">Sin posiciones abiertas.</p>
+      </section>
+
+      <section id="panel-strategies" class="panel">
+        <h2 class="panel-title">Estrategias</h2>
+        <div id="strategies-list" class="list"></div>
+        <p id="strategies-empty" class="hint">Sin estrategias.</p>
+      </section>
+
+      <section id="panel-backtest" class="panel">
+        <h2 class="panel-title">Backtest</h2>
+        <form id="bt-form">
+          <label class="field"><span>Estrategia</span><select id="bt-strategy"></select></label>
+          <label class="field"><span>Símbolo</span><input id="bt-symbol" type="text" spellcheck="false" /></label>
+          <div class="row2">
+            <label class="field"><span>Inicio</span><input id="bt-start" type="date" /></label>
+            <label class="field"><span>Fin</span><input id="bt-end" type="date" /></label>
+          </div>
+          <div class="row2">
+            <label class="field"><span>Balance</span><input id="bt-balance" type="number" value="10000" min="1" step="100" /></label>
+            <label class="field"><span>Datos</span><select id="bt-source"></select></label>
+          </div>
+          <button id="bt-run" type="submit">Ejecutar backtest</button>
+          <p id="bt-status" class="hint"></p>
+        </form>
+
+        <div id="bt-results" hidden>
+          <div id="bt-cards" class="cards"></div>
+          <h3 class="panel-subtitle">Equity</h3>
+          <div id="bt-equity"></div>
+          <h3 class="panel-subtitle">Trades</h3>
+          <div class="table-wrap">
+            <table id="bt-trades">
+              <thead><tr><th>#</th><th>Tipo</th><th>Entrada</th><th>Salida</th><th>P&amp;L</th><th>Razón</th></tr></thead>
+              <tbody></tbody>
+            </table>
+          </div>
+        </div>
+      </section>
+    </aside>
+  </main>
+
+  <script type="module" src="/js/app.js"></script>
+</body>
+</html>

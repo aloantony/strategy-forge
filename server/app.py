@@ -13,12 +13,19 @@ El broker se selecciona vía backend.brokers.factory (config.BROKER o env TRADIN
 
 import os
 from contextlib import asynccontextmanager
+from pathlib import Path
 
 from fastapi import FastAPI
+from fastapi.staticfiles import StaticFiles
 
+from backend.application.backtest_service import BacktestService
 from backend.brokers.factory import build_broker_adapter
+from backend.core import config
+from backend.runtime.timeframes import TIMEFRAME_MINUTES
 from server.routers import account, backtest, market, strategies
 from server.ws import router as ws_router
+
+_WEB_DIR = Path(__file__).resolve().parents[1] / "frontend" / "web"
 
 
 def create_app(broker_name: str = None) -> FastAPI:
@@ -27,6 +34,10 @@ def create_app(broker_name: str = None) -> FastAPI:
     @asynccontextmanager
     async def lifespan(app: FastAPI):
         app.state.broker = build_broker_adapter(requested_broker)
+        if type(app.state.broker).__name__ == "MT5BrokerAdapter":
+            # El terminal MT5 requiere initialize() por proceso (la GUI lo hacía en su arranque).
+            from backend.brokers.mt5.connection import initialize_mt5
+            initialize_mt5()
         yield
 
     app = FastAPI(title="trading-agent server", version="0.1.0", lifespan=lifespan)
@@ -38,11 +49,25 @@ def create_app(broker_name: str = None) -> FastAPI:
             "broker": type(getattr(app.state, "broker", None)).__name__,
         }
 
+    @app.get("/api/meta")
+    def meta():
+        return {
+            "symbol_default": str(getattr(config, "SYMBOL", "") or ""),
+            "timeframes": list(TIMEFRAME_MINUTES),
+            "timeframe_minutes": dict(TIMEFRAME_MINUTES),
+            "data_sources": ["mt5", "dukascopy"],
+            "dukascopy_available": BacktestService.dukascopy_available(),
+        }
+
     app.include_router(strategies.router, prefix="/api")
     app.include_router(account.router, prefix="/api")
     app.include_router(backtest.router, prefix="/api")
     app.include_router(market.router, prefix="/api")
     app.include_router(ws_router)
+
+    # Frontend web estático (al final: /api y /ws tienen prioridad de ruta).
+    if _WEB_DIR.is_dir():
+        app.mount("/", StaticFiles(directory=str(_WEB_DIR), html=True), name="web")
     return app
 
 

@@ -470,7 +470,8 @@ def get_all_positions(symbol: str, magic_number: int) -> list:
 
     result = []
     for position in raw_positions:
-        if position.magic != magic_number:
+        # magic_number <= 0 actúa como comodín: todas las posiciones del símbolo.
+        if magic_number > 0 and position.magic != magic_number:
             continue
         result.append({
             "ticket":        position.ticket,
@@ -481,6 +482,7 @@ def get_all_positions(symbol: str, magic_number: int) -> list:
             "profit":        position.profit,
             "sl":            position.sl,
             "tp":            position.tp,
+            "magic":         position.magic,
             "time_open":     position.time,
         })
 

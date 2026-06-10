@@ -48,7 +48,7 @@ flowchart TB
 
 | Capa | Responsabilidad | Archivos principales |
 | --- | --- | --- |
-| Frontends | Presentacion, eventos visuales, graficos y captura de intencion del usuario. | `gui_charts.py` (desktop; pendiente split a `frontend/desktop/`) |
+| Frontends | Presentacion, eventos visuales, graficos y captura de intencion del usuario. | `frontend/web/` (cliente de referencia, servido por el server en `/`); `gui_charts.py` (desktop legacy, congelado — solo fixes criticos) |
 | Server | API REST + WebSocket para conectar multiples frontends; broker-agnostico, Linux-ready. | `server/` (`uvicorn server.app:app`) |
 | Application Services | Validacion y orquestacion reusable fuera de la GUI. | `backend/application/` |
 | Entrypoints | Arranque de modos consola/CLI y loop live. | `backend/main.py`, `backend/backtesting/cli.py` |

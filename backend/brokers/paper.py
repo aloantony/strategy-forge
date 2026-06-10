@@ -154,9 +154,11 @@ class PaperBrokerAdapter(IBrokerAdapter):
         return True, "Paper broker (mercado simulado siempre abierto)"
 
     def get_open_positions(self, symbol: str, magic_number: int) -> list[dict]:
+        # magic_number <= 0 actúa como comodín: todas las posiciones del símbolo.
         with self._lock:
             return [dict(p) for p in self._positions
-                    if p["symbol"] == str(symbol) and p["magic"] == int(magic_number)]
+                    if p["symbol"] == str(symbol)
+                    and (int(magic_number) <= 0 or p["magic"] == int(magic_number))]
 
     def get_account_info(self) -> Optional[AccountInfo]:
         with self._lock:
