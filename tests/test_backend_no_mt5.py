@@ -45,6 +45,9 @@ res = broker.apply_signal("TEST", "buy", 0.01, 0, 0, 12345, strategy_key="t")
 assert res and res["actions"][-1]["success"], res
 assert len(broker.get_open_positions("TEST", 12345)) == 1
 assert build_broker_adapter("auto").__class__.__name__ == "PaperBrokerAdapter"
+
+# El servidor tambien debe importar sin MT5
+import server.app  # noqa: F401
 print("BACKEND_SIN_MT5_OK")
 """
 

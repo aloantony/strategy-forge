@@ -1,7 +1,14 @@
+# --- Backend (broker-agnostico; MT5 es opcional) ---
 MetaTrader5; sys_platform == "win32"
-mt5linux; sys_platform != "win32"
 pandas
+dukascopy-python>=4.0.1
+
+# --- Servidor (API REST + WebSocket) ---
+fastapi
+uvicorn[standard]
+httpx  # cliente HTTP (tests TestClient y futuro ApiClient del frontend)
+
+# --- Frontend desktop ---
 matplotlib
 customtkinter
 lightweight-charts
-dukascopy-python>=4.0.1

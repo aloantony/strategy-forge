@@ -20,6 +20,9 @@ python -m backend.main
 
 # Run current backtesting from the package
 python -m backend.backtesting runtime --help
+
+# Run the API server (REST + WebSocket; broker via TRADING_BROKER=mt5|paper|auto)
+uvicorn server.app:app --host 0.0.0.0 --port 8000
 ```
 
 ## Documentation
