@@ -70,7 +70,22 @@ input, select, button {
   outline: none;
 }
 input:focus, select:focus { border-color: var(--line-strong); }
-select option { background: var(--bg-elev); color: var(--fg); }
+select option, select optgroup { background: var(--bg-elev); color: var(--fg); }
+select optgroup {
+  font-style: normal;
+  font-weight: 600;
+  font-size: 11px;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--fg-dim);
+}
+select optgroup option {
+  font-weight: 400;
+  font-size: 13px;
+  letter-spacing: normal;
+  text-transform: none;
+  color: var(--fg);
+}
 input[type="date"] { color-scheme: dark; }
 :root[data-theme="light"] input[type="date"] { color-scheme: light; }
 
