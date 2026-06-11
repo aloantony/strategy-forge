@@ -38,7 +38,7 @@ class DukascopyHistoricalDataSource(IHistoricalDataSource):
     históricos de Dukascopy via dukascopy-python.
 
     La resolución de símbolo canónico → símbolo Dukascopy se hace
-    leyendo providers["dukascopy"] de src/data/symbols.json.
+    leyendo providers["dukascopy"] de backend/data/symbols.json.
     """
 
     def __init__(self) -> None:

@@ -2,16 +2,17 @@
 title: Architecture Overview
 status: draft
 audience: developers, agents
-last_reviewed: 2026-04-27
+last_reviewed: 2026-06-11
 sources:
-  - ../../../main.py
+  - ../../../backend/main.py
   - ../../../gui_charts.py
-  - ../../../strategy_runtime.py
-  - ../../../backtesting/runtime.py
-  - ../../../src/runtime/
-  - ../../../src/broker/
-  - ../../../src/data/
-  - ../../../src/persistence/
+  - ../../../backend/strategy/
+  - ../../../backend/backtesting/runtime.py
+  - ../../../backend/runtime/
+  - ../../../backend/brokers/
+  - ../../../backend/data/
+  - ../../../backend/persistence/
+  - ../../../server/
 ---
 
 # Architecture Overview
@@ -52,7 +53,7 @@ flowchart TB
 | Server | API REST + WebSocket para conectar multiples frontends; broker-agnostico, Linux-ready. | `server/` (`uvicorn server.app:app`) |
 | Application Services | Validacion y orquestacion reusable fuera de la GUI. | `backend/application/` |
 | Entrypoints | Arranque de modos consola/CLI y loop live. | `backend/main.py`, `backend/backtesting/cli.py` |
-| Strategy | Contrato comun y modulos de estrategia. | `backend/strategy/runtime.py`, `strategies/` |
+| Strategy | Contrato comun, carga/descubrimiento y modulos de estrategia. | `backend/strategy/runtime.py`, `backend/strategy/loader.py`, `strategies/` |
 | Runtime v1 | Decision estructurada, planes, ejecucion y estado. | `backend/runtime/` |
 | Broker/Data | Adaptadores de broker (`IBrokerAdapter`: mt5/paper via factory) y fuentes de datos. | `backend/brokers/`, `backend/data/` |
 | Persistence | SQLite, migraciones, repositorios y event log. | `backend/persistence/` |
@@ -66,8 +67,8 @@ directamente; MT5 vive en `backend/brokers/mt5/` y `backend/data/mt5_*` como ada
 
 - Las estrategias deciden; no ejecutan ordenes.
 - La GUI no debe ser duena de procesos de negocio.
-- Los procesos reutilizables deben vivir en `src/application/` o en runtimes/backend existentes.
-- `strategy_runtime.py` evita duplicar semantica entre live y backtest.
+- Los procesos reutilizables deben vivir en `backend/application/` o en runtimes/backend existentes.
+- `backend/strategy/runtime.py` evita duplicar semantica entre live y backtest.
 - `IBrokerAdapter` desacopla el motor v1 de MT5.
 - `IHistoricalDataSource` desacopla backtesting de la fuente historica.
 - `UnitOfWork` y repositorios concentran persistencia.
@@ -89,7 +90,8 @@ flowchart LR
 
 ## Deuda Arquitectonica Visible
 
-- `gui_charts.py` todavia concentra demasiadas responsabilidades; se esta extrayendo por fases a `src/application/`.
-- `trading.py` sigue siendo una capa legacy importante aunque `MT5BrokerAdapter` lo encapsula parcialmente.
+- `gui_charts.py` concentra demasiadas responsabilidades; esta congelado como frontend legacy (el cliente de referencia es `frontend/web/`).
+- `backend/brokers/mt5/trading.py` sigue siendo una capa legacy importante aunque `MT5BrokerAdapter` lo encapsula parcialmente.
+- `backend/main.py` (loop en vivo) sigue acoplado a MT5; la ruta broker-agnostica es el server + `IBrokerAdapter`.
 - Algunas specs historicas en `agents/specs/` reflejan decisiones previas; antes de implementar se debe contrastar con codigo actual.
 - La documentacion vieja y nueva deben convivir hasta que se haga una consolidacion explicita.

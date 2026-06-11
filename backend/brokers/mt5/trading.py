@@ -19,7 +19,7 @@ _MARKET_FUTURE_TICK_TOLERANCE_SECONDS = 60
 _MARKET_STALE_TICK_SECONDS = 300
 _MAX_BROKER_TICK_OFFSET_HOURS = 14
 
-# Moved to src.broker.comment — re-exported for backward compatibility
+# Vive en backend.brokers.comment — re-exportado por compatibilidad
 from backend.brokers.comment import (
     _TRADE_COMMENT_PREFIX,
     _FALLBACK_OPEN_COMMENT,

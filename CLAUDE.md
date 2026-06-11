@@ -62,9 +62,10 @@ import MT5 directly — only through `IBrokerAdapter`/`IHistoricalDataSource`. M
 
 - **backend/core/config.py** — Central config: symbol, lot size, SL/TP points, active strategies, indicator params, thread settings; `BROKER` selects the adapter (`mt5`/`paper`/auto)
 - **backend/application/** — Application services shared by GUI/CLI/tests; `BacktestService` owns backtest request construction and datasource resolution
-- **backend/main.py** — Strategy loader (dynamic module resolution), main trading loop, magic number generation per strategy
+- **backend/main.py** — Headless live-trading loop (analysis scheduling, v1 plan cycle, order execution)
+- **backend/strategy/loader.py** — Strategy discovery/loading (dynamic module resolution, PARAMS schema + `.params.json` overrides, magic number generation per strategy)
 - **backend/brokers/** — `interface.py` (`IBrokerAdapter`), `factory.py` (selection), `paper.py` (in-memory broker), `mt5/` (adapter + legacy `trading.py`/`connection.py`)
-- **backend/data/** — `IHistoricalDataSource` + sources (mt5, dukascopy, file) + `data_feed.py` (`get_rates_df()` OHLCV + derived columns)
+- **backend/data/** — `IHistoricalDataSource` + sources (mt5, dukascopy, file) + `data_feed.py` (pure indicator/derived-column helpers; OHLCV fetch lives in `mt5_data_feed.py`)
 - **backend/backtesting/** — backtesting package: `runtime.py` for the GUI/runtime-aligned engine and `python -m backend.backtesting runtime` for CLI entrypoints
 - **backend/strategy_builder/generator.py** — Strategy `.py` file generator; called by the GUI's Strategy Builder to create/overwrite strategy modules from a JSON config
 - **gui_charts.py** — Large GUI file (desktop frontend, pending split into `frontend/desktop/`); Strategy Builder UI, strategy enable/disable, Data Window, performance metrics, and visual event handling

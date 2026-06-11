@@ -1,6 +1,5 @@
-# src/broker/comment.py
+# backend/brokers/comment.py
 # Comment-building helpers for MT5 order comments.
-# Moved from trading.py per TASK-053/054.
 
 import re
 
