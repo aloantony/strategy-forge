@@ -25,6 +25,8 @@ import types
 from pathlib import Path
 
 from backend.runtime.timeframes import TIMEFRAME_MINUTES
+from backend.strategy_builder import indicators as ind_registry
+from backend.strategy_builder.indicators import INDICATOR_SPECS, VALID_INDICATOR_IDS
 
 logger = logging.getLogger(__name__)
 
@@ -44,12 +46,6 @@ ALWAYS_AVAILABLE_COLUMNS = {
 }
 
 VALID_TIMEFRAMES = set(TIMEFRAME_MINUTES)
-
-VALID_INDICATOR_IDS = {
-    "EMA", "RSI", "BB", "DONCHIAN", "ATR", "VWAP",
-    "VOLUME_RATIO", "SMA", "HMA", "SUPERTREND", "TCI",
-    "ADX_DI", "VORTEX",
-}
 
 # ---------------------------------------------------------------------------
 # Exceptions
@@ -122,12 +118,10 @@ def render_strategy_source(config: dict) -> str:
     # Derived metadata
     custom_indicators = [ind for ind in indicators if not ind["pre_computed"]]
     needs_prepare = len(custom_indicators) > 0
-    needs_volume = any(ind["id"] in ("VWAP", "VOLUME_RATIO") for ind in custom_indicators)
-    needs_high_low = any(ind["id"] in ("DONCHIAN", "ATR", "VWAP", "ADX_DI", "VORTEX") for ind in custom_indicators)
-    needs_close = any(
-        ind["id"] in ("EMA", "RSI", "BB", "ATR", "VWAP", "VOLUME_RATIO", "SMA", "ADX_DI", "VORTEX")
-        for ind in custom_indicators
-    )
+    needs = ind_registry.needed_series(custom_indicators)
+    needs_volume = "volume" in needs
+    needs_high_low = "high" in needs or "low" in needs
+    needs_close = "close" in needs
 
     condition_columns = _collect_leaf_columns(buy_cond) | _collect_leaf_columns(sell_cond)
 
@@ -632,44 +626,12 @@ def _emit_module_constants(timeframe: str, magic_number: int, indicators: list) 
         f'TIMEFRAME = "{timeframe}"',
         f'MAGIC_NUMBER = {magic_number}',
     ]
-
     for ind in indicators:
         if ind["pre_computed"]:
             continue
-        ind_id = ind["id"]
-        p = ind["params"]
-
-        if ind_id == "EMA":
-            period = int(p["period"])
-            lines.append(f"EMA_{period}_PERIOD = {period}")
-        elif ind_id == "RSI":
-            period = int(p["period"])
-            lines.append(f"RSI_{period}_PERIOD = {period}")
-        elif ind_id == "BB":
-            period = int(p["period"])
-            mult = p["multiplier"]
-            lines.append(f"BB_{period}_PERIOD = {period}")
-            lines.append(f"BB_{period}_MULT = {mult}")
-        elif ind_id == "DONCHIAN":
-            period = int(p["period"])
-            lines.append(f"DONCHIAN_{period}_PERIOD = {period}")
-        elif ind_id == "ATR":
-            period = int(p["period"])
-            lines.append(f"ATR_{period}_PERIOD = {period}")
-        elif ind_id == "VOLUME_RATIO":
-            lookback = int(p["lookback"])
-            lines.append(f"VOLUME_RATIO_{lookback}_LOOKBACK = {lookback}")
-        elif ind_id == "SMA":
-            period = int(p["period"])
-            lines.append(f"SMA_{period}_PERIOD = {period}")
-        elif ind_id == "ADX_DI":
-            period = int(p["period"])
-            lines.append(f"ADX_DI_{period}_PERIOD = {period}")
-        elif ind_id == "VORTEX":
-            period = int(p["period"])
-            lines.append(f"VORTEX_{period}_PERIOD = {period}")
-        # VWAP, HMA, SUPERTREND, TCI: no user params → no constants
-
+        spec = INDICATOR_SPECS[ind["id"]]
+        for template in spec["constants"]:
+            lines.append(ind_registry.format_template(template, ind["params"]))
     return "\n".join(lines)
 
 
@@ -677,85 +639,22 @@ def _emit_params_block(indicators: list) -> str:
     """Emit a PARAMS module-level dict for editable indicator parameters.
 
     Returns empty string if no non-pre-computed indicators have params.
+    Nota: el bloque es declarativo (ver docstring del módulo) — los períodos van
+    horneados en los nombres de columna.
     """
     entries = []
-
     for ind in indicators:
         if ind["pre_computed"]:
             continue
-        ind_id = ind["id"]
-        p = ind["params"]
-
-        if ind_id == "EMA":
-            period = int(p["period"])
+        spec = INDICATOR_SPECS[ind["id"]]
+        for entry in spec["params_block"]:
+            raw = ind["params"][entry["value_param"]]
+            value = int(raw) if entry["type"] == "int" else float(raw)
             entries.append((
-                f"ema_{period}_period",
-                f"EMA {period} Period",
-                "int", period, 2, 500,
+                ind_registry.format_template(entry["key"], ind["params"]),
+                ind_registry.format_template(entry["label"], ind["params"]),
+                entry["type"], value, entry["min"], entry["max"],
             ))
-        elif ind_id == "SMA":
-            period = int(p["period"])
-            entries.append((
-                f"sma_{period}_period",
-                f"SMA {period} Period",
-                "int", period, 2, 500,
-            ))
-        elif ind_id == "RSI":
-            period = int(p["period"])
-            entries.append((
-                f"rsi_{period}_period",
-                f"RSI {period} Period",
-                "int", period, 2, 200,
-            ))
-        elif ind_id == "BB":
-            period = int(p["period"])
-            mult = float(p["multiplier"])
-            entries.append((
-                f"bb_{period}_period",
-                f"BB {period} Period",
-                "int", period, 2, 500,
-            ))
-            entries.append((
-                f"bb_{period}_mult",
-                f"BB {period} Mult",
-                "float", mult, 0.1, 10.0,
-            ))
-        elif ind_id == "DONCHIAN":
-            period = int(p["period"])
-            entries.append((
-                f"donchian_{period}_period",
-                f"Donchian {period} Period",
-                "int", period, 2, 500,
-            ))
-        elif ind_id == "ATR":
-            period = int(p["period"])
-            entries.append((
-                f"atr_{period}_period",
-                f"ATR {period} Period",
-                "int", period, 1, 200,
-            ))
-        elif ind_id == "VOLUME_RATIO":
-            lookback = int(p["lookback"])
-            entries.append((
-                f"volume_ratio_{lookback}_lookback",
-                f"Volume Ratio {lookback} Lookback",
-                "int", lookback, 2, 500,
-            ))
-        elif ind_id == "ADX_DI":
-            period = int(p["period"])
-            entries.append((
-                f"adx_di_{period}_period",
-                f"ADX/DI {period} Period",
-                "int", period, 2, 200,
-            ))
-        elif ind_id == "VORTEX":
-            period = int(p["period"])
-            entries.append((
-                f"vortex_{period}_period",
-                f"Vortex {period} Period",
-                "int", period, 2, 200,
-            ))
-        # VWAP, HMA, SUPERTREND, TCI: no user-editable params → no entries
 
     if not entries:
         return ""
@@ -775,53 +674,29 @@ def _overlay_series_specs(indicators: list) -> dict:
     has_tci = False
 
     for ind in indicators:
-        ind_id = ind["id"]
+        spec = INDICATOR_SPECS.get(ind["id"])
+        overlay = spec["overlay"] if spec else None
+        if not overlay:
+            continue
+        kind = overlay[0]
+        if kind == "flag":
+            if overlay[1] == "supertrend":
+                has_supertrend = True
+            elif overlay[1] == "tci":
+                has_tci = True
+            continue
         params = ind.get("params", {})
-
-        if ind_id == "EMA":
-            trend_item = {
-                "label": f'EMA ({int(params["period"])})',
-                "assignments": [('average', f'ema_{int(params["period"])}')],
-            }
-        elif ind_id == "SMA":
-            trend_item = {
-                "label": f'SMA ({int(params["period"])})',
-                "assignments": [('average', f'sma_{int(params["period"])}')],
-            }
-        elif ind_id == "HMA":
-            trend_item = {
-                "label": "HMA (55)",
-                "assignments": [('average', 'hma')],
-            }
-        elif ind_id == "VWAP":
-            trend_item = {
-                "label": "VWAP",
-                "assignments": [('average', 'vwap')],
-            }
-        elif ind_id == "BB":
-            period = int(params["period"])
-            band_item = {
-                "label": f'Bollinger Bands ({period})',
-                "assignments": [
-                    ('average', f'bb_basis_{period}'),
-                    ('upper', f'bb_upper_{period}'),
-                    ('lower', f'bb_lower_{period}'),
-                ],
-            }
-        elif ind_id == "DONCHIAN":
-            period = int(params["period"])
-            band_item = {
-                "label": f'Donchian Channel ({period})',
-                "assignments": [
-                    ('average', f'donchian_mid_{period}'),
-                    ('upper', f'donchian_high_{period}'),
-                    ('lower', f'donchian_low_{period}'),
-                ],
-            }
-        elif ind_id == "SUPERTREND":
-            has_supertrend = True
-        elif ind_id == "TCI":
-            has_tci = True
+        item = {
+            "label": ind_registry.format_template(overlay[1], params),
+            "assignments": [
+                (alias, ind_registry.format_template(col_tpl, params))
+                for alias, col_tpl in overlay[2]
+            ],
+        }
+        if kind == "trend":
+            trend_item = item
+        else:
+            band_item = item
 
     return {
         "trend": trend_item,
@@ -856,116 +731,16 @@ def _emit_strategy_object_tree_items(indicators: list) -> str:
 
 def _emit_data_window_fields(indicators: list) -> str:
     entries = []
-
     for ind in indicators:
-        ind_id = ind["id"]
-        p = ind.get("params", {})
-
-        if ind_id == "EMA":
-            period = int(p["period"])
+        spec = INDICATOR_SPECS.get(ind["id"])
+        if spec is None:
+            continue
+        params = ind.get("params", {})
+        for field in spec["data_window"]:
+            key = ind_registry.format_template(field["key"], params)
+            label = ind_registry.format_template(field["label"], params)
             entries.append(
-                f'{{"key": "ema_{period}", "label": "EMA ({period})", "format": "price", "section": "Trend"}}'
-            )
-        elif ind_id == "RSI":
-            period = int(p["period"])
-            entries.append(
-                f'{{"key": "rsi_{period}", "label": "RSI ({period})", "format": "number", "section": "Momentum"}}'
-            )
-        elif ind_id == "BB":
-            period = int(p["period"])
-            entries.append(
-                f'{{"key": "bb_basis_{period}", "label": "BB Basis ({period})", "format": "price", "section": "Bollinger"}}'
-            )
-            entries.append(
-                f'{{"key": "bb_upper_{period}", "label": "BB Upper ({period})", "format": "price", "section": "Bollinger"}}'
-            )
-            entries.append(
-                f'{{"key": "bb_lower_{period}", "label": "BB Lower ({period})", "format": "price", "section": "Bollinger"}}'
-            )
-            entries.append(
-                f'{{"key": "bb_width_pct_{period}", "label": "BB Width % ({period})", "format": "percent", "section": "Bollinger"}}'
-            )
-        elif ind_id == "DONCHIAN":
-            period = int(p["period"])
-            entries.append(
-                f'{{"key": "donchian_high_{period}", "label": "Donchian High ({period})", "format": "price", "section": "Donchian"}}'
-            )
-            entries.append(
-                f'{{"key": "donchian_low_{period}", "label": "Donchian Low ({period})", "format": "price", "section": "Donchian"}}'
-            )
-            entries.append(
-                f'{{"key": "donchian_mid_{period}", "label": "Donchian Mid ({period})", "format": "price", "section": "Donchian"}}'
-            )
-        elif ind_id == "ATR":
-            period = int(p["period"])
-            entries.append(
-                f'{{"key": "atr_{period}", "label": "ATR ({period})", "format": "price", "section": "Volatility"}}'
-            )
-            entries.append(
-                f'{{"key": "atr_pct_{period}", "label": "ATR % ({period})", "format": "percent", "section": "Volatility"}}'
-            )
-        elif ind_id == "VWAP":
-            entries.append('{"key": "vwap", "label": "VWAP", "format": "price", "section": "VWAP"}')
-        elif ind_id == "VOLUME_RATIO":
-            lookback = int(p["lookback"])
-            entries.append(
-                f'{{"key": "volume_ratio_{lookback}", "label": "Volume Ratio ({lookback})", "format": "number", "section": "Volume"}}'
-            )
-        elif ind_id == "SMA":
-            period = int(p["period"])
-            entries.append(
-                f'{{"key": "sma_{period}", "label": "SMA ({period})", "format": "price", "section": "Trend"}}'
-            )
-        elif ind_id == "HMA":
-            entries.append('{"key": "hma", "label": "HMA (55)", "format": "price", "section": "Trend"}')
-        elif ind_id == "SUPERTREND":
-            entries.append(
-                '{"key": "supertrend_dir", "label": "Supertrend Dir", "format": "number", "section": "Supertrend"}'
-            )
-            entries.append(
-                '{"key": "supertrend", "label": "Supertrend", "format": "price", "section": "Supertrend"}'
-            )
-        elif ind_id == "TCI":
-            entries.append('{"key": "tci", "label": "TCI", "format": "number", "section": "TCI"}')
-            entries.append(
-                '{"key": "tci_signal", "label": "TCI Signal", "format": "number", "section": "TCI"}'
-            )
-            entries.append(
-                '{"key": "tci_hist", "label": "TCI Hist", "format": "number", "section": "TCI"}'
-            )
-        elif ind_id == "ADX_DI":
-            period = int(p["period"])
-            entries.append(
-                f'{{"key": "adx_{period}", "label": "ADX ({period})", "format": "number", "section": "ADX"}}'
-            )
-            entries.append(
-                f'{{"key": "plus_di_{period}", "label": "+DI ({period})", "format": "number", "section": "ADX"}}'
-            )
-            entries.append(
-                f'{{"key": "minus_di_{period}", "label": "-DI ({period})", "format": "number", "section": "ADX"}}'
-            )
-            entries.append(
-                f'{{"key": "plus_di_cross_{period}", "label": "+DI Cross ({period})", "format": "int", "section": "ADX"}}'
-            )
-            entries.append(
-                f'{{"key": "minus_di_cross_{period}", "label": "-DI Cross ({period})", "format": "int", "section": "ADX"}}'
-            )
-        elif ind_id == "VORTEX":
-            period = int(p["period"])
-            entries.append(
-                f'{{"key": "vi_plus_{period}", "label": "VI+ ({period})", "format": "number", "section": "Vortex"}}'
-            )
-            entries.append(
-                f'{{"key": "vi_minus_{period}", "label": "VI- ({period})", "format": "number", "section": "Vortex"}}'
-            )
-            entries.append(
-                f'{{"key": "vortex_dir_{period}", "label": "Vortex Dir ({period})", "format": "int", "section": "Vortex"}}'
-            )
-            entries.append(
-                f'{{"key": "vortex_cross_up_{period}", "label": "Vortex Cross Up ({period})", "format": "int", "section": "Vortex"}}'
-            )
-            entries.append(
-                f'{{"key": "vortex_cross_down_{period}", "label": "Vortex Cross Down ({period})", "format": "int", "section": "Vortex"}}'
+                f'{{"key": "{key}", "label": "{label}", "format": "{field["format"]}", "section": "{field["section"]}"}}'
             )
 
     # Always-last: signal columns
@@ -980,192 +755,16 @@ def _emit_data_window_fields(indicators: list) -> str:
     return f"DATA_WINDOW_FIELDS = [\n    {inner},\n]"
 
 
-_TEMPLATE_NUMERIC = """\
-def _numeric(df: pd.DataFrame, key: str) -> pd.Series:
-    return pd.to_numeric(df.get(key), errors="coerce")"""
-
-_TEMPLATE_VOLUME_SERIES = """\
-def _volume_series(df: pd.DataFrame) -> pd.Series:
-    if "tick_volume" in df.columns:
-        return pd.to_numeric(df.get("tick_volume"), errors="coerce")
-    if "volume" in df.columns:
-        return pd.to_numeric(df.get("volume"), errors="coerce")
-    return pd.Series(1.0, index=df.index, dtype="float64")"""
-
-_TEMPLATE_RSI = """\
-def _rsi(close: pd.Series, length: int) -> pd.Series:
-    delta    = close.diff()
-    gain     = delta.clip(lower=0.0)
-    loss     = -delta.clip(upper=0.0)
-    avg_gain = gain.ewm(alpha=1.0 / length, min_periods=length, adjust=False).mean()
-    avg_loss = loss.ewm(alpha=1.0 / length, min_periods=length, adjust=False).mean()
-    rs       = avg_gain / avg_loss.replace(0.0, float("nan"))
-    return 100.0 - (100.0 / (1.0 + rs))"""
-
-_TEMPLATE_ATR = """\
-def _atr(high: pd.Series, low: pd.Series, close: pd.Series, length: int) -> pd.Series:
-    prev_close = close.shift(1)
-    tr = pd.concat(
-        [high - low,
-         (high - prev_close).abs(),
-         (low  - prev_close).abs()],
-        axis=1,
-    ).max(axis=1)
-    return tr.ewm(alpha=1.0 / length, min_periods=length, adjust=False).mean()"""
-
-_TEMPLATE_ADX_DI = """\
-def _adx_di(high: pd.Series, low: pd.Series, close: pd.Series, length: int):
-    prev_close = close.shift(1)
-    tr = pd.concat(
-        [high - low,
-         (high - prev_close).abs(),
-         (low  - prev_close).abs()],
-        axis=1,
-    ).max(axis=1)
-    up_move   = high - high.shift(1)
-    down_move = low.shift(1) - low
-    import numpy as _np
-    plus_dm  = pd.Series(_np.where((up_move > down_move) & (up_move > 0),   up_move,   0.0), index=high.index)
-    minus_dm = pd.Series(_np.where((down_move > up_move) & (down_move > 0), down_move, 0.0), index=high.index)
-    alpha = 1.0 / length
-    kw = {"alpha": alpha, "min_periods": length, "adjust": False}
-    atr_w     = tr.ewm(**kw).mean()
-    safe_atr  = atr_w.replace(0.0, float("nan"))
-    plus_di   = 100.0 * plus_dm.ewm(**kw).mean()  / safe_atr
-    minus_di  = 100.0 * minus_dm.ewm(**kw).mean() / safe_atr
-    di_sum    = (plus_di + minus_di).replace(0.0, float("nan"))
-    dx        = 100.0 * (plus_di - minus_di).abs() / di_sum
-    adx       = dx.ewm(**kw).mean()
-    pprev, mprev = plus_di.shift(1), minus_di.shift(1)
-    plus_cross  = ((plus_di  > minus_di) & (pprev <= mprev)).astype(int)
-    minus_cross = ((minus_di > plus_di)  & (mprev <= pprev)).astype(int)
-    return adx, plus_di, minus_di, plus_cross, minus_cross"""
-
-_TEMPLATE_VORTEX = """\
-def _vortex(high: pd.Series, low: pd.Series, close: pd.Series, length: int):
-    prev_close = close.shift(1)
-    tr = pd.concat(
-        [(high - low).abs(),
-         (high - prev_close).abs(),
-         (low  - prev_close).abs()],
-        axis=1,
-    ).max(axis=1)
-    vm_plus  = (high - low.shift(1)).abs()
-    vm_minus = (low  - high.shift(1)).abs()
-    tr_sum   = tr.rolling(length).sum().replace(0.0, float("nan"))
-    vi_plus  = vm_plus.rolling(length).sum() / tr_sum
-    vi_minus = vm_minus.rolling(length).sum() / tr_sum
-    direction = pd.Series(-1, index=high.index, dtype="int64").mask(vi_plus > vi_minus, 1)
-    cross_up = ((vi_plus > vi_minus) & (vi_plus.shift(1) <= vi_minus.shift(1))).astype(int)
-    cross_down = ((vi_minus > vi_plus) & (vi_minus.shift(1) <= vi_plus.shift(1))).astype(int)
-    return vi_plus, vi_minus, direction, cross_up, cross_down"""
-
-_TEMPLATE_INTRADAY_VWAP = """\
-def _intraday_vwap(df: pd.DataFrame,
-                   high: pd.Series, low: pd.Series,
-                   close: pd.Series, volume: pd.Series) -> pd.Series:
-    typical_price  = (high + low + close) / 3.0
-    weighted_price = typical_price * volume
-    if "time" in df.columns:
-        session_key = pd.to_datetime(df["time"], utc=True, errors="coerce").dt.floor("D")
-    else:
-        session_key = pd.Series(0, index=df.index)
-    cum_wp  = weighted_price.groupby(session_key).cumsum()
-    cum_vol = volume.groupby(session_key).cumsum().replace(0.0, float("nan"))
-    return cum_wp / cum_vol"""
-
-
 def _emit_helper_functions(indicators: list) -> str:
-    custom_ids = {ind["id"] for ind in indicators if not ind["pre_computed"]}
-
-    blocks = [_TEMPLATE_NUMERIC]
-
-    if "VWAP" in custom_ids or "VOLUME_RATIO" in custom_ids:
-        blocks.append(_TEMPLATE_VOLUME_SERIES)
-    if "RSI" in custom_ids:
-        blocks.append(_TEMPLATE_RSI)
-    if "ATR" in custom_ids:
-        blocks.append(_TEMPLATE_ATR)
-    if "VWAP" in custom_ids:
-        blocks.append(_TEMPLATE_INTRADAY_VWAP)
-    if "ADX_DI" in custom_ids:
-        blocks.append(_TEMPLATE_ADX_DI)
-    if "VORTEX" in custom_ids:
-        blocks.append(_TEMPLATE_VORTEX)
-
-    return "\n\n".join(blocks)
+    custom = [ind for ind in indicators if not ind["pre_computed"]]
+    return "\n\n".join(ind_registry.helpers_for(custom))
 
 
 def _emit_indicator_computation_block(ind: dict) -> list:
-    ind_id = ind["id"]
-    p = ind.get("params", {})
-
-    if ind_id == "EMA":
-        period = int(p["period"])
-        return [f"    ema_{period} = close.ewm(span={period}, adjust=False).mean()"]
-
-    elif ind_id == "RSI":
-        period = int(p["period"])
-        return [f"    rsi_{period} = _rsi(close, {period})"]
-
-    elif ind_id == "BB":
-        period = int(p["period"])
-        mult = p["multiplier"]
-        return [
-            f"    bb_basis_{period}     = close.rolling({period}, min_periods={period}).mean()",
-            f"    bb_std_{period}       = close.rolling({period}, min_periods={period}).std(ddof=0)",
-            f"    bb_upper_{period}     = bb_basis_{period} + (bb_std_{period} * {mult})",
-            f"    bb_lower_{period}     = bb_basis_{period} - (bb_std_{period} * {mult})",
-            f"    bb_width_pct_{period} = (bb_upper_{period} - bb_lower_{period}) / bb_basis_{period}.replace(0.0, float('nan'))",
-        ]
-
-    elif ind_id == "DONCHIAN":
-        period = int(p["period"])
-        return [
-            f"    donchian_high_{period} = high.rolling({period}, min_periods={period}).max().shift(1)",
-            f"    donchian_low_{period}  = low.rolling({period}, min_periods={period}).min().shift(1)",
-            f"    donchian_mid_{period}  = (donchian_high_{period} + donchian_low_{period}) / 2.0",
-        ]
-
-    elif ind_id == "ATR":
-        period = int(p["period"])
-        return [
-            f"    atr_{period}     = _atr(high, low, close, {period})",
-            f"    atr_pct_{period} = atr_{period} / close.replace(0.0, float('nan'))",
-        ]
-
-    elif ind_id == "VWAP":
-        return ["    vwap = _intraday_vwap(out, high, low, close, volume)"]
-
-    elif ind_id == "VOLUME_RATIO":
-        lookback = int(p["lookback"])
-        return [
-            f"    vol_ma_{lookback}       = volume.rolling({lookback}, min_periods=5).mean()",
-            f"    volume_ratio_{lookback} = volume / vol_ma_{lookback}.replace(0.0, float('nan'))",
-        ]
-
-    elif ind_id == "SMA":
-        period = int(p["period"])
-        return [f"    sma_{period} = close.rolling({period}, min_periods={period}).mean()"]
-
-    elif ind_id == "ADX_DI":
-        period = int(p["period"])
-        return [
-            f"    adx_{period}, plus_di_{period}, minus_di_{period}, "
-            f"plus_di_cross_{period}, minus_di_cross_{period} = "
-            f"_adx_di(high, low, close, {period})",
-        ]
-
-    elif ind_id == "VORTEX":
-        period = int(p["period"])
-        return [
-            f"    vi_plus_{period}, vi_minus_{period}, vortex_dir_{period}, "
-            f"vortex_cross_up_{period}, vortex_cross_down_{period} = "
-            f"_vortex(high, low, close, {period})",
-        ]
-
-    else:
-        raise ValueError(f"_emit_indicator_computation_block: unknown id '{ind_id}'")
+    spec = INDICATOR_SPECS.get(ind["id"])
+    if spec is None:
+        raise ValueError(f"_emit_indicator_computation_block: unknown id '{ind['id']}'")
+    return ind_registry.compute_lines(ind["id"], ind.get("params", {}))
 
 
 def _emit_prepare_dataframe(

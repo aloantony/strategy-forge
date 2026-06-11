@@ -2,13 +2,12 @@
 backend/application/builder_service.py — Servicio del Strategy Builder para frontends.
 
 Capa fina sobre backend/strategy_builder: expone el catálogo de indicadores con
-etiquetas humanas (única fuente de verdad para la web y futuras apps móviles),
+etiquetas humanas (derivado del registry único backend/strategy_builder/indicators.py),
 lee/guarda/valida/borra configs de estrategias del Builder. Los routers del
 server no orquestan: llaman aquí.
 """
 
 import json
-from pathlib import Path
 
 from backend.application import strategy_catalog
 from backend.core import config as core_config
@@ -18,6 +17,12 @@ from backend.strategy_builder.generator import (  # noqa: F401 (re-export para r
     GeneratorError,
     NameCollisionError,
     ValidationError,
+)
+from backend.strategy_builder.indicators import (
+    INDICATOR_SPECS,
+    MTF_INDICATOR_IDS,
+    catalog_for_meta,
+    indicator_columns,
 )
 
 # El enrutado v1/v2 es interno del generador; aquí solo se consulta.
@@ -49,170 +54,39 @@ _BASE_COLUMNS = [
     {"column": "lower", "label": "Banda inferior base del gráfico", "group": "Gráfico"},
 ]
 
-# Catálogo de indicadores con etiquetas humanas. Los templates de columna usan los
-# mismos nombres que genera generator.py; "{period}"/"{lookback}" se interpolan con
-# el valor del parámetro. La validación autoritativa sigue en el generador.
-_INDICATORS = [
-    {
-        "id": "EMA",
-        "label": "Media móvil exponencial (EMA)",
-        "description": "Media que reacciona rápido a los cambios de precio.",
-        "pre_computed": False,
-        "params": [{"key": "period", "label": "Período", "type": "int", "default": 9, "min": 2, "max": 500, "step": 1}],
-        "columns": [{"template": "ema_{period}", "label": "EMA ({period})"}],
-    },
-    {
-        "id": "SMA",
-        "label": "Media móvil simple (SMA)",
-        "description": "Media aritmética del precio en N velas.",
-        "pre_computed": False,
-        "params": [{"key": "period", "label": "Período", "type": "int", "default": 20, "min": 2, "max": 500, "step": 1}],
-        "columns": [{"template": "sma_{period}", "label": "SMA ({period})"}],
-    },
-    {
-        "id": "RSI",
-        "label": "Índice de fuerza relativa (RSI)",
-        "description": "Oscilador 0-100: sobreventa por debajo de 30, sobrecompra por encima de 70.",
-        "pre_computed": False,
-        "params": [{"key": "period", "label": "Período", "type": "int", "default": 14, "min": 2, "max": 200, "step": 1}],
-        "columns": [{"template": "rsi_{period}", "label": "RSI ({period})"}],
-    },
-    {
-        "id": "BB",
-        "label": "Bandas de Bollinger",
-        "description": "Bandas de volatilidad alrededor de una media.",
-        "pre_computed": False,
-        "params": [
-            {"key": "period", "label": "Período", "type": "int", "default": 20, "min": 2, "max": 500, "step": 1},
-            {"key": "multiplier", "label": "Multiplicador", "type": "float", "default": 2.0, "min": 0.1, "max": 10.0, "step": 0.1},
-        ],
-        "columns": [
-            {"template": "bb_basis_{period}", "label": "Banda media de Bollinger ({period})"},
-            {"template": "bb_upper_{period}", "label": "Banda superior de Bollinger ({period})"},
-            {"template": "bb_lower_{period}", "label": "Banda inferior de Bollinger ({period})"},
-            {"template": "bb_width_pct_{period}", "label": "Anchura de Bollinger % ({period})"},
-        ],
-    },
-    {
-        "id": "DONCHIAN",
-        "label": "Canal de Donchian",
-        "description": "Máximo y mínimo de las últimas N velas (ruptura de rangos).",
-        "pre_computed": False,
-        "params": [{"key": "period", "label": "Período", "type": "int", "default": 12, "min": 2, "max": 500, "step": 1}],
-        "columns": [
-            {"template": "donchian_high_{period}", "label": "Canal Donchian superior ({period})"},
-            {"template": "donchian_low_{period}", "label": "Canal Donchian inferior ({period})"},
-            {"template": "donchian_mid_{period}", "label": "Canal Donchian medio ({period})"},
-        ],
-    },
-    {
-        "id": "ATR",
-        "label": "Rango medio verdadero (ATR)",
-        "description": "Mide la volatilidad: cuánto se mueve el precio por vela.",
-        "pre_computed": False,
-        "params": [{"key": "period", "label": "Período", "type": "int", "default": 14, "min": 1, "max": 200, "step": 1}],
-        "columns": [
-            {"template": "atr_{period}", "label": "ATR ({period})"},
-            {"template": "atr_pct_{period}", "label": "ATR % ({period})"},
-        ],
-    },
-    {
-        "id": "VWAP",
-        "label": "Precio medio ponderado por volumen (VWAP)",
-        "description": "Precio medio de la sesión ponderado por volumen.",
-        "pre_computed": False,
-        "params": [],
-        "columns": [{"template": "vwap", "label": "VWAP"}],
-    },
-    {
-        "id": "VOLUME_RATIO",
-        "label": "Ratio de volumen",
-        "description": "Volumen actual frente a su media: >1 significa volumen alto.",
-        "pre_computed": False,
-        "params": [{"key": "lookback", "label": "Velas de referencia", "type": "int", "default": 30, "min": 2, "max": 500, "step": 1}],
-        "columns": [{"template": "volume_ratio_{lookback}", "label": "Ratio de volumen ({lookback})"}],
-    },
-    {
-        "id": "ADX_DI",
-        "label": "ADX + DI (fuerza de tendencia)",
-        "description": "ADX mide la fuerza de la tendencia; DI+ y DI− su dirección.",
-        "pre_computed": False,
-        "params": [{"key": "period", "label": "Período", "type": "int", "default": 14, "min": 2, "max": 200, "step": 1}],
-        "columns": [
-            {"template": "adx_{period}", "label": "ADX ({period})"},
-            {"template": "plus_di_{period}", "label": "DI+ ({period})"},
-            {"template": "minus_di_{period}", "label": "DI− ({period})"},
-            {"template": "plus_di_cross_{period}", "label": "Cruce alcista del DI+ ({period})"},
-            {"template": "minus_di_cross_{period}", "label": "Cruce bajista del DI− ({period})"},
-        ],
-    },
-    {
-        "id": "VORTEX",
-        "label": "Vortex (cambios de tendencia)",
-        "description": "Detecta giros de tendencia comparando los movimientos VI+ y VI−.",
-        "pre_computed": False,
-        "params": [{"key": "period", "label": "Período", "type": "int", "default": 14, "min": 2, "max": 200, "step": 1}],
-        "columns": [
-            {"template": "vi_plus_{period}", "label": "Vortex VI+ ({period})"},
-            {"template": "vi_minus_{period}", "label": "Vortex VI− ({period})"},
-            {"template": "vortex_dir_{period}", "label": "Dirección Vortex ({period})"},
-            {"template": "vortex_cross_up_{period}", "label": "Cruce alcista Vortex ({period})"},
-            {"template": "vortex_cross_down_{period}", "label": "Cruce bajista Vortex ({period})"},
-        ],
-    },
-    {
-        "id": "HMA",
-        "label": "Media de Hull (HMA)",
-        "description": "Media suave y rápida ya calculada por el gráfico.",
-        "pre_computed": True,
-        "params": [],
-        "columns": [{"template": "hma", "label": "HMA"}],
-    },
-    {
-        "id": "SUPERTREND",
-        "label": "Supertrend",
-        "description": "Guía de tendencia que cambia de lado del precio (ya calculada).",
-        "pre_computed": True,
-        "params": [],
-        "columns": [
-            {"template": "supertrend", "label": "Supertrend"},
-            {"template": "supertrend_dir", "label": "Dirección Supertrend (1 alcista / -1 bajista)"},
-        ],
-    },
-    {
-        "id": "TCI",
-        "label": "Oscilador TCI",
-        "description": "Oscilador de impulso normalizado por volatilidad (ya calculado).",
-        "pre_computed": True,
-        "params": [],
-        "columns": [
-            {"template": "tci", "label": "TCI"},
-            {"template": "tci_signal", "label": "Señal TCI"},
-            {"template": "tci_hist", "label": "Histograma TCI"},
-        ],
-    },
-]
 
-_MTF = {
-    "indicator_ids": ["ATR", "VORTEX"],
-    "block_defaults": {
-        "atr_period": 14,
-        "vortex_period": 14,
-        "risk_tiers": [0.01],
-        "sl_atr_mult": 1.5,
-        "tp_rr": 2.0,
-        "pyramid_atr_mult": 0.5,
-    },
-    "column_labels": [
-        {"template": "atr_{period}", "label": "ATR ({period})"},
-        {"template": "atr_pct_{period}", "label": "ATR % ({period})"},
-        {"template": "vi_plus_{period}", "label": "Vortex VI+ ({period})"},
-        {"template": "vi_minus_{period}", "label": "Vortex VI− ({period})"},
-        {"template": "vortex_dir_{period}", "label": "Dirección Vortex ({period})"},
-        {"template": "vortex_cross_up_{period}", "label": "Cruce alcista Vortex ({period})"},
-        {"template": "vortex_cross_down_{period}", "label": "Cruce bajista Vortex ({period})"},
-    ],
-}
+def _allowed_mtf_ids() -> list[str]:
+    # La lista autoritativa vive en el validador MTF; el registry define el universo.
+    from backend.strategy_builder.mtf_generator import VALID_MTF_INDICATOR_IDS
+    return [iid for iid in MTF_INDICATOR_IDS if iid in VALID_MTF_INDICATOR_IDS]
+
+
+def _mtf_column_labels() -> list[dict]:
+    out = []
+    for ind_id in _allowed_mtf_ids():
+        for col in INDICATOR_SPECS[ind_id]["columns"]:
+            out.append({"template": col["template"], "label": col["label"]})
+    return out
+
+
+def _mtf_meta() -> dict:
+    return {
+        "indicator_ids": _allowed_mtf_ids(),
+        "directions": [
+            {"id": "long", "label": "Largo (compra)"},
+            {"id": "short", "label": "Corto (venta)"},
+        ],
+        "rules_mode": True,  # buy/sell_condition con refs TF.columna a nivel raíz
+        "block_defaults": {
+            "atr_period": 14,
+            "vortex_period": 14,
+            "risk_tiers": [0.01],
+            "sl_atr_mult": 1.5,
+            "tp_rr": 2.0,
+            "pyramid_atr_mult": 0.5,
+        },
+        "column_labels": _mtf_column_labels(),
+    }
 
 
 def get_builder_meta() -> dict:
@@ -220,9 +94,9 @@ def get_builder_meta() -> dict:
         "timeframes": list(TIMEFRAME_MINUTES),
         "operators": _OPERATORS,
         "base_columns": _BASE_COLUMNS,
-        "indicators": _INDICATORS,
+        "indicators": catalog_for_meta(),
         "max_group_depth": MAX_GROUP_DEPTH,
-        "mtf": _MTF,
+        "mtf": _mtf_meta(),
     }
 
 

@@ -342,17 +342,10 @@ def _normalize_frames(config: dict) -> list[dict]:
 
 
 def _indicator_columns(ind_id: str, period: int) -> list[str]:
-    if ind_id == "ATR":
-        return [f"atr_{period}", f"atr_pct_{period}"]
-    if ind_id == "VORTEX":
-        return [
-            f"vi_plus_{period}",
-            f"vi_minus_{period}",
-            f"vortex_dir_{period}",
-            f"vortex_cross_up_{period}",
-            f"vortex_cross_down_{period}",
-        ]
-    raise ValidationError(f"Unknown MTF indicator id '{ind_id}'.")
+    if ind_id not in VALID_MTF_INDICATOR_IDS:
+        raise ValidationError(f"Unknown MTF indicator id '{ind_id}'.")
+    from backend.strategy_builder.indicators import indicator_columns
+    return indicator_columns(ind_id, {"period": period})
 
 
 def _normalize_indicators(indicators: list) -> list[dict]:
