@@ -621,6 +621,53 @@ def test_mtf_schema_v2_generation_and_payload():
     print("PASS test_mtf_schema_v2_generation_and_payload")
 
 
+def test_edit_missing_json_typed_error():
+    """handle_save_edit raises ValidationError (not FileNotFoundError) if the .json is missing."""
+    with tempfile.TemporaryDirectory() as tmpdir:
+        d = Path(tmpdir)
+        config = json.loads(json.dumps(EMA_RSI_CONFIG))
+        try:
+            handle_save_edit(config, "no_existe", strategies_dir=d)
+            assert False, "Should have raised ValidationError"
+        except ValidationError as exc:
+            assert "no_existe" in str(exc)
+    print("PASS test_edit_missing_json_typed_error")
+
+
+def test_mtf_unqualified_refs_validate_against_primary():
+    """Unqualified MTF column refs must resolve to the primary timeframe (runtime semantics)."""
+    from backend.strategy_builder.mtf_generator import validate_mtf_strategy_config
+
+    config = {
+        "schema_version": 2,
+        "mode": "multi_timeframe",
+        "name": "mtf_primary_refs",
+        "display_name": "MTF Primary Refs",
+        "primary_timeframe": "H1",
+        "magic_number": 23456,
+        "indicators": [],
+        "blocks": [
+            {
+                "id": "main",
+                "trigger_timeframe": "H1",
+                "confirm_timeframes": ["H4"],
+                "risk_tiers": [0.01],
+                # Ref sin cualificar: el runtime la evalúa en el primario (H1),
+                # así que la validación debe aceptarla y almacenarla cualificada.
+                "entry_condition": {"type": "condition", "left": "vortex_cross_up_14", "op": ">", "right": 0},
+            }
+        ],
+    }
+    with tempfile.TemporaryDirectory() as tmpdir:
+        validate_mtf_strategy_config(config, is_new=True, strategies_dir=Path(tmpdir))
+
+    block = config["blocks"][0]
+    assert block["entry_condition"]["left"] == "H1.vortex_cross_up_14"
+    # atr_ref por defecto ya viene cualificado como dict con timeframe del trigger
+    assert block["atr_ref"]["timeframe"] == "H1"
+    print("PASS test_mtf_unqualified_refs_validate_against_primary")
+
+
 if __name__ == "__main__":
     test_canonical_example()
     test_round_trip()
@@ -637,4 +684,6 @@ if __name__ == "__main__":
     test_validation_payload_extra_fields()
     test_vortex_indicator_generation()
     test_mtf_schema_v2_generation_and_payload()
+    test_edit_missing_json_typed_error()
+    test_mtf_unqualified_refs_validate_against_primary()
     print("\nAll tests passed.")

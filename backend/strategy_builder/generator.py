@@ -8,6 +8,11 @@ All pseudocode source: agents/specs/TASK-014c-strategy-data-model-and-generator.
 Condition tree model: agents/specs/TASK-014b-condition-tree-model.md
 
 This module is NOT imported by generated strategies (isolation rule).
+
+Known limitation: the generated PARAMS block is declarative only — the generated
+signal functions do not accept a `params` kwarg, and indicator periods are baked
+into column names (ema_9, rsi_14...), so `.params.json` overrides have no effect
+on Builder strategies. Changing parameters means re-saving via the Builder.
 """
 
 import ast
@@ -192,19 +197,10 @@ def handle_save_new(raw_config: dict, strategies_dir: Path = None) -> Path:
         strategies_dir = STRATEGIES_DIR
 
     raw_config = dict(raw_config)
+    # sanitize_name auto-sufija (_2, _3...) hasta encontrar nombre libre, así que
+    # aquí nunca hay colisión. Quien quiera rechazar duplicados explícitamente debe
+    # comprobar slugify_display_name() antes (lo hace builder_service para la API).
     raw_config["name"] = sanitize_name(raw_config.get("display_name", ""), strategies_dir)
-    name = raw_config["name"]
-    py_path = strategies_dir / f"strategy_{name}.py"
-    json_path = strategies_dir / f"strategy_{name}.json"
-
-    if py_path.exists() and not json_path.exists():
-        raise NameCollisionError(
-            f"A hand-crafted strategy named '{name}' already exists."
-        )
-    if py_path.exists() and json_path.exists():
-        raise NameCollisionError(
-            f"A Builder strategy named '{name}' already exists. Use Edit to modify it."
-        )
 
     raw_config["magic_number"] = generate_magic_number(strategies_dir)
     raw_config["schema_version"] = _requested_schema_version(raw_config)
@@ -227,19 +223,24 @@ def handle_save_edit(raw_config: dict, original_name: str, strategies_dir: Path 
 
     raw_config = dict(raw_config)
     stored_json_path = strategies_dir / f"strategy_{original_name}.json"
+    if not stored_json_path.is_file():
+        raise ValidationError(
+            f"'{original_name}' no existe o no es una estrategia del Builder (falta strategy_{original_name}.json)."
+        )
     stored_config = json.loads(stored_json_path.read_text(encoding="utf-8"))
-    preserved_magic = stored_config["magic_number"]
+    preserved_magic = stored_config.get("magic_number")
+    if not isinstance(preserved_magic, int):
+        raise ValidationError(
+            f"strategy_{original_name}.json no tiene un magic_number válido; no se puede editar."
+        )
 
+    # sanitize_name(exclude_name=original_name) devuelve un nombre libre o el propio
+    # original_name, por lo que un rename nunca colisiona.
     new_name = sanitize_name(raw_config.get("display_name", ""), strategies_dir,
                              exclude_name=original_name)
     raw_config["name"] = new_name
     raw_config["magic_number"] = preserved_magic
     raw_config["schema_version"] = _requested_schema_version(raw_config)
-
-    if new_name != original_name:
-        new_py = strategies_dir / f"strategy_{new_name}.py"
-        if new_py.exists():
-            raise NameCollisionError(f"Name '{new_name}' is already taken.")
 
     if _is_mtf_config(raw_config):
         from backend.strategy_builder.mtf_generator import validate_mtf_strategy_config
@@ -494,6 +495,17 @@ def _used_magic_numbers(strategies_dir: Path) -> set:
     return used
 
 
+def slugify_display_name(display_name: str) -> str:
+    """Base machine name derived from a display name (without collision suffixes)."""
+    s = (display_name or "").lower()
+    s = re.sub(r'[^a-z0-9_]', '_', s)
+    s = re.sub(r'_+', '_', s)
+    s = s.strip('_')
+    if not s or s[0].isdigit():
+        s = 'strategy_' + s
+    return s
+
+
 def sanitize_name(display_name: str, strategies_dir: Path = None, exclude_name: str = None) -> str:
     """
     Convert a user-visible display name to a valid machine name.
@@ -502,14 +514,7 @@ def sanitize_name(display_name: str, strategies_dir: Path = None, exclude_name: 
     if strategies_dir is None:
         strategies_dir = STRATEGIES_DIR
 
-    s = display_name.lower()
-    s = re.sub(r'[^a-z0-9_]', '_', s)
-    s = re.sub(r'_+', '_', s)
-    s = s.strip('_')
-    if not s or s[0].isdigit():
-        s = 'strategy_' + s
-
-    base = s
+    base = slugify_display_name(display_name)
     candidate = base
     suffix = 2
     while True:

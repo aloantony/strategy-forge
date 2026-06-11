@@ -72,13 +72,26 @@ def validate_mtf_strategy_config(config: dict, is_new: bool = True, strategies_d
     _ensure_block_indicators(config)
     config["indicators"] = _dedupe_indicators(config["indicators"])
 
+    # Las refs sin timeframe se evalúan en runtime sobre el timeframe primario
+    # (template _parse_ref); se cualifican aquí para que la config almacenada sea
+    # explícita y la validación coincida con el runtime (antes se asumía M1).
+    primary = config["primary_timeframe"]
+    for block in config["blocks"]:
+        block["entry_condition"] = _qualify_condition_refs(block["entry_condition"], primary)
+        block["direction_condition"] = _qualify_condition_refs(block["direction_condition"], primary)
+        block["atr_ref"] = _qualify_ref(block["atr_ref"], primary)
+        block["tiers"] = [
+            {**tier, "condition": _qualify_condition_refs(tier["condition"], primary)}
+            for tier in block["tiers"]
+        ]
+
     available = _available_columns(config)
     for block in config["blocks"]:
-        _validate_condition(block["entry_condition"], available, f"blocks[{block['id']}].entry_condition")
-        _validate_condition(block["direction_condition"], available, f"blocks[{block['id']}].direction_condition")
-        _validate_ref(block["atr_ref"], available, f"blocks[{block['id']}].atr_ref")
+        _validate_condition(block["entry_condition"], available, f"blocks[{block['id']}].entry_condition", primary)
+        _validate_condition(block["direction_condition"], available, f"blocks[{block['id']}].direction_condition", primary)
+        _validate_ref(block["atr_ref"], available, f"blocks[{block['id']}].atr_ref", primary)
         for i, tier in enumerate(block["tiers"]):
-            _validate_condition(tier["condition"], available, f"blocks[{block['id']}].tiers[{i}].condition")
+            _validate_condition(tier["condition"], available, f"blocks[{block['id']}].tiers[{i}].condition", primary)
 
     _validate_parent_graph(config["blocks"])
 
@@ -510,16 +523,44 @@ def _available_columns(config: dict) -> dict[str, set[str]]:
     return available
 
 
-def _validate_ref(ref, available: dict[str, set[str]], path: str) -> None:
+def _qualify_ref(ref, default_tf: str):
+    """Devuelve la referencia con timeframe explícito (default: el primario)."""
+    if ref is None or isinstance(ref, (int, float, bool)):
+        return ref
+    if isinstance(ref, str):
+        return ref if "." in ref else f"{default_tf}.{ref}"
+    if isinstance(ref, dict):
+        out = dict(ref)
+        out["timeframe"] = out.get("timeframe") or out.get("frame") or default_tf
+        out.pop("frame", None)
+        return out
+    return ref
+
+
+def _qualify_condition_refs(node, default_tf: str):
+    if not isinstance(node, dict):
+        return node
+    node_type = str(node.get("type") or "").upper()
+    if node_type == "CONDITION":
+        out = dict(node)
+        out["left"] = _qualify_ref(node.get("left"), default_tf)
+        out["right"] = _qualify_ref(node.get("right"), default_tf)
+        return out
+    out = dict(node)
+    out["children"] = [_qualify_condition_refs(child, default_tf) for child in node.get("children") or []]
+    return out
+
+
+def _validate_ref(ref, available: dict[str, set[str]], path: str, default_tf: str = "M1") -> None:
     if isinstance(ref, (int, float, bool)):
         return
     if isinstance(ref, str):
         if "." in ref:
             tf, col = ref.split(".", 1)
         else:
-            tf, col = "M1", ref
+            tf, col = default_tf, ref
     elif isinstance(ref, dict):
-        tf = ref.get("timeframe") or ref.get("frame") or "M1"
+        tf = ref.get("timeframe") or ref.get("frame") or default_tf
         col = ref.get("column")
     else:
         raise ValidationError(f"{path}: invalid reference {ref!r}")
@@ -528,22 +569,22 @@ def _validate_ref(ref, available: dict[str, set[str]], path: str) -> None:
         raise ValidationError(f"{path}: column '{tf}.{col}' is not available.")
 
 
-def _validate_condition(node, available: dict[str, set[str]], path: str) -> None:
+def _validate_condition(node, available: dict[str, set[str]], path: str, default_tf: str = "M1") -> None:
     if not isinstance(node, dict):
         raise ValidationError(f"{path}: condition must be an object.")
     node_type = str(node.get("type") or "").upper()
     if node_type == "CONDITION":
         if node.get("op") not in {"<", ">", "<=", ">=", "==", "!="}:
             raise ValidationError(f"{path}: invalid operator '{node.get('op')}'.")
-        _validate_ref(node.get("left"), available, f"{path}.left")
-        _validate_ref(node.get("right"), available, f"{path}.right")
+        _validate_ref(node.get("left"), available, f"{path}.left", default_tf)
+        _validate_ref(node.get("right"), available, f"{path}.right", default_tf)
         return
     if node_type in {"AND", "OR"}:
         children = node.get("children") or []
         if len(children) < 1:
             raise ValidationError(f"{path}: group must have children.")
         for i, child in enumerate(children):
-            _validate_condition(child, available, f"{path}.children[{i}]")
+            _validate_condition(child, available, f"{path}.children[{i}]", default_tf)
         return
     raise ValidationError(f"{path}: unknown node type '{node.get('type')}'.")
 

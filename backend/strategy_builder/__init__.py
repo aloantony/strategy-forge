@@ -11,6 +11,7 @@ from .generator import (
     handle_save_new,
     render_strategy_source,
     sanitize_name,
+    slugify_display_name,
     validate_strategy_config,
 )
 
@@ -25,5 +26,6 @@ __all__ = [
     "handle_save_new",
     "render_strategy_source",
     "sanitize_name",
+    "slugify_display_name",
     "validate_strategy_config",
 ]
