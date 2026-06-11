@@ -22,7 +22,7 @@ from backend.application.backtest_service import BacktestService
 from backend.brokers.factory import build_broker_adapter
 from backend.core import config
 from backend.runtime.timeframes import TIMEFRAME_MINUTES
-from server.routers import account, backtest, market, strategies
+from server.routers import account, backtest, builder, market, strategies
 from server.ws import router as ws_router
 
 _WEB_DIR = Path(__file__).resolve().parents[1] / "frontend" / "web"
@@ -62,6 +62,7 @@ def create_app(broker_name: str = None) -> FastAPI:
     app.include_router(strategies.router, prefix="/api")
     app.include_router(account.router, prefix="/api")
     app.include_router(backtest.router, prefix="/api")
+    app.include_router(builder.router, prefix="/api")
     app.include_router(market.router, prefix="/api")
     app.include_router(ws_router)
 

@@ -31,3 +31,18 @@ class StrategyItem(BaseModel):
     magic_number: int = 0
     has_params: bool = False
     error: str | None = None
+
+
+class BuilderSaveResponse(BaseModel):
+    key: str
+    name: str
+    display_name: str
+    magic_number: int
+    timeframe: str = ""
+    schema_version: int = 1
+    py_path: str
+
+
+class BuilderValidateResponse(BaseModel):
+    valid: bool
+    errors: list[str] = []
