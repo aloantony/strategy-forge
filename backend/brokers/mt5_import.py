@@ -1,7 +1,8 @@
 """
-Import condicional de MetaTrader5 según plataforma.
-- Windows: usa MetaTrader5 oficial (acceso directo al terminal local).
-- Mac/Linux: usa mt5linux (proxy ZeroMQ hacia un Windows remoto con MT5).
+Import condicional de MetaTrader5.
+- Windows con el paquete instalado: módulo oficial (acceso al terminal local).
+- Resto de entornos (Linux/servidores): mt5 = None; el backend opera con el
+  broker `paper` u otros adaptadores vía backend.brokers.factory.
 """
 import sys
 
@@ -10,15 +11,5 @@ mt5 = None
 if sys.platform == "win32":
     try:
         import MetaTrader5 as mt5
-    except ImportError:
-        mt5 = None
-else:
-    try:
-        from mt5linux import MetaTrader5 as _MT5Class
-        from backend.core import config as _config
-        mt5 = _MT5Class(
-            host=getattr(_config, "MT5LINUX_HOST", "localhost"),
-            port=int(getattr(_config, "MT5LINUX_PORT", 18812)),
-        )
     except ImportError:
         mt5 = None

@@ -80,10 +80,9 @@ CANONICAL_RESOURCES_ENABLED = True
 ENABLE_BUILDER_MTF = False
 
 # ---------------------------------------------------------------------------
-# MT5Linux (Mac/Linux solamente)
-# Requerido si corres el bot desde Mac/Linux conectado a un Windows con MT5.
-# En Windows estas variables se ignoran.
+# Broker
 # ---------------------------------------------------------------------------
-MT5LINUX_HOST = "localhost"   # IP o hostname de la máquina Windows con MT5
-MT5LINUX_PORT = 18812         # Puerto del servidor mt5linux (default 18812)
+# BROKER: adaptador de broker ("mt5" | "paper" | "auto"). "auto" usa MT5 si está
+# disponible y paper en caso contrario. Sobreescribible con env TRADING_BROKER.
+BROKER = "auto"
 
