@@ -67,7 +67,8 @@ import MT5 directly — only through `IBrokerAdapter`/`IHistoricalDataSource`. M
 - **backend/brokers/** — `interface.py` (`IBrokerAdapter`), `factory.py` (selection), `paper.py` (in-memory broker), `mt5/` (adapter + legacy `trading.py`/`connection.py`)
 - **backend/data/** — `IHistoricalDataSource` + sources (mt5, dukascopy, file) + `data_feed.py` (pure indicator/derived-column helpers; OHLCV fetch lives in `mt5_data_feed.py`)
 - **backend/backtesting/** — backtesting package: `runtime.py` for the GUI/runtime-aligned engine and `python -m backend.backtesting runtime` for CLI entrypoints
-- **backend/strategy_builder/generator.py** — Strategy `.py` file generator; called by the GUI's Strategy Builder to create/overwrite strategy modules from a JSON config
+- **backend/strategy_builder/generator.py** — Strategy `.py` file generator (v1 + MTF v2 routing); creates/overwrites strategy modules from a JSON config. Note: the emitted PARAMS block is declarative only — `.params.json` overrides don't affect Builder strategies
+- **backend/application/builder_service.py** — Builder service for frontends: indicator catalog with human labels (`/api/builder/meta`), read/save/validate/delete of Builder strategies; used by `server/routers/builder.py` and the web wizard
 - **gui_charts.py** — Large GUI file (desktop frontend, pending split into `frontend/desktop/`); Strategy Builder UI, strategy enable/disable, Data Window, performance metrics, and visual event handling
 
 ### Service Extraction Rule

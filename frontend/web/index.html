@@ -54,6 +54,7 @@
 
       <section id="panel-strategies" class="panel">
         <h2 class="panel-title">Estrategias</h2>
+        <button id="strategy-new" type="button" class="primary" style="margin: 0 0 14px;">+ Nueva estrategia</button>
         <div id="strategies-list" class="list"></div>
         <p id="strategies-empty" class="hint">Sin estrategias.</p>
       </section>
@@ -90,6 +91,27 @@
       </section>
     </aside>
   </main>
+
+  <!-- Strategy Builder: wizard a pantalla completa -->
+  <section id="builder" hidden>
+    <header id="sb-header">
+      <div class="brand" id="sb-title">Nueva estrategia</div>
+      <nav id="sb-steps"></nav>
+      <button id="sb-close" class="ghost" type="button" title="Cerrar">✕</button>
+    </header>
+    <div id="sb-body">
+      <div id="sb-step"></div>
+    </div>
+    <footer id="sb-footer">
+      <p id="sb-error" class="hint"></p>
+      <div id="sb-nav">
+        <button id="sb-delete" type="button" hidden>Eliminar</button>
+        <span class="spacer"></span>
+        <button id="sb-back" type="button">Anterior</button>
+        <button id="sb-next" type="button" class="primary">Siguiente</button>
+      </div>
+    </footer>
+  </section>
 
   <script type="module" src="/js/app.js"></script>
 </body>

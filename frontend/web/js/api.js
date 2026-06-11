@@ -26,6 +26,8 @@ async function request(method, path, { params, body } = {}) {
 
 export const apiGet = (path, params) => request("GET", path, { params });
 export const apiPost = (path, body) => request("POST", path, { body });
+export const apiPut = (path, body) => request("PUT", path, { body });
+export const apiDelete = (path) => request("DELETE", path);
 
 // Suscripción al stream de snapshots con reconexión (backoff simple).
 // Devuelve una función para cancelar.

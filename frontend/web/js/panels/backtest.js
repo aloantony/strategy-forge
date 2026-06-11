@@ -16,6 +16,22 @@ const fmtDate = (epoch) => {
 
 let equityChart = null;
 
+export async function refreshStrategyOptions() {
+  const stratSel = document.getElementById("bt-strategy");
+  const previous = stratSel.value;
+  stratSel.innerHTML = "";
+  try {
+    for (const strat of await apiGet("/api/strategies")) {
+      const opt = document.createElement("option");
+      opt.value = strat.key;
+      opt.textContent = strat.label ?? strat.key;
+      stratSel.appendChild(opt);
+    }
+  } catch { /* lista vacía: el submit avisará */ }
+  if (previous) stratSel.value = previous;
+  if (!stratSel.value && stratSel.options.length) stratSel.selectedIndex = 0;
+}
+
 export async function initBacktestPanel(meta, getTheme) {
   const form = document.getElementById("bt-form");
   const status = document.getElementById("bt-status");
@@ -34,14 +50,7 @@ export async function initBacktestPanel(meta, getTheme) {
   document.getElementById("bt-symbol").value = meta.symbol_default ?? "";
 
   const stratSel = document.getElementById("bt-strategy");
-  try {
-    for (const strat of await apiGet("/api/strategies")) {
-      const opt = document.createElement("option");
-      opt.value = strat.key;
-      opt.textContent = strat.label ?? strat.key;
-      stratSel.appendChild(opt);
-    }
-  } catch { /* lista vacía: el submit avisará */ }
+  await refreshStrategyOptions();
 
   // Fechas por defecto: último mes
   const today = new Date();

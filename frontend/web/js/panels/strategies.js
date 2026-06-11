@@ -1,6 +1,7 @@
-// panels/strategies.js — listado de estrategias + activar/desactivar.
+// panels/strategies.js — listado de estrategias + activar/desactivar + acceso al Builder.
 
 import { apiGet, apiPost } from "../api.js";
+import { openBuilderEdit } from "./builder.js";
 
 export async function refreshStrategies() {
   const list = document.getElementById("strategies-list");
@@ -33,6 +34,17 @@ export async function refreshStrategies() {
       .filter(Boolean).join(" · ");
     main.append(title, sub);
 
+    const actions = document.createElement("div");
+    actions.className = "actions";
+
+    if (strat.has_config) {
+      const edit = document.createElement("button");
+      edit.type = "button";
+      edit.textContent = "Editar";
+      edit.addEventListener("click", () => openBuilderEdit(strat.key));
+      actions.appendChild(edit);
+    }
+
     const toggle = document.createElement("button");
     toggle.type = "button";
     toggle.className = strat.enabled ? "on" : "";
@@ -47,8 +59,9 @@ export async function refreshStrategies() {
         alert(err.message);
       }
     });
+    actions.appendChild(toggle);
 
-    item.append(main, toggle);
+    item.append(main, actions);
     list.appendChild(item);
   }
   return strategies;

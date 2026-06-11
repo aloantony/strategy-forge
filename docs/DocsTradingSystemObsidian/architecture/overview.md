@@ -50,7 +50,7 @@ flowchart TB
 | Capa | Responsabilidad | Archivos principales |
 | --- | --- | --- |
 | Frontends | Presentacion, eventos visuales, graficos y captura de intencion del usuario. | `frontend/web/` (cliente de referencia, servido por el server en `/`); `gui_charts.py` (desktop legacy, congelado — solo fixes criticos) |
-| Server | API REST + WebSocket para conectar multiples frontends; broker-agnostico, Linux-ready. | `server/` (`uvicorn server.app:app`) |
+| Server | API REST + WebSocket para conectar multiples frontends; broker-agnostico, Linux-ready. Incluye la API del Strategy Builder (`/api/builder/*`: meta con catalogo etiquetado, CRUD y validacion de estrategias v1 y MTF v2). Evolucion prevista: multi-usuario/autenticacion y clientes moviles consumiendo la misma API. | `server/` (`uvicorn server.app:app`), `backend/application/builder_service.py` |
 | Application Services | Validacion y orquestacion reusable fuera de la GUI. | `backend/application/` |
 | Entrypoints | Arranque de modos consola/CLI y loop live. | `backend/main.py`, `backend/backtesting/cli.py` |
 | Strategy | Contrato comun, carga/descubrimiento y modulos de estrategia. | `backend/strategy/runtime.py`, `backend/strategy/loader.py`, `strategies/` |

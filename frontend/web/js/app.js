@@ -4,7 +4,8 @@ import { apiGet, subscribeStream } from "./api.js";
 import { ChartView } from "./chart.js";
 import { renderSnapshot } from "./panels/account.js";
 import { refreshStrategies } from "./panels/strategies.js";
-import { initBacktestPanel } from "./panels/backtest.js";
+import { initBacktestPanel, refreshStrategyOptions } from "./panels/backtest.js";
+import { initBuilder, openBuilderNew } from "./panels/builder.js";
 
 const POLL_MS = 5000;
 const INITIAL_BARS = 1200;
@@ -148,6 +149,13 @@ async function main() {
 
   refreshStrategies();
   initBacktestPanel(meta, () => state.theme);
+
+  initBuilder();
+  document.getElementById("strategy-new").addEventListener("click", openBuilderNew);
+  document.addEventListener("strategies-changed", () => {
+    refreshStrategies();
+    refreshStrategyOptions();
+  });
 
   await setMarket(meta.symbol_default, state.timeframe);
 }
