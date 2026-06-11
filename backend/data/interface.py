@@ -12,8 +12,8 @@ class IDataFeed(ABC):
     Fuente de datos para el runtime en vivo.
 
     Responsabilidad: dado un símbolo y timeframe, retorna un DataFrame ya
-    completamente enriquecido — equivalente al resultado de:
-        data_feed.get_rates_df() +
+    completamente enriquecido — equivalente al resultado de obtener velas
+    (p.ej. mt5_data_feed.get_rates_df()) y aplicar la cadena de data_feed:
         add_source_columns() + add_baseline_bands() + add_supertrend() + add_tci()
 
     El consumidor (main.py, gui_charts.py) no necesita aplicar ninguna

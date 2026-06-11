@@ -1,32 +1,27 @@
 """
-src/analytics/trade_history.py — Empareja deals de MetaTrader5 en operaciones
+backend/analytics/trade_history.py — Empareja deals de MetaTrader5 en operaciones
 round-trip (entrada↔salida) y clasifica el motivo de cierre nativo (deal.reason).
 
-Lógica pura reutilizable por la GUI (y por tests). No importa de gui_charts ni de
-config; recibe el tamaño de punto y resolutores opcionales de estrategia/motivo.
-
-Las constantes de MT5 se leen con getattr + el valor oficial por defecto, de modo
-que el módulo funciona aunque `mt5` sea None (entornos sin terminal) y los tests
-pueden construir deals con enteros planos que coinciden con los valores reales.
+Lógica pura reutilizable por la GUI, el server y los tests. No importa de
+gui_charts, config ni mt5; recibe el tamaño de punto y resolutores opcionales de
+estrategia/motivo. Las constantes DEAL_* son los valores numéricos oficiales del
+API de MetaTrader5 (estables), hardcodeados para mantener esta capa pura.
 """
 
-from backend.brokers.mt5_import import mt5
-
-# Valores oficiales de MetaTrader5 usados como defaults (idénticos al binario real).
-_DEAL_TYPE_BUY = getattr(mt5, "DEAL_TYPE_BUY", 0)
-_DEAL_TYPE_SELL = getattr(mt5, "DEAL_TYPE_SELL", 1)
-_DEAL_ENTRY_IN = getattr(mt5, "DEAL_ENTRY_IN", 0)
-_DEAL_ENTRY_OUT = getattr(mt5, "DEAL_ENTRY_OUT", 1)
-_DEAL_ENTRY_INOUT = getattr(mt5, "DEAL_ENTRY_INOUT", 2)
+_DEAL_TYPE_BUY = 0       # mt5.DEAL_TYPE_BUY
+_DEAL_TYPE_SELL = 1      # mt5.DEAL_TYPE_SELL
+_DEAL_ENTRY_IN = 0       # mt5.DEAL_ENTRY_IN
+_DEAL_ENTRY_OUT = 1      # mt5.DEAL_ENTRY_OUT
+_DEAL_ENTRY_INOUT = 2    # mt5.DEAL_ENTRY_INOUT
 
 _EXIT_CAUSE_BY_REASON = {
-    getattr(mt5, "DEAL_REASON_SL", 4): "SL",
-    getattr(mt5, "DEAL_REASON_TP", 5): "TP",
-    getattr(mt5, "DEAL_REASON_SO", 6): "Stop Out",
-    getattr(mt5, "DEAL_REASON_EXPERT", 3): "Reversión/Bot",
-    getattr(mt5, "DEAL_REASON_CLIENT", 0): "Manual",
-    getattr(mt5, "DEAL_REASON_MOBILE", 1): "Manual",
-    getattr(mt5, "DEAL_REASON_WEB", 2): "Manual",
+    4: "SL",             # mt5.DEAL_REASON_SL
+    5: "TP",             # mt5.DEAL_REASON_TP
+    6: "Stop Out",       # mt5.DEAL_REASON_SO
+    3: "Reversión/Bot",  # mt5.DEAL_REASON_EXPERT
+    0: "Manual",         # mt5.DEAL_REASON_CLIENT
+    1: "Manual",         # mt5.DEAL_REASON_MOBILE
+    2: "Manual",         # mt5.DEAL_REASON_WEB
 }
 
 

@@ -1,3 +1,5 @@
+import pandas as pd
+
 from backend.brokers.mt5_import import mt5
 
 from backend.data import data_feed as _data_feed
@@ -7,6 +9,33 @@ TIMEFRAME_INT = {
     "M1": 1, "M2": 2, "M3": 3, "M5": 5, "M10": 10, "M15": 15, "M30": 30,
     "H1": 16385, "H4": 16388, "D1": 16408,
 }
+
+
+def get_rates_df(symbol: str, timeframe, bars: int) -> pd.DataFrame:
+    """
+    Obtiene las velas históricas desde MetaTrader 5.
+
+    Args:
+        symbol: Símbolo a obtener.
+        timeframe: Timeframe de MT5 (ej: mt5.TIMEFRAME_M1).
+        bars: Número de velas a obtener.
+
+    Returns:
+        pd.DataFrame: DataFrame con columnas time, open, high, low, close.
+    """
+    if mt5 is None:
+        raise RuntimeError(
+            "get_rates_df requiere MT5. Para backtesting sin MT5 usa --data-source dukascopy."
+        )
+    rates = mt5.copy_rates_from_pos(symbol, timeframe, 0, bars)
+    if rates is None or len(rates) == 0:
+        raise Exception(f"No se pudieron obtener datos para {symbol}")
+
+    df = pd.DataFrame(rates)
+    # Los timestamps de MT5 llegan en época UTC; mantenerlos explícitos evita desfases.
+    df['time'] = pd.to_datetime(df['time'], unit='s', utc=True)
+
+    return df
 
 
 class MT5DataFeed(IDataFeed):
@@ -47,7 +76,7 @@ class MT5DataFeed(IDataFeed):
 
     def get_enriched_df(self, symbol: str, timeframe: str, bars: int):
         tf_int = TIMEFRAME_INT[timeframe]
-        df = _data_feed.get_rates_df(symbol, tf_int, bars)
+        df = get_rates_df(symbol, tf_int, bars)
         df = _data_feed.add_source_columns(df, self._source_mode)
         df = _data_feed.add_baseline_bands(df, self._ma_length, self._atr_length, self._atr_mult)
         df = _data_feed.add_supertrend(

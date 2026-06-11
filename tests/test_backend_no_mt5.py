@@ -29,13 +29,20 @@ for mod in list(sys.modules):
 # Capas que deben importar sin MT5
 import backend.core.config
 import backend.strategy.runtime
+import backend.strategy.loader
 import backend.application
 import backend.runtime.execution_engine
+import backend.runtime.timeframes
 import backend.backtesting.runtime
 import backend.analytics.trade_history
+import backend.data.data_feed
 import backend.persistence
 from backend.brokers.mt5_import import mt5
 assert mt5 is None, "mt5 deberia ser None sin MetaTrader5 instalado"
+
+# Las constantes de timeframe deben ser estables sin MT5 (valores oficiales del API)
+import backend.runtime.timeframes as _tf
+assert _tf.TIMEFRAME_MAP["H1"] == 16385, "constantes de timeframe deben ser estables"
 
 # El broker paper debe funcionar de verdad sin MT5
 from backend.brokers.factory import build_broker_adapter

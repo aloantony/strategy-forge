@@ -1,39 +1,11 @@
 """
-Obtención y procesamiento de datos de mercado.
+Procesamiento de datos de mercado: columnas de fuente e indicadores derivados.
+Módulo puro (pandas/numpy, sin broker); la obtención de velas vive en las
+implementaciones de IDataFeed/IHistoricalDataSource (p.ej. mt5_data_feed.py).
 """
 
 import pandas as pd
 import numpy as np
-from backend.brokers.mt5_import import mt5
-from backend.core import config
-
-
-def get_rates_df(symbol: str, timeframe, bars: int) -> pd.DataFrame:
-    # pedimos velas a MT5 y las convertimos en una tabla facil de usar.
-    """
-    Obtiene las velas históricas desde MetaTrader 5.
-    
-    Args:
-        symbol: Símbolo a obtener.
-        timeframe: Timeframe de MT5 (ej: mt5.TIMEFRAME_M1).
-        bars: Número de velas a obtener.
-    
-    Returns:
-        pd.DataFrame: DataFrame con columnas time, open, high, low, close.
-    """
-    if mt5 is None:
-        raise RuntimeError(
-            "get_rates_df requiere MT5. Para backtesting sin MT5 usa --data-source dukascopy."
-        )
-    rates = mt5.copy_rates_from_pos(symbol, timeframe, 0, bars)
-    if rates is None or len(rates) == 0:
-        raise Exception(f"No se pudieron obtener datos para {symbol}")
-    
-    df = pd.DataFrame(rates)
-    # Los timestamps de MT5 llegan en época UTC; mantenerlos explícitos evita desfases.
-    df['time'] = pd.to_datetime(df['time'], unit='s', utc=True)
-    
-    return df
 
 
 def add_source_columns(df: pd.DataFrame, source_mode: str) -> pd.DataFrame:

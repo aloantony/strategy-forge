@@ -29,6 +29,7 @@ from urllib.parse import unquote
 from backend.core import config
 from backend.brokers.mt5 import connection as mt5_connection
 from backend.data import data_feed
+from backend.data.mt5_data_feed import get_rates_df as mt5_get_rates_df
 from backend.brokers.mt5 import trading
 from backend.application import BacktestService
 from backend.brokers.mt5.adapter import MT5BrokerAdapter
@@ -7622,7 +7623,7 @@ class TradingBotGUI:
 
     def _build_market_dataframe(self, timeframe_value, bars_needed):
         # esta funcion sirve para construir mercado tabla de datos.
-        df = data_feed.get_rates_df(config.SYMBOL, timeframe_value, bars_needed)
+        df = mt5_get_rates_df(config.SYMBOL, timeframe_value, bars_needed)
         df = data_feed.add_source_columns(df, config.SOURCE_MODE)
         df = data_feed.add_baseline_bands(
             df, config.MA_LENGTH, config.ATR_LENGTH, config.ATR_MULT
