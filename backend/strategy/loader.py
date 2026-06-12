@@ -18,6 +18,8 @@ from backend.core import config
 from backend.strategy.runtime import (
     TIMEFRAME_MAP,
     get_strategy_timeframe,
+    lowest_timeframe_label,
+    module_required_timeframes,
     resolve_timeframe_value,
     timeframe_label,
 )
@@ -416,6 +418,13 @@ def load_active_strategies():
             multi_mode=multi_mode,
             magic_override=entry.get("magic_override"),
         )
+        # Timeframes requeridos (MTF): el scheduling y la descarga de mercado usan
+        # el menor; timeframe_label sigue siendo el primario de la estrategia.
+        required = module_required_timeframes(entry["module"], fallback=entry["timeframe_label"] or "M1")
+        entry["required_timeframes"] = required
+        schedule_value = resolve_timeframe_value(lowest_timeframe_label(required))
+        if schedule_value is not None:
+            entry["timeframe_value"] = schedule_value
 
     config.ACTIVE_STRATEGIES = [entry["key"] for entry in entries]
     config.STRATEGY_KEY = entries[0]["key"]

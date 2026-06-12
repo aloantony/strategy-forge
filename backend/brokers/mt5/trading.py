@@ -853,6 +853,7 @@ def check_aggregate_risk(
     open_positions: list,
     instrument_info: InstrumentInfo,
     sl_atr_mult: float = 1.0,
+    direction: int = 1,
 ) -> tuple:
     # verifica que el riesgo agregado (posiciones actuales + nueva entrada) no supere el 3% del balance.
     AGGREGATE_RISK_LIMIT = 0.03
@@ -866,15 +867,16 @@ def check_aggregate_risk(
 
     value_per_price_unit_per_lot = tick_value / tick_size
 
+    side = "BUY" if int(direction or 1) >= 0 else "SELL"
     existing_risk_money = 0.0
     for pos in open_positions:
-        if pos["type"] != "BUY":
+        if pos["type"] != side:
             continue
         sl = pos["sl"]
         if sl <= 0:
             continue
         price_open = pos["price_open"]
-        distance = price_open - sl
+        distance = (price_open - sl) if side == "BUY" else (sl - price_open)
         if distance <= 0:
             continue
         existing_risk_money += pos["volume"] * distance * value_per_price_unit_per_lot
@@ -901,10 +903,14 @@ def apply_pyramid_signal(
     pyramid_atr_mult: float = 0.5,
     max_entries: int | None = None,
     entry_index: int | None = None,
+    direction: int = 1,
 ):
-    # abre una entrada inicial o piramiada solo-largo, con SL/TP calculados desde el ATR.
+    # abre una entrada inicial o piramidada (largo o corto) con SL/TP desde el ATR.
     if atr_value <= 0:
         return None
+
+    direction = 1 if int(direction or 1) >= 0 else -1
+    side = "BUY" if direction == 1 else "SELL"
 
     if balance is None:
         account = mt5.account_info()
@@ -917,8 +923,8 @@ def apply_pyramid_signal(
     tick = mt5.symbol_info_tick(symbol)
     if tick is None:
         return None
-    ask = tick.ask
-    if ask <= 0:
+    price = tick.ask if direction == 1 else tick.bid
+    if price <= 0:
         return None
 
     positions = get_all_positions(symbol, magic_number)
@@ -935,8 +941,8 @@ def apply_pyramid_signal(
     tp_atr_mult = float(tp_atr_mult or 2.0)
     pyramid_atr_mult = float(pyramid_atr_mult or 0.5)
 
-    sl_price = ask - (sl_atr_mult * atr_value)
-    tp_price = ask + (tp_atr_mult * atr_value)
+    sl_price = price - direction * (sl_atr_mult * atr_value)
+    tp_price = price + direction * (tp_atr_mult * atr_value)
 
     open_comment = build_trade_comment(
         strategy_key=strategy_key,
@@ -944,47 +950,33 @@ def apply_pyramid_signal(
         action_kind="open",
     )
 
-    if len(positions) == 0:
-        allowed, aggregate_risk_pct = check_aggregate_risk(
-            lot, atr_value, balance, positions, symbol_info, sl_atr_mult=sl_atr_mult
-        )
-        if not allowed:
-            return None
-
-        result = _send_order(
-            symbol, 1, lot, 0, 0, magic_number,
-            order_comment=open_comment,
-            sl_price=sl_price,
-            tp_price=tp_price,
-        )
-        actions = [result] if result else []
-    else:
+    if len(positions) > 0:
         most_recent = positions[-1]
-
-        if most_recent["type"] != "BUY":
+        if most_recent["type"] != side:
             return None
 
         last_entry_price = most_recent["price_open"]
-        pyramid_threshold = last_entry_price + (pyramid_atr_mult * atr_value)
-
-        if ask < pyramid_threshold:
+        # El umbral de piramidación avanza a favor de la posición (arriba en largo, abajo en corto).
+        pyramid_threshold = last_entry_price + direction * (pyramid_atr_mult * atr_value)
+        if direction == 1 and price < pyramid_threshold:
+            return None
+        if direction == -1 and price > pyramid_threshold:
             return None
 
-        allowed, aggregate_risk_pct = check_aggregate_risk(
-            lot, atr_value, balance, positions, symbol_info, sl_atr_mult=sl_atr_mult
-        )
-        if not allowed:
-            return None
+    allowed, aggregate_risk_pct = check_aggregate_risk(
+        lot, atr_value, balance, positions, symbol_info,
+        sl_atr_mult=sl_atr_mult, direction=direction,
+    )
+    if not allowed:
+        return None
 
-        result = _send_order(
-            symbol, 1, lot, 0, 0, magic_number,
-            order_comment=open_comment,
-            sl_price=sl_price,
-            tp_price=tp_price,
-        )
-        actions = [result] if result else []
-
-    actions = [a for a in actions if a]
+    result = _send_order(
+        symbol, direction, lot, 0, 0, magic_number,
+        order_comment=open_comment,
+        sl_price=sl_price,
+        tp_price=tp_price,
+    )
+    actions = [a for a in ([result] if result else []) if a]
     if not actions:
         return None
     if not any(isinstance(a, dict) and a.get("success") is True for a in actions):
@@ -993,7 +985,7 @@ def apply_pyramid_signal(
     return {
         "timestamp":      datetime.now(),
         "symbol":         symbol,
-        "signal":         "buy",
+        "signal":         "buy" if direction == 1 else "sell",
         "strategy":       strategy_key,
         "strategy_label": strategy_label,
         "signal_reason":  signal_reason,

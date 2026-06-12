@@ -230,7 +230,7 @@ Reglas:
 
 Referencia:
 
-- `backtesting/runtime.py::_open_advanced_buy()`
+- `backtesting/runtime.py::_open_advanced()`
 
 ### Fallback de modo avanzado a estándar
 
@@ -423,7 +423,7 @@ Guía rápida de depuración:
   - `backtesting/runtime.py::_build_market_dataframe()`
 - la entrada o salida no coincide con lo esperado:
   - `backtesting/runtime.py::_apply_standard_signal()`
-  - `backtesting/runtime.py::_open_advanced_buy()`
+  - `backtesting/runtime.py::_open_advanced()`
   - `backtesting/runtime.py::_check_sl_tp_hit()`
 - el resultado agregado no cuadra:
   - `backtesting/runtime.py::_mark_equity()`

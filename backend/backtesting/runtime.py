@@ -421,7 +421,8 @@ class BacktestEngine:
             volume_note=volume_note,
         )
 
-    def _open_advanced_buy(self, candle: pd.Series, signal_payload: dict) -> None:
+    def _open_advanced(self, candle: pd.Series, signal_payload: dict, direction: int) -> None:
+        direction = 1 if int(direction or 1) >= 0 else -1
         atr_value = float(signal_payload.get("atr_value") or 0.0)
         if atr_value <= 0:
             return
@@ -455,7 +456,7 @@ class BacktestEngine:
 
         raw_fill = float(candle["open"])
         cost_points = (self.request.spread_points + self.request.slippage_points) * self.point
-        entry_price = raw_fill + cost_points  # BUY direction only
+        entry_price = raw_fill + direction * cost_points
 
         if max_entries is not None and max_entries > 0 and len(self.open_positions) >= max_entries:
             return
@@ -467,22 +468,25 @@ class BacktestEngine:
                 self.open_positions,
                 key=lambda item: (_time_to_epoch(item["entry_time"]) or 0, item["id"]),
             )
-            if most_recent["direction"] != 1:
+            if most_recent["direction"] != direction:
                 return
-            pyramid_threshold = float(most_recent["entry_price"]) + (pyramid_atr_mult * atr_value)
-            if entry_price < pyramid_threshold:
+            # El umbral de piramidación avanza a favor de la posición.
+            pyramid_threshold = float(most_recent["entry_price"]) + direction * (pyramid_atr_mult * atr_value)
+            if direction == 1 and entry_price < pyramid_threshold:
+                return
+            if direction == -1 and entry_price > pyramid_threshold:
                 return
 
         self.balance -= self.request.commission_per_lot * lot
 
         self._new_position(
             candle=candle,
-            direction=1,
+            direction=direction,
             volume=lot,
             entry_price=entry_price,
-            sl=entry_price - (sl_atr_mult * atr_value),
-            tp=entry_price + (tp_atr_mult * atr_value),
-            signal="buy",
+            sl=entry_price - direction * (sl_atr_mult * atr_value),
+            tp=entry_price + direction * (tp_atr_mult * atr_value),
+            signal="buy" if direction == 1 else "sell",
             signal_reason=str(signal_payload.get("reason") or ""),
             mode="advanced",
             atr_value=atr_value,
@@ -499,8 +503,8 @@ class BacktestEngine:
         pyramiding = bool(signal_payload.get("pyramiding"))
         atr_value = float(signal_payload.get("atr_value") or 0.0)
 
-        if signal == "buy" and pyramiding and atr_value > 0:
-            self._open_advanced_buy(candle, signal_payload)
+        if signal in {"buy", "sell"} and pyramiding and atr_value > 0:
+            self._open_advanced(candle, signal_payload, 1 if signal == "buy" else -1)
             return
 
         self._apply_standard_signal(candle, signal_payload)

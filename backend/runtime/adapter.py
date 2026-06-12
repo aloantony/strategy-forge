@@ -130,9 +130,12 @@ class LegacyStrategyAdapter:
     No introduce lógica de negocio nueva: envuelve, marca, traduce.
     """
 
-    def __init__(self, module, timeframe_label: str = "M1"):
+    def __init__(self, module, timeframe_label: str = "M1", frames: dict | None = None):
         self._module = module
         self._timeframe_label = timeframe_label
+        # frames: dict {timeframe: DataFrame} para módulos MTF (REQUIRED_TIMEFRAMES);
+        # sin ellos un módulo MTF solo vería su timeframe primario y nunca señalaría.
+        self._frames = frames
 
     def decide(self, context: dict, state: dict) -> dict:
         symbol = context.get("symbol", {}).get("name", "")
@@ -147,8 +150,11 @@ class LegacyStrategyAdapter:
         raw_payload = None
         error_msg = None
         try:
-            df = self._run_legacy_pipeline(context)
-            raw_payload = self._call_legacy_signal(df)
+            if self._frames and hasattr(self._module, "get_last_signal_payload_mtf"):
+                raw_payload = self._module.get_last_signal_payload_mtf(self._frames, verbose=False)
+            else:
+                df = self._run_legacy_pipeline(context)
+                raw_payload = self._call_legacy_signal(df)
         except Exception as exc:
             error_msg = str(exc)
             raw_payload = None

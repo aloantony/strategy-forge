@@ -343,3 +343,60 @@ def get_strategy_signal_payload_mtf(
             except TypeError:
                 payload = module.get_last_signal_payload_mtf(frames)
     return normalize_signal_payload(payload)
+
+
+def is_mtf_module(module) -> bool:
+    """True si el módulo es multi-timeframe (consume frames, no un df único)."""
+    return module is not None and (
+        hasattr(module, "get_last_signal_payload_mtf") or hasattr(module, "prepare_frames")
+    )
+
+
+def module_required_timeframes(module, fallback: str = "M1") -> list[str]:
+    """Timeframes que necesita el módulo (REQUIRED_TIMEFRAMES + primario), normalizados."""
+    out: list[str] = []
+    for label in getattr(module, "REQUIRED_TIMEFRAMES", []) or []:
+        normalized = normalize_timeframe_label(label)
+        if normalized and normalized not in out:
+            out.append(normalized)
+    primary = normalize_timeframe_label(
+        getattr(module, "PRIMARY_TIMEFRAME", None) or get_strategy_timeframe(module) or ""
+    )
+    if primary and primary not in out:
+        out.append(primary)
+    if not out:
+        out = [normalize_timeframe_label(fallback) or "M1"]
+    return out
+
+
+def analyze_signal(
+    module,
+    data,
+    enable_signals: bool = True,
+    verbose: bool = False,
+    params=None,
+) -> dict:
+    """
+    Análisis unificado v1/MTF: procesa los datos y devuelve el payload normalizado.
+
+    data: DataFrame (v1, o base para resamplear si el módulo es MTF) o dict
+    {timeframe: DataFrame} con los frames ya descargados (preferido en vivo).
+    """
+    if is_mtf_module(module):
+        if isinstance(data, pd.DataFrame):
+            frames = build_timeframe_frames(data, module_required_timeframes(module))
+        else:
+            frames = {normalize_timeframe_label(k) or str(k).upper(): v for k, v in (data or {}).items()}
+        prepared = apply_mtf_strategy_processing(frames, module, enable_signals=enable_signals)
+        return get_strategy_signal_payload_mtf(prepared, module, verbose=verbose, params=params)
+
+    df = data
+    if isinstance(data, dict):
+        primary = normalize_timeframe_label(get_strategy_timeframe(module) or "")
+        df = data.get(primary) if primary else None
+        if df is None and data:
+            df = data.get(lowest_timeframe_label(list(data)))
+    if df is None:
+        return normalize_signal_payload(None)
+    processed = apply_strategy_processing(df, module, enable_signals=enable_signals)
+    return get_strategy_signal_payload(processed, module, verbose=verbose, params=params)

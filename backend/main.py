@@ -20,10 +20,10 @@ from backend.brokers.mt5 import trading
 from backend.strategy.loader import is_v1_module, load_active_strategies
 from backend.strategy.runtime import (
     TIMEFRAME_MAP,
-    apply_strategy_processing as runtime_apply_strategy_processing,
-    get_strategy_signal_payload as runtime_get_strategy_signal_payload,
+    TIMEFRAME_MINUTES,
+    analyze_signal as runtime_analyze_signal,
+    is_mtf_module as runtime_is_mtf_module,
     resolve_timeframe_value as runtime_resolve_timeframe_value,
-    timeframe_label as runtime_timeframe_label,
     timeframe_to_seconds as runtime_timeframe_to_seconds,
 )
 
@@ -74,50 +74,48 @@ def _make_mt5_data_feed():
     )
 
 
-def _build_market_dataframe(timeframe_value: int, bars_needed: int, data_feed_impl) -> pd.DataFrame:
-    timeframe_str = runtime_timeframe_label(timeframe_value) or "M1"
-    return data_feed_impl.get_enriched_df(config.SYMBOL, timeframe_str, bars_needed)
+def _build_market_dataframe(timeframe_label: str, bars_needed: int, data_feed_impl) -> pd.DataFrame:
+    return data_feed_impl.get_enriched_df(config.SYMBOL, timeframe_label or "M1", bars_needed)
 
 
-def _apply_strategy_processing(df: pd.DataFrame, module) -> pd.DataFrame:
-    return runtime_apply_strategy_processing(
-        df,
-        module,
-        enable_signals=bool(getattr(config, "ENABLE_SIGNALS", True)),
-    )
+def _entry_required_timeframes(entry: dict) -> list[str]:
+    return list(entry.get("required_timeframes") or [entry.get("timeframe_label") or "M1"])
 
 
-def _analyze_strategy(index: int, entry: dict, base_df: pd.DataFrame) -> dict:
-    result = {"index": index, "entry": entry, "df": None, "signal": "none", "reason": "", "pyramiding": False, "atr_value": 0.0, "dynamic_sizing": False, "volume_ratio": 0.0, "error": ""}
+def _entry_frames(entry: dict, market_cache: dict) -> dict:
+    return {
+        tf: market_cache.get(tf)
+        for tf in _entry_required_timeframes(entry)
+        if isinstance(market_cache.get(tf), pd.DataFrame)
+    }
+
+
+def _analyze_strategy(index: int, entry: dict, market_cache: dict) -> dict:
+    result = {"index": index, "entry": entry, "signal": "none", "reason": "", "payload": None, "error": ""}
     try:
+        module = entry["module"]
+        primary = entry.get("timeframe_label") or "M1"
+        params_values = entry.get("params_values") or {}
+        params = params_values if (entry.get("accepts_params") and params_values) else None
+        enable_signals = bool(getattr(config, "ENABLE_SIGNALS", True))
+
+        if runtime_is_mtf_module(module):
+            data = _entry_frames(entry, market_cache)
+            base_df = data.get(primary)
+        else:
+            data = market_cache.get(primary)
+            base_df = data
+
         if base_df is None or len(base_df) < 2:
             result["error"] = "No hay suficientes velas"
             return result
-        strategy_df = _apply_strategy_processing(base_df, entry["module"])
 
-        params_values = entry.get("params_values") or {}
-        accepts_params = entry.get("accepts_params", False)
-
-        if accepts_params and params_values:
-            signal_payload = runtime_get_strategy_signal_payload(
-                strategy_df,
-                entry["module"],
-                verbose=False,
-                params=params_values,
-            )
-        else:
-            signal_payload = runtime_get_strategy_signal_payload(
-                strategy_df,
-                entry["module"],
-                verbose=False,
-            )
-        result["df"] = strategy_df
-        result["signal"] = signal_payload["signal"]
-        result["reason"] = signal_payload["reason"]
-        result["pyramiding"] = signal_payload["pyramiding"]
-        result["atr_value"] = signal_payload["atr_value"]
-        result["dynamic_sizing"] = signal_payload["dynamic_sizing"]
-        result["volume_ratio"] = signal_payload["volume_ratio"]
+        payload = runtime_analyze_signal(
+            module, data, enable_signals=enable_signals, verbose=False, params=params
+        )
+        result["payload"] = payload
+        result["signal"] = payload["signal"]
+        result["reason"] = payload["reason"]
     except Exception as error:
         result["error"] = str(error)
     return result
@@ -149,6 +147,7 @@ def _run_v1_strategy_cycle(
     base_df,
     iteration_id: str,
     market_open: bool,
+    mtf_frames: dict | None = None,
 ):
     """
     Ciclo completo v1 para una estrategia (legacy o v1 nativa).
@@ -225,7 +224,7 @@ def _run_v1_strategy_cycle(
         if is_v1_module(module):
             raw_decision = module.decide(context, strategy_state)
         else:
-            adapter = LegacyStrategyAdapter(module, timeframe_label)
+            adapter = LegacyStrategyAdapter(module, timeframe_label, frames=mtf_frames)
             raw_decision = adapter.decide(context, strategy_state)
 
         plan = raw_decision.get("plan", {})
@@ -371,14 +370,18 @@ def run_bot_loop(strategy_entries: list, data_feed_impl=None):
         entry["key"]: 0.0 for entry in strategy_entries
     }
 
+    needed_labels = set()
+    for entry in strategy_entries:
+        needed_labels.update(_entry_required_timeframes(entry))
+
     try:
         while True:
             try:
                 market_open, market_status_msg = trading.is_market_open(config.SYMBOL)
 
                 market_cache = {}
-                for timeframe_value in sorted({int(entry["timeframe_value"]) for entry in strategy_entries}):
-                    market_cache[timeframe_value] = _build_market_dataframe(timeframe_value, config.BARS_HISTORY, data_feed_impl)
+                for label in sorted(needed_labels, key=lambda l: TIMEFRAME_MINUTES.get(l, 1)):
+                    market_cache[label] = _build_market_dataframe(label, config.BARS_HISTORY, data_feed_impl)
 
                 # Fair scheduler: primero se analizan las estrategias que llevan mas tiempo sin correr.
                 scheduled_items = sorted(
@@ -390,7 +393,7 @@ def run_bot_loop(strategy_entries: list, data_feed_impl=None):
                 if executor is not None:
                     futures = {}
                     for idx, entry in scheduled_items:
-                        futures[executor.submit(_analyze_strategy, idx, entry, market_cache.get(entry["timeframe_value"]))] = idx
+                        futures[executor.submit(_analyze_strategy, idx, entry, market_cache)] = idx
                     done, pending = wait(futures.keys(), timeout=analysis_timeout)
                     for future in done:
                         idx = futures[future]
@@ -421,7 +424,7 @@ def run_bot_loop(strategy_entries: list, data_feed_impl=None):
                         }
                 else:
                     for idx, entry in scheduled_items:
-                        item = _analyze_strategy(idx, entry, market_cache.get(entry["timeframe_value"]))
+                        item = _analyze_strategy(idx, entry, market_cache)
                         results[idx] = item
                         last_analyzed_ts[entry["key"]] = time.time()
 
@@ -454,11 +457,16 @@ def run_bot_loop(strategy_entries: list, data_feed_impl=None):
                     # El módulo decide() internamente si actúa o no.
                     # ----------------------------------------------------------
                     if use_v1:
+                        mtf_frames = (
+                            _entry_frames(entry, market_cache)
+                            if runtime_is_mtf_module(entry["module"]) else None
+                        )
                         v1_result = _run_v1_strategy_cycle(
                             entry,
-                            market_cache.get(entry["timeframe_value"]),
+                            market_cache.get(entry.get("timeframe_label") or "M1"),
                             iteration_id,
                             market_open,
+                            mtf_frames=mtf_frames,
                         )
                         if v1_result.get("error"):
                             print(f"[main] {entry['key']} (v1): {v1_result['error']}")
@@ -469,35 +477,44 @@ def run_bot_loop(strategy_entries: list, data_feed_impl=None):
                     # ----------------------------------------------------------
                     # Ruta legacy (solo cuando PLAN_EXECUTOR_ENABLED = False)
                     # ----------------------------------------------------------
+                    payload = result.get("payload") or {}
                     signal = result["signal"]
                     reason = str(result.get("reason") or "").strip()
 
                     if signal == "none":
                         continue
 
-                    pyramiding     = result.get("pyramiding", False)
-                    atr_value      = result.get("atr_value", 0.0)
-                    dynamic_sizing = result.get("dynamic_sizing", False)
-                    volume_ratio   = result.get("volume_ratio", 0.0)
+                    pyramiding = bool(payload.get("pyramiding"))
+                    atr_value = float(payload.get("atr_value") or 0.0)
 
                     with ORDER_EXECUTION_LOCK:
-                        if pyramiding and atr_value > 0 and signal == "buy":
-                            if dynamic_sizing and volume_ratio > 0 and atr_value > 0:
+                        if pyramiding and atr_value > 0:
+                            direction = 1 if signal == "buy" else -1
+                            risk_pct = float(payload.get("risk_pct") or 0.0)
+                            volume_ratio = float(payload.get("volume_ratio") or 0.0)
+                            dynamic_sizing = bool(payload.get("dynamic_sizing")) and volume_ratio > 0
+                            sl_atr_mult = float(payload.get("sl_atr_mult") or 1.0)
+
+                            lot = config.LOT
+                            balance = None
+                            if risk_pct > 0 or dynamic_sizing:
                                 from backend.brokers.mt5.adapter import MT5BrokerAdapter as _Adapter
                                 _broker = _Adapter()
                                 account = _broker.get_account_info()
                                 balance = account.balance if account is not None else 0.0
                                 instrument_info = _broker.get_instrument_info(config.SYMBOL)
+                                raw_lot = 0.0
                                 if instrument_info is not None and balance > 0:
-                                    raw_lot = trading.calculate_dynamic_lot(
-                                        atr_value, volume_ratio, instrument_info, balance
-                                    )
-                                else:
-                                    raw_lot = 0.0
+                                    if risk_pct > 0:
+                                        raw_lot = trading.calculate_risk_lot(
+                                            atr_value, risk_pct, instrument_info, balance,
+                                            sl_atr_mult=sl_atr_mult,
+                                        )
+                                    else:
+                                        raw_lot = trading.calculate_dynamic_lot(
+                                            atr_value, volume_ratio, instrument_info, balance
+                                        )
                                 lot = raw_lot if raw_lot > 0 else config.LOT
-                            else:
-                                lot = config.LOT
-                                balance = None
 
                             trading.apply_pyramid_signal(
                                 config.SYMBOL,
@@ -507,7 +524,13 @@ def run_bot_loop(strategy_entries: list, data_feed_impl=None):
                                 strategy_key=entry["key"],
                                 strategy_label=entry["label"],
                                 signal_reason=reason,
-                                balance=balance if dynamic_sizing else None,
+                                balance=balance,
+                                sl_atr_mult=sl_atr_mult,
+                                tp_atr_mult=float(payload.get("tp_atr_mult") or 2.0),
+                                pyramid_atr_mult=float(payload.get("pyramid_atr_mult") or 0.5),
+                                max_entries=payload.get("max_entries"),
+                                entry_index=payload.get("entry_index"),
+                                direction=direction,
                             )
                         else:
                             trading.apply_signal(
