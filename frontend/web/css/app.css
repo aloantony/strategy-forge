@@ -324,6 +324,23 @@ button.small { font-size: 11px; padding: 3px 8px; }
 .sb-row select:focus, .sb-row input:focus { border-bottom-color: var(--fg); }
 .sb-operand { max-width: 240px; }
 .sb-num { width: 90px; }
+.sb-tf {
+  font-size: 11px; color: var(--fg-dim);
+  max-width: 86px;
+}
+.sb-tf:focus, .sb-row .sb-tf:hover { color: var(--fg); }
+
+.sb-dir {
+  font-size: 10px; letter-spacing: 0.12em; padding: 4px 12px;
+  background: var(--fg); color: var(--bg); border-color: var(--fg);
+}
+.sb-dir.short { background: transparent; color: var(--fg); }
+
+.sb-custom-cond { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; padding: 4px 0; }
+.sb-custom-cond .lbl {
+  font-size: 10px; letter-spacing: 0.12em; text-transform: uppercase;
+  color: var(--fg-dim); min-width: 72px;
+}
 
 .sb-instances { display: flex; flex-wrap: wrap; gap: 8px; }
 .sb-instance {

@@ -156,6 +156,49 @@ def test_create_mtf_strategy(client):
     assert mod.MTF_CONFIG["blocks"][0]["entry_condition"]["left"].startswith("H1.")
 
 
+def test_create_mtf_rules_strategy(client):
+    """Estrategia de reglas multi-timeframe: cualquier indicador por TF, vía API."""
+    config = {
+        "mode": "multi_timeframe",
+        "display_name": "Web MTF Rules",
+        "primary_timeframe": "H1",
+        "indicators": [{"id": "RSI", "params": {"period": 14}, "timeframe": "H4"}],
+        "buy_condition": {
+            "type": "AND",
+            "children": [
+                {"type": "condition", "left": "H4.rsi_14", "op": "<", "right": 30},
+                {"type": "condition", "left": "close", "op": ">", "right": 0},
+            ],
+        },
+        "sell_condition": {"type": "condition", "left": "H4.rsi_14", "op": ">", "right": 70},
+    }
+    r = client.post("/api/builder/strategies", json=config)
+    assert r.status_code == 201, r.text
+
+    mod = _import_strategy(client.strategies_dir / "strategy_web_mtf_rules.py")
+    assert mod.STRATEGY_TYPE == "rules"
+    assert mod.REQUIRED_TIMEFRAMES == ["H1", "H4"]
+    assert "rsi_14" not in str(mod.MTF_CONFIG.get("blocks"))  # sin bloques en modo reglas
+
+
+def test_create_short_block_strategy(client):
+    config = {
+        "mode": "multi_timeframe",
+        "display_name": "Web Short Block",
+        "primary_timeframe": "M5",
+        "indicators": [],
+        "blocks": [
+            {"id": "corto", "direction": "short", "trigger_timeframe": "M5", "risk_tiers": [0.01]}
+        ],
+    }
+    r = client.post("/api/builder/strategies", json=config)
+    assert r.status_code == 201, r.text
+    mod = _import_strategy(client.strategies_dir / "strategy_web_short_block.py")
+    block = mod.MTF_CONFIG["blocks"][0]
+    assert block["direction"] == "short"
+    assert "vortex_cross_down" in block["entry_condition"]["left"]
+
+
 def test_validate_endpoint(client):
     ok = client.post("/api/builder/validate", json=V1_CONFIG).json()
     assert ok["valid"] is True and ok["errors"] == []

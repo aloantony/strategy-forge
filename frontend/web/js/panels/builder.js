@@ -1,8 +1,11 @@
 // panels/builder.js — wizard del Strategy Builder (crear/editar estrategias).
 //
 // Diseño UX propio: pasos guiados, condiciones como frases con etiquetas humanas
-// (nunca nombres de columna crudos) y resumen en lenguaje natural. El modelo
-// interno es exactamente el árbol/config que consume backend/strategy_builder.
+// (nunca nombres de columna crudos) y resumen en lenguaje natural. Cada condición
+// puede vivir en su propio timeframe ("En H4: RSI(14) es menor que 30"): si todas
+// usan el timeframe de la estrategia se genera una estrategia clásica (v1); si no,
+// una multi-timeframe (modo reglas). Los bloques (riesgo por tramos) admiten
+// dirección larga o corta. El modelo interno es el config del generador.
 
 import { apiGet, apiPost, apiPut, apiDelete } from "../api.js";
 
@@ -13,21 +16,31 @@ const S = {
   isNew: true,
   editingKey: null,
   step: 0,
-  mode: "simple", // "simple" | "mtf"
+  mode: "rules", // "rules" | "blocks"
   display_name: "",
   description: "",
-  timeframe: "M5",
-  instances: [], // {uid, id, params}
+  timeframe: "M5", // primario
+  instances: [], // {uid, id, params, tf: null|label} (null = timeframe primario)
   buyTree: null,
   sellTree: null,
   extras: { pyramiding: false, dynamic_sizing: false },
   customFields: [], // {key, type, value}
-  blocks: [], // MTF
-  validation: null, // {valid, errors} última validación remota
+  blocks: [],
+  validation: null,
 };
 
 const group = (type = "AND", children = []) => ({ type, children });
 const cond = (left = "close", op = ">", right = 0) => ({ type: "condition", left, op, right });
+
+// ---------- Refs con timeframe ----------
+
+const primaryTf = () => S.timeframe;
+const isQualified = (ref) =>
+  typeof ref === "string" && ref.includes(".") && meta.timeframes.includes(ref.split(".")[0]);
+const refTf = (ref) => (isQualified(ref) ? ref.split(".")[0] : primaryTf());
+const refCol = (ref) => (isQualified(ref) ? ref.split(".").slice(1).join(".") : ref);
+const makeRef = (col, tf) => (tf === primaryTf() ? col : `${tf}.${col}`);
+const instTf = (inst) => inst.tf ?? primaryTf();
 
 // ---------- Catálogo / columnas ----------
 
@@ -41,63 +54,95 @@ function realizeColumns(inst) {
   }));
 }
 
-function columnRegistry() {
-  const out = meta.base_columns.map((c) => ({ ...c }));
+// Operandos disponibles para un timeframe concreto.
+function registryFor(tf, extraColumns = []) {
+  const out = meta.base_columns.map((c) => ({
+    ref: makeRef(c.column, tf), column: c.column, label: c.label, group: c.group,
+  }));
+  for (const col of extraColumns) {
+    out.push({ ref: makeRef(col.column, tf), column: col.column, label: col.label, group: col.group });
+  }
   for (const inst of S.instances) {
+    if (instTf(inst) !== tf) continue;
     const def = indicatorDef(inst.id);
     for (const col of realizeColumns(inst)) {
-      out.push({ ...col, group: def.label, uid: inst.uid });
+      out.push({ ref: makeRef(col.column, tf), column: col.column, label: col.label, group: def.label, uid: inst.uid });
     }
   }
   return out;
 }
 
-const columnLabel = (col) => columnRegistry().find((c) => c.column === col)?.label ?? col;
-const opLabel = (op) => meta.operators.find((o) => o.op === op)?.label ?? op;
-
-function instanceTitle(inst) {
-  const def = indicatorDef(inst.id);
-  const ps = def.params.map((p) => inst.params[p.key]).join(", ");
-  return ps ? `${def.label.replace(/\s*\(.*\)$/, "")} (${ps})` : def.label;
+function columnLabel(ref) {
+  const tf = refTf(ref);
+  const col = refCol(ref);
+  let label = meta.base_columns.find((c) => c.column === col)?.label;
+  if (!label) {
+    for (const inst of S.instances) {
+      const hit = realizeColumns(inst).find((c) => c.column === col);
+      if (hit) { label = hit.label; break; }
+    }
+  }
+  if (!label) label = mtfColumnLabel(col) ?? col;
+  return tf === primaryTf() ? label : `${tf} · ${label}`;
 }
 
-function addInstance(id, params = null) {
+function mtfColumnLabel(col) {
+  for (const c of meta.mtf.column_labels ?? []) {
+    const re = new RegExp("^" + c.template.replace(/\{(\w+)\}/g, "(\\d+)") + "$");
+    const m = col.match(re);
+    if (m) return c.label.replace(/\{(\w+)\}/g, m[1]);
+  }
+  return null;
+}
+
+const opLabel = (op) => meta.operators.find((o) => o.op === op)?.label ?? op;
+
+function addInstance(id, params = null, tf = null) {
   const def = indicatorDef(id);
   const values = {};
   for (const p of def.params) values[p.key] = params?.[p.key] ?? p.default;
-  // Reutiliza una instancia idéntica si ya existe
   const existing = S.instances.find(
-    (i) => i.id === id && JSON.stringify(i.params) === JSON.stringify(values)
+    (i) => i.id === id && (i.tf ?? null) === (tf ?? null) && JSON.stringify(i.params) === JSON.stringify(values)
   );
   if (existing) return existing;
-  const inst = { uid: uidSeq++, id, params: values };
+  const inst = { uid: uidSeq++, id, params: values, tf };
   S.instances.push(inst);
   return inst;
 }
 
 function renameColumnsEverywhere(mapping) {
+  const fix = (ref) => {
+    if (typeof ref !== "string") return ref;
+    const col = refCol(ref);
+    if (mapping[col] === undefined) return ref;
+    return makeRef(mapping[col], refTf(ref));
+  };
   const walk = (node) => {
     if (!node) return;
     if (node.type === "condition") {
-      if (mapping[node.left] !== undefined) node.left = mapping[node.left];
-      if (typeof node.right === "string" && mapping[node.right] !== undefined) node.right = mapping[node.right];
+      node.left = fix(node.left);
+      node.right = fix(node.right);
       return;
     }
     (node.children || []).forEach(walk);
   };
   walk(S.buyTree);
   walk(S.sellTree);
+  for (const b of S.blocks) {
+    if (b.entryCustom) walk(b.entryCustom);
+    if (b.dirCustom) walk(b.dirCustom);
+  }
   for (const f of S.customFields) {
     if (f.type === "column" && mapping[f.value] !== undefined) f.value = mapping[f.value];
   }
 }
 
 function setInstanceParam(inst, key, value) {
-  const before = Object.fromEntries(realizeColumns(inst).map((c) => [c.column, null]));
+  const before = realizeColumns(inst).map((c) => c.column);
   inst.params[key] = value;
-  const after = realizeColumns(inst);
+  const after = realizeColumns(inst).map((c) => c.column);
   const mapping = {};
-  Object.keys(before).forEach((old, i) => { mapping[old] = after[i].column; });
+  before.forEach((old, i) => { mapping[old] = after[i]; });
   renameColumnsEverywhere(mapping);
 }
 
@@ -107,19 +152,40 @@ function removeInstance(inst) {
 
 function referencedColumns() {
   const used = new Set();
+  const add = (ref) => { if (typeof ref === "string") used.add(`${refTf(ref)}.${refCol(ref)}`); };
   const walk = (node) => {
     if (!node) return;
+    if (node.type === "condition") { add(node.left); add(node.right); return; }
+    (node.children || []).forEach(walk);
+  };
+  walk(S.buyTree);
+  walk(S.sellTree);
+  for (const b of S.blocks) { walk(b.entryCustom); walk(b.dirCustom); }
+  for (const f of S.customFields) if (f.type === "column") add(f.value);
+  return used;
+}
+
+function instanceInUse(inst) {
+  const used = referencedColumns();
+  const tf = instTf(inst);
+  return realizeColumns(inst).some((c) => used.has(`${tf}.${c.column}`));
+}
+
+function isMultiTF() {
+  if (S.instances.some((i) => i.tf && i.tf !== primaryTf())) return true;
+  let found = false;
+  const walk = (node) => {
+    if (!node || found) return;
     if (node.type === "condition") {
-      used.add(node.left);
-      if (typeof node.right === "string") used.add(node.right);
+      if (isQualified(node.left) && refTf(node.left) !== primaryTf()) found = true;
+      if (typeof node.right === "string" && isQualified(node.right) && refTf(node.right) !== primaryTf()) found = true;
       return;
     }
     (node.children || []).forEach(walk);
   };
   walk(S.buyTree);
   walk(S.sellTree);
-  for (const f of S.customFields) if (f.type === "column") used.add(f.value);
-  return used;
+  return found;
 }
 
 // ---------- Resumen en lenguaje natural ----------
@@ -140,11 +206,15 @@ function describeTree(node, depth = 0) {
 }
 
 function describeBlock(b) {
+  const short = b.direction === "short";
   const confirms = b.confirms.length ? ` confirmado en ${b.confirms.join(" y ")}` : "";
   const tiers = parseRiskTiers(b.riskTiersText).map((r) => `${(r * 100).toFixed(2).replace(/\.?0+$/, "")}%`);
-  return `Bloque «${b.id}»: entra en ${b.trigger}${confirms} con cruce alcista del Vortex(${b.vortex_period}); ` +
+  const entry = b.entryCustom
+    ? describeCondition(b.entryCustom)
+    : `cruce ${short ? "bajista" : "alcista"} del Vortex(${b.vortex_period}) en ${b.trigger}`;
+  return `Bloque «${b.id}» (${short ? "corto" : "largo"}): ${short ? "vende" : "compra"} con ${entry}${confirms}; ` +
     `riesgo por entrada: ${tiers.join(" → ") || "—"}; SL a ${b.sl_atr_mult}×ATR(${b.atr_period}), TP ${b.tp_rr}:1` +
-    (b.parent ? `; solo si «${b.parent}» está alcista` : "");
+    (b.parent ? `; solo si «${b.parent}» acompaña` : "");
 }
 
 // ---------- Validación local ----------
@@ -152,16 +222,13 @@ function describeBlock(b) {
 function localErrors() {
   const errs = [];
   if (!S.display_name.trim()) errs.push("Ponle un nombre a la estrategia (paso 1).");
-  if (S.mode === "simple") {
+  if (S.mode === "rules") {
     for (const [label, tree] of [["compra", S.buyTree], ["venta", S.sellTree]]) {
       const walk = (node, depth) => {
         if (node.type !== "condition") {
           if (depth > 4) errs.push(`La regla de ${label} supera los 4 niveles de grupos.`);
-          if ((node.children || []).length < 2 && depth > 0) {
+          if ((node.children || []).length < 2) {
             errs.push(`En la regla de ${label} hay un grupo con menos de 2 condiciones.`);
-          }
-          if (depth === 0 && (node.children || []).length < 2) {
-            errs.push(`La regla de ${label} necesita al menos 2 condiciones.`);
           }
           (node.children || []).forEach((ch) => { if (ch.type !== "condition") walk(ch, depth + 1); });
         }
@@ -189,16 +256,19 @@ function parseRiskTiers(text) {
 }
 
 function buildConfig() {
-  if (S.mode === "mtf") {
+  if (S.mode === "blocks") {
     return {
       mode: "multi_timeframe",
       display_name: S.display_name.trim(),
       description: S.description.trim(),
       primary_timeframe: S.timeframe,
-      indicators: [],
+      indicators: S.instances.map((inst) => ({
+        id: inst.id, params: { ...inst.params }, timeframe: instTf(inst),
+      })),
       blocks: S.blocks.map((b) => {
         const block = {
           id: b.id,
+          direction: b.direction,
           trigger_timeframe: b.trigger,
           confirm_timeframes: [...b.confirms],
           atr_period: Number(b.atr_period) || 14,
@@ -210,14 +280,31 @@ function buildConfig() {
         };
         if (b.max_entries) block.max_entries = Number(b.max_entries);
         if (b.parent) block.parent_block = b.parent;
-        if (b.entryRaw) block.entry_condition = b.entryRaw;
-        if (b.dirRaw) block.direction_condition = b.dirRaw;
+        if (b.entryCustom) block.entry_condition = b.entryCustom;
+        else if (b.entryRaw) block.entry_condition = b.entryRaw;
+        if (b.dirCustom) block.direction_condition = b.dirCustom;
+        else if (b.dirRaw) block.direction_condition = b.dirRaw;
         return block;
       }),
     };
   }
 
-  // Asegura indicadores para las opciones avanzadas
+  if (isMultiTF()) {
+    // Modo reglas multi-timeframe (los extras avanzados son solo de v1).
+    return {
+      mode: "multi_timeframe",
+      display_name: S.display_name.trim(),
+      description: S.description.trim(),
+      primary_timeframe: S.timeframe,
+      indicators: S.instances.map((inst) => ({
+        id: inst.id, params: { ...inst.params }, timeframe: instTf(inst),
+      })),
+      buy_condition: S.buyTree,
+      sell_condition: S.sellTree,
+    };
+  }
+
+  // v1 clásico (un timeframe)
   const payload = [];
   if (S.extras.pyramiding || S.extras.dynamic_sizing) {
     const atr = S.instances.find((i) => i.id === "ATR") ?? addInstance("ATR");
@@ -265,12 +352,14 @@ function loadFromConfig(cfg) {
   S.display_name = cfg.display_name ?? "";
   S.description = cfg.description ?? "";
   const isMtf = cfg.schema_version === 2 || ["multi_timeframe", "mtf"].includes(String(cfg.mode || ""));
-  S.mode = isMtf ? "mtf" : "simple";
 
-  if (isMtf) {
+  if (isMtf && (cfg.blocks || []).length) {
+    S.mode = "blocks";
     S.timeframe = cfg.primary_timeframe || cfg.timeframe || "M1";
+    S.instances = [];
     S.blocks = (cfg.blocks || []).map((b) => ({
       id: b.id,
+      direction: b.direction === "short" ? "short" : "long",
       trigger: b.trigger_timeframe || S.timeframe,
       confirms: [...(b.confirm_timeframes || [])],
       atr_period: b.atr_period ?? 14,
@@ -282,22 +371,25 @@ function loadFromConfig(cfg) {
       pyramid_atr_mult: b.pyramid_atr_mult ?? 0.5,
       max_entries: b.max_entries ?? "",
       parent: b.parent_block ?? "",
+      entryCustom: null,
+      dirCustom: null,
       entryRaw: b.entry_condition ?? null,
       dirRaw: b.direction_condition ?? null,
     }));
     return;
   }
 
-  S.timeframe = cfg.timeframe || "M5";
+  S.mode = "rules";
+  S.timeframe = isMtf ? (cfg.primary_timeframe || "M1") : (cfg.timeframe || "M5");
   S.instances = (cfg.indicators || []).map((ind) => ({
     uid: uidSeq++,
     id: ind.id,
     params: { ...(ind.params || {}) },
+    tf: ind.timeframe && ind.timeframe !== S.timeframe ? ind.timeframe : null,
   }));
   S.buyTree = normalizeTree(cfg.buy_condition);
   S.sellTree = normalizeTree(cfg.sell_condition);
 
-  // payload_extra_fields → toggles conocidos + campos personalizados
   S.extras = { pyramiding: false, dynamic_sizing: false };
   S.customFields = [];
   const known = new Set(["pyramiding", "atr_value", "dynamic_sizing", "volume_ratio"]);
@@ -311,9 +403,23 @@ function loadFromConfig(cfg) {
 }
 
 function normalizeTree(node) {
-  // El editor trabaja con un grupo en la raíz; una condición suelta se envuelve.
   if (!node) return group("AND", [cond(), cond("close", "<", 0)]);
-  if (node.type === "condition") return group("AND", [node, cond()]);
+  if (node.type === "condition") node = group("AND", [node, cond()]);
+  return unqualifyPrimary(node);
+}
+
+// El backend guarda refs cualificadas también para el primario ("M1.close");
+// internamente "sin prefijo" significa primario, así que se normaliza al cargar.
+function unqualifyPrimary(node) {
+  if (!node) return node;
+  if (node.type === "condition") {
+    if (isQualified(node.left) && refTf(node.left) === primaryTf()) node.left = refCol(node.left);
+    if (typeof node.right === "string" && isQualified(node.right) && refTf(node.right) === primaryTf()) {
+      node.right = refCol(node.right);
+    }
+    return node;
+  }
+  (node.children || []).forEach(unqualifyPrimary);
   return node;
 }
 
@@ -328,7 +434,7 @@ const el = (tag, cls, text) => {
 };
 
 function stepsFor() {
-  return S.mode === "mtf"
+  return S.mode === "blocks"
     ? ["Identidad", "Bloques", "Revisión"]
     : ["Identidad", "Regla de compra", "Regla de venta", "Revisión"];
 }
@@ -380,8 +486,7 @@ function viewIdentity() {
   nameField.appendChild(nameInput);
   const slug = el("p", "hint");
   const updateSlug = () => {
-    const s = slugify(nameInput.value);
-    slug.textContent = nameInput.value.trim() ? `Identificador: ${s}` : "";
+    slug.textContent = nameInput.value.trim() ? `Identificador: ${slugify(nameInput.value)}` : "";
   };
   nameInput.addEventListener("input", () => { S.display_name = nameInput.value; updateSlug(); });
   updateSlug();
@@ -396,7 +501,8 @@ function viewIdentity() {
 
   root.append(nameField, slug, descField);
 
-  root.appendChild(el("h2", "sb-q", S.mode === "mtf" ? "¿Timeframe principal?" : "¿En qué timeframe opera?"));
+  root.appendChild(el("h2", "sb-q", "¿Timeframe principal?"));
+  root.appendChild(el("p", "hint", "Las condiciones pueden mirar otros timeframes; este es el de referencia."));
   root.appendChild(chips(meta.timeframes, () => S.timeframe, (tf) => { S.timeframe = tf; render(); }));
 
   root.appendChild(el("h2", "sb-q", "¿Qué tipo de estrategia es?"));
@@ -406,13 +512,17 @@ function viewIdentity() {
     c.type = "button";
     c.append(el("strong", "", title), el("span", "", text));
     c.addEventListener("click", () => {
-      if (S.mode !== mode) { S.mode = mode; if (mode === "mtf" && !S.blocks.length) S.blocks.push(newBlock()); render(); }
+      if (S.mode !== mode) {
+        S.mode = mode;
+        if (mode === "blocks" && !S.blocks.length) S.blocks.push(newBlock());
+        render();
+      }
     });
     return c;
   };
   cards.append(
-    mk("simple", "Simple", "Reglas de compra y venta sobre un timeframe, con los indicadores que elijas."),
-    mk("mtf", "Multi-timeframe", "Bloques que entran al mercado confirmando la tendencia en varios timeframes, con riesgo por tramos."),
+    mk("rules", "Reglas", "Condiciones de compra y venta con indicadores, en uno o varios timeframes. SL/TP fijos."),
+    mk("blocks", "Bloques", "Entradas por tramos de riesgo con SL/TP en ATRs y piramidación, en largo o en corto."),
   );
   root.appendChild(cards);
   return root;
@@ -436,14 +546,16 @@ function chips(values, getActive, onPick, { multi = false } = {}) {
   return wrap;
 }
 
-// ----- Paso 2/3: reglas (modo simple) -----
+// ----- Reglas (modo rules) -----
 
 function viewRule(kind) {
   const isBuy = kind === "buy";
   const tree = isBuy ? S.buyTree : S.sellTree;
   const root = el("div", "sb-view");
   root.appendChild(el("h2", "sb-q", isBuy ? "¿Cuándo debe comprar?" : "¿Cuándo debe vender o cerrar?"));
-  root.appendChild(el("p", "hint", "Construye la regla como frases. Si eliges un indicador nuevo, se añade solo."));
+  root.appendChild(el("p", "hint",
+    "Construye la regla como frases. Cada condición puede mirar otro timeframe con el selector «En…». " +
+    "Si eliges un indicador nuevo, se añade solo."));
 
   root.appendChild(renderGroup(tree, 0, null));
 
@@ -456,6 +568,7 @@ function viewRule(kind) {
 
   const sum = el("div", "sb-summary");
   sum.append(el("span", "", isBuy ? "Compra cuando" : "Vende cuando"), el("p", "", describeTree(tree)));
+  if (isMultiTF()) sum.appendChild(el("p", "hint-inline", "Estrategia multi-timeframe (modo reglas)."));
   root.appendChild(sum);
   return root;
 }
@@ -463,7 +576,8 @@ function viewRule(kind) {
 function renderInstanceChip(inst) {
   const def = indicatorDef(inst.id);
   const chip = el("div", "sb-instance");
-  chip.appendChild(el("span", "name", def.label.replace(/\s*\(.*\)$/, "")));
+  const tfTag = instTf(inst) !== primaryTf() ? `${instTf(inst)} · ` : "";
+  chip.appendChild(el("span", "name", tfTag + def.label.replace(/\s*\(.*\)$/, "")));
   for (const p of def.params) {
     const input = el("input", "param");
     input.type = "number";
@@ -476,9 +590,7 @@ function renderInstanceChip(inst) {
     });
     chip.appendChild(input);
   }
-  const used = referencedColumns();
-  const inUse = realizeColumns(inst).some((c) => used.has(c.column));
-  if (!inUse) {
+  if (!instanceInUse(inst)) {
     const rm = el("button", "ghost", "✕");
     rm.type = "button";
     rm.title = "Quitar (no se usa en ninguna condición)";
@@ -497,9 +609,7 @@ function renderGroup(node, depth, parent) {
   toggle.title = "Alternar entre exigir todas las condiciones o cualquiera de ellas";
   toggle.addEventListener("click", () => { node.type = node.type === "AND" ? "OR" : "AND"; render(); });
   head.append(toggle, el("span", "hint-inline", "de las siguientes:"));
-
-  const spacer = el("span", "spacer");
-  head.appendChild(spacer);
+  head.appendChild(el("span", "spacer"));
 
   const addCond = el("button", "ghost small", "+ condición");
   addCond.type = "button";
@@ -532,10 +642,23 @@ function renderGroup(node, depth, parent) {
   return box;
 }
 
-function operandSelect(value, onChange) {
+function tfSelect(value, onChange) {
+  const sel = el("select", "sb-tf");
+  sel.title = "Timeframe de esta condición";
+  for (const tf of meta.timeframes) {
+    const opt = el("option", "", tf === primaryTf() ? `En ${tf}` : `En ${tf}`);
+    opt.value = tf;
+    sel.appendChild(opt);
+  }
+  sel.value = value;
+  sel.addEventListener("change", () => { onChange(sel.value); });
+  return sel;
+}
+
+function operandSelect(value, rowTf, onChange, extraColumns = []) {
   const sel = el("select", "sb-operand");
   const groups = new Map();
-  for (const c of columnRegistry()) {
+  for (const c of registryFor(rowTf, extraColumns)) {
     if (!groups.has(c.group)) groups.set(c.group, []);
     groups.get(c.group).push(c);
   }
@@ -544,7 +667,7 @@ function operandSelect(value, onChange) {
     og.label = g;
     for (const c of cols) {
       const opt = el("option", "", c.label);
-      opt.value = c.column;
+      opt.value = c.ref;
       og.appendChild(opt);
     }
     sel.appendChild(og);
@@ -552,18 +675,19 @@ function operandSelect(value, onChange) {
   const addGroup = el("optgroup");
   addGroup.label = "➕ Añadir indicador…";
   for (const ind of meta.indicators) {
+    if (rowTf !== primaryTf() && ind.pre_computed) continue; // pre-computados: solo TF base
     const opt = el("option", "", ind.label);
     opt.value = `__add__:${ind.id}`;
     addGroup.appendChild(opt);
   }
   sel.appendChild(addGroup);
   sel.value = value;
-  if (sel.value !== value) sel.value = "close";
+  if (sel.value !== value) sel.value = makeRef("close", rowTf);
   sel.addEventListener("change", () => {
     let v = sel.value;
     if (v.startsWith("__add__:")) {
-      const inst = addInstance(v.slice(8));
-      v = realizeColumns(inst)[0].column;
+      const inst = addInstance(v.slice(8), null, rowTf === primaryTf() ? null : rowTf);
+      v = makeRef(realizeColumns(inst)[0].column, rowTf);
     }
     onChange(v);
     render();
@@ -571,10 +695,32 @@ function operandSelect(value, onChange) {
   return sel;
 }
 
-function renderCondition(node, parent) {
-  const row = el("div", "sb-row");
+function migrateConditionTf(node, newTf) {
+  const move = (ref) => {
+    if (typeof ref !== "string") return ref;
+    const col = refCol(ref);
+    // Si la columna pertenece a un indicador, asegura una instancia en el nuevo TF.
+    for (const inst of S.instances) {
+      const hit = realizeColumns(inst).find((c) => c.column === col);
+      if (hit) {
+        const def = indicatorDef(inst.id);
+        if (newTf !== primaryTf() && def.pre_computed) return makeRef("close", newTf);
+        addInstance(inst.id, inst.params, newTf === primaryTf() ? null : newTf);
+        break;
+      }
+    }
+    return makeRef(col, newTf);
+  };
+  node.left = move(node.left);
+  if (typeof node.right === "string") node.right = move(node.right);
+}
 
-  row.appendChild(operandSelect(node.left, (v) => { node.left = v; }));
+function renderCondition(node, parent, extraColumns = []) {
+  const row = el("div", "sb-row");
+  const rowTf = refTf(node.left);
+
+  row.appendChild(tfSelect(rowTf, (tf) => { migrateConditionTf(node, tf); render(); }));
+  row.appendChild(operandSelect(node.left, rowTf, (v) => { node.left = v; }, extraColumns));
 
   const op = el("select", "sb-op");
   for (const o of meta.operators) {
@@ -598,14 +744,14 @@ function renderCondition(node, parent) {
     });
     row.appendChild(num);
   } else {
-    row.appendChild(operandSelect(node.right, (v) => { node.right = v; }));
+    row.appendChild(operandSelect(node.right, refTf(node.right), (v) => { node.right = v; }, extraColumns));
   }
 
   const swap = el("button", "ghost small", isNumber ? "↔ indicador" : "↔ valor");
   swap.type = "button";
   swap.title = "Comparar contra un valor fijo o contra otro indicador";
   swap.addEventListener("click", () => {
-    node.right = isNumber ? "close" : 0;
+    node.right = isNumber ? makeRef("close", rowTf) : 0;
     render();
   });
   row.appendChild(swap);
@@ -620,12 +766,13 @@ function renderCondition(node, parent) {
   return row;
 }
 
-// ----- Paso 2 (MTF): bloques -----
+// ----- Bloques -----
 
 function newBlock() {
   const d = meta.mtf.block_defaults;
   return {
     id: `bloque_${S.blocks.length + 1}`,
+    direction: "long",
     trigger: S.timeframe,
     confirms: [],
     atr_period: d.atr_period,
@@ -636,17 +783,33 @@ function newBlock() {
     pyramid_atr_mult: d.pyramid_atr_mult,
     max_entries: "",
     parent: "",
+    entryCustom: null,
+    dirCustom: null,
     entryRaw: null,
     dirRaw: null,
   };
+}
+
+function blockExtraColumns(b) {
+  const out = [];
+  const labels = meta.mtf.column_labels ?? [];
+  for (const tpl of labels) {
+    const period = tpl.template.startsWith("atr") ? b.atr_period : b.vortex_period;
+    out.push({
+      column: tpl.template.replace(/\{period\}/g, period),
+      label: tpl.label.replace(/\{period\}/g, period),
+      group: "Indicadores del bloque",
+    });
+  }
+  return out;
 }
 
 function viewBlocks() {
   const root = el("div", "sb-view");
   root.appendChild(el("h2", "sb-q", "Bloques de entrada"));
   root.appendChild(el("p", "hint",
-    "Cada bloque entra al mercado cuando el Vortex cruza al alza en su timeframe disparador, " +
-    "confirmando en los timeframes extra, y reparte el riesgo en tramos."));
+    "Cada bloque entra al mercado en su dirección cuando se cumple su condición de entrada " +
+    "(por defecto, cruce del Vortex), confirmando en los timeframes extra, y reparte el riesgo en tramos."));
 
   S.blocks.forEach((b, i) => root.appendChild(renderBlock(b, i)));
 
@@ -672,6 +835,17 @@ function renderBlock(b, index) {
   idInput.title = "Identificador del bloque (letras, números, _)";
   idInput.addEventListener("change", () => { b.id = idInput.value.trim(); render(); });
   head.appendChild(idInput);
+
+  const dir = el("button", "sb-dir" + (b.direction === "short" ? " short" : ""),
+    b.direction === "short" ? "CORTO ↓" : "LARGO ↑");
+  dir.type = "button";
+  dir.title = "Dirección del bloque";
+  dir.addEventListener("click", () => {
+    b.direction = b.direction === "short" ? "long" : "short";
+    render();
+  });
+  head.appendChild(dir);
+
   head.appendChild(el("span", "spacer"));
   if (S.blocks.length > 1) {
     const rm = el("button", "ghost small", "✕ quitar");
@@ -717,8 +891,8 @@ function renderBlock(b, index) {
     })()),
     fld("SL en ATRs", num(() => b.sl_atr_mult, (v) => { b.sl_atr_mult = v; }, "0.1", "0.1")),
     fld("TP (ratio beneficio:riesgo)", num(() => b.tp_rr, (v) => { b.tp_rr = v; }, "0.1", "0.1")),
-    fld("Período ATR", num(() => b.atr_period, (v) => { b.atr_period = v; }, "1", "1")),
-    fld("Período Vortex", num(() => b.vortex_period, (v) => { b.vortex_period = v; }, "1", "2")),
+    fld("Período ATR", num(() => b.atr_period, (v) => { b.atr_period = v; render(); }, "1", "1")),
+    fld("Período Vortex", num(() => b.vortex_period, (v) => { b.vortex_period = v; render(); }, "1", "2")),
     fld("Distancia de piramidación (ATRs)", num(() => b.pyramid_atr_mult, (v) => { b.pyramid_atr_mult = v; }, "0.1", "0")),
   );
   card.appendChild(grid);
@@ -730,7 +904,7 @@ function renderBlock(b, index) {
     none.value = "";
     sel.appendChild(none);
     for (const id of others) {
-      const o = el("option", "", `solo si «${id}» está alcista`);
+      const o = el("option", "", `solo si «${id}» acompaña`);
       o.value = id;
       sel.appendChild(o);
     }
@@ -739,18 +913,60 @@ function renderBlock(b, index) {
     card.appendChild(fld("Filtro de dirección (opcional)", sel));
   }
 
-  if (b.entryRaw || b.dirRaw) {
+  // Condiciones personalizadas (avanzado)
+  if ((b.entryRaw && b.entryRaw.type !== "condition") || (b.dirRaw && b.dirRaw.type !== "condition")) {
     card.appendChild(el("p", "hint",
-      "Este bloque tiene condiciones personalizadas guardadas; se conservan tal cual al guardar."));
+      "Este bloque tiene condiciones personalizadas complejas guardadas; se conservan tal cual al guardar."));
   } else {
-    card.appendChild(el("p", "hint",
-      `Entrada automática: cruce alcista del Vortex(${b.vortex_period}) en ${b.trigger}; ` +
-      `dirección: Vortex alcista en ${b.trigger}.`));
+    const det = el("details", "sb-custom");
+    if (b.entryCustom || b.dirCustom || b.entryRaw || b.dirRaw) det.open = true;
+    det.appendChild(el("summary", "", "Personalizar condiciones (avanzado)"));
+    const inner = el("div");
+
+    const mkCustom = (label, getNode, setNode, defaultText) => {
+      const wrap = el("div", "sb-custom-cond");
+      wrap.appendChild(el("span", "lbl", label));
+      const node = getNode();
+      if (node) {
+        const fake = { children: [node] };
+        const row = renderCondition(node, {
+          get children() { return fake.children; },
+          set children(v) { setNode(null); },
+        }, blockExtraColumns(b));
+        wrap.appendChild(row);
+      } else {
+        wrap.appendChild(el("span", "hint-inline", defaultText));
+        const btn = el("button", "ghost small", "personalizar");
+        btn.type = "button";
+        btn.addEventListener("click", () => {
+          setNode({ type: "condition", left: makeRef("close", b.trigger), op: ">", right: 0 });
+          render();
+        });
+        wrap.appendChild(btn);
+      }
+      return wrap;
+    };
+
+    const short = b.direction === "short";
+    inner.appendChild(mkCustom(
+      "Entrada",
+      () => b.entryCustom ?? (b.entryRaw && b.entryRaw.type === "condition" ? (b.entryCustom = b.entryRaw, b.entryRaw = null, b.entryCustom) : null),
+      (v) => { b.entryCustom = v; },
+      `cruce ${short ? "bajista" : "alcista"} del Vortex(${b.vortex_period}) en ${b.trigger}`,
+    ));
+    inner.appendChild(mkCustom(
+      "Dirección",
+      () => b.dirCustom ?? (b.dirRaw && b.dirRaw.type === "condition" ? (b.dirCustom = b.dirRaw, b.dirRaw = null, b.dirCustom) : null),
+      (v) => { b.dirCustom = v; },
+      `Vortex ${short ? "bajista" : "alcista"} en ${b.trigger}`,
+    ));
+    det.appendChild(inner);
+    card.appendChild(det);
   }
   return card;
 }
 
-// ----- Paso final: revisión -----
+// ----- Revisión -----
 
 function viewReview() {
   const root = el("div", "sb-view");
@@ -758,23 +974,27 @@ function viewReview() {
 
   const sum = el("div", "sb-summary big");
   sum.appendChild(el("span", "", S.display_name || "Sin nombre"));
-  if (S.mode === "simple") {
-    sum.appendChild(el("p", "", `Opera en ${S.timeframe}.`));
+  if (S.mode === "rules") {
+    const mtf = isMultiTF();
+    sum.appendChild(el("p", "", mtf
+      ? `Multi-timeframe · principal ${S.timeframe}.`
+      : `Opera en ${S.timeframe}.`));
     sum.appendChild(el("p", "", `Compra cuando ${describeTree(S.buyTree)}.`));
     sum.appendChild(el("p", "", `Vende cuando ${describeTree(S.sellTree)}.`));
   } else {
-    sum.appendChild(el("p", "", `Multi-timeframe · principal ${S.timeframe}.`));
+    sum.appendChild(el("p", "", `Bloques · timeframe principal ${S.timeframe}.`));
     for (const b of S.blocks) sum.appendChild(el("p", "", describeBlock(b) + "."));
   }
   root.appendChild(sum);
 
-  if (S.mode === "simple") {
+  if (S.mode === "rules" && !isMultiTF()) {
     root.appendChild(el("h3", "panel-subtitle", "Opciones avanzadas"));
-    const t1 = toggleRow("Piramidación", "Permite añadir entradas escalonadas usando el ATR como distancia.",
-      () => S.extras.pyramiding, (v) => { S.extras.pyramiding = v; });
-    const t2 = toggleRow("Tamaño dinámico", "Ajusta el lote según volatilidad (ATR) y volumen relativo.",
-      () => S.extras.dynamic_sizing, (v) => { S.extras.dynamic_sizing = v; if (v) S.extras.pyramiding = true; });
-    root.append(t1, t2);
+    root.append(
+      toggleRow("Piramidación", "Permite añadir entradas escalonadas usando el ATR como distancia.",
+        () => S.extras.pyramiding, (v) => { S.extras.pyramiding = v; }),
+      toggleRow("Tamaño dinámico", "Ajusta el lote según volatilidad (ATR) y volumen relativo.",
+        () => S.extras.dynamic_sizing, (v) => { S.extras.dynamic_sizing = v; if (v) S.extras.pyramiding = true; }),
+    );
 
     const det = el("details", "sb-custom");
     det.appendChild(el("summary", "", "Campos personalizados del payload (avanzado)"));
@@ -791,7 +1011,7 @@ function viewReview() {
       type.addEventListener("change", () => { f.type = type.value; render(); });
       let value;
       if (f.type === "column") {
-        value = operandSelect(f.value || "close", (v) => { f.value = v; });
+        value = operandSelect(f.value || "close", primaryTf(), (v) => { f.value = v; });
       } else {
         value = el("input"); value.type = "text"; value.placeholder = "true / 1.5 / texto"; value.value = f.value;
         value.addEventListener("change", () => { f.value = value.value; });
@@ -807,6 +1027,10 @@ function viewReview() {
     add.addEventListener("click", () => { S.customFields.push({ key: "", type: "literal", value: "" }); render(); });
     det.append(list, add);
     root.appendChild(det);
+  } else if (S.mode === "rules") {
+    root.appendChild(el("p", "hint",
+      "Las opciones avanzadas (piramidación, tamaño dinámico) solo aplican a estrategias de un " +
+      "timeframe; en multi-timeframe usa el tipo Bloques para riesgo avanzado."));
   }
 
   const vWrap = el("div", "sb-validation");
@@ -863,14 +1087,13 @@ async function next() {
     if (steps[S.step + 1] === "Revisión") {
       const errs = localErrors();
       if (errs.length) { setError(errs[0]); return; }
-      S.validation = null; // fuerza re-validación remota al entrar
+      S.validation = null;
     }
     S.step += 1;
     render();
     return;
   }
 
-  // Guardar
   const errs = localErrors();
   if (errs.length) { setError(errs[0]); return; }
   const btn = $("#sb-next");
@@ -912,7 +1135,7 @@ function resetState() {
   S.isNew = true;
   S.editingKey = null;
   S.step = 0;
-  S.mode = "simple";
+  S.mode = "rules";
   S.display_name = "";
   S.description = "";
   S.timeframe = "M5";
@@ -932,7 +1155,6 @@ async function ensureMeta() {
 export async function openBuilderNew() {
   await ensureMeta();
   resetState();
-  // Arranque amable: RSI clásico como punto de partida editable
   const rsi = addInstance("RSI");
   const rsiCol = realizeColumns(rsi)[0].column;
   S.buyTree = group("AND", [cond(rsiCol, "<", 30), cond("close", ">", "open")]);

@@ -175,6 +175,62 @@ def test_backtest_advanced_mode_supports_pyramiding(monkeypatch):
     assert [trade["volume"] for trade in result["trades"]] == pytest.approx([0.1, 0.1])
 
 
+def test_backtest_advanced_short_pyramiding(monkeypatch):
+    """Cortos avanzados: SL/TP en ATRs invertidos y piramidación hacia abajo."""
+    df = pd.DataFrame(
+        [
+            {"time": _utc(2026, 4, 1, 9, 0), "open": 101.0, "high": 101.2, "low": 100.8, "close": 101.0, "payload_signal": "none"},
+            {"time": _utc(2026, 4, 1, 9, 1), "open": 100.6, "high": 100.8, "low": 100.2, "close": 100.4, "payload_signal": "sell"},
+            {"time": _utc(2026, 4, 1, 9, 2), "open": 100.0, "high": 100.2, "low": 99.5, "close": 99.6, "payload_signal": "sell"},
+            {"time": _utc(2026, 4, 1, 9, 3), "open": 99.4, "high": 99.6, "low": 99.0, "close": 99.0, "payload_signal": "none"},
+            {"time": _utc(2026, 4, 1, 9, 4), "open": 99.0, "high": 99.2, "low": 98.3, "close": 98.4, "payload_signal": "none"},
+        ]
+    )
+
+    class StrategyModule:
+        TIMEFRAME = "M1"
+
+        @staticmethod
+        def get_last_signal_payload(local_df, verbose=False):
+            row = local_df.iloc[-2]
+            return {
+                "signal": row["payload_signal"],
+                "reason": f"signal:{row['payload_signal']}",
+                "pyramiding": True,
+                "atr_value": 1.0,
+            }
+
+    monkeypatch.setattr(backtest_runtime, "_build_market_dataframe", lambda *args, **kwargs: df.copy())
+
+    result = backtest_runtime.run_backtest(
+        {
+            "strategy_key": "adv_short",
+            "strategy_label": "Advanced Short",
+            "module": StrategyModule,
+            "symbol": "TEST",
+            "timeframe_value": backtest_runtime.TIMEFRAME_MAP["M1"],
+            "start_date": _utc(2026, 4, 1, 9, 2),
+            "end_date": _utc(2026, 4, 1, 9, 4),
+            "initial_balance": 1000.0,
+            "warmup_bars": 10,
+            "lot": 0.1,
+            "sl_points": 5.0,
+            "tp_points": 10.0,
+        },
+        data_source=_MockDataSource(),
+    )
+
+    assert result["status"] == "success"
+    assert result["closed_trades"] == 2
+    assert [trade["direction"] for trade in result["trades"]] == [-1, -1]
+    assert [trade["mode"] for trade in result["trades"]] == ["advanced", "advanced"]
+    # Entradas: 100.0 (inicial) y 99.4 (piramidada por debajo del umbral 99.5)
+    assert [trade["entry_price"] for trade in result["trades"]] == pytest.approx([100.0, 99.4])
+    # Cerradas a fin de rango con close=98.4 → (100.0-98.4)*0.1 + (99.4-98.4)*0.1
+    assert result["final_balance"] == pytest.approx(1000.26)
+    assert result["winning_trades"] == 2
+
+
 def test_backtest_incomplete_pyramiding_payload_falls_back_to_standard(monkeypatch):
     df = pd.DataFrame(
         [
