@@ -169,6 +169,7 @@ def build_strategy_module(
     Useful for Builder previews without writing files to disk.
     """
     preview_config = copy.deepcopy(config)
+    preview_config["schema_version"] = _requested_schema_version(preview_config)
     if _is_mtf_config(preview_config):
         from backend.strategy_builder.mtf_generator import validate_mtf_strategy_config
         validate_mtf_strategy_config(preview_config, is_new=is_new, strategies_dir=strategies_dir)

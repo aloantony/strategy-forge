@@ -1,7 +1,15 @@
-"""Multi-timeframe Strategy Builder v2 generator.
+"""Multi-timeframe Strategy Builder v2/v3 generator.
 
 This module is intentionally separate from generator.py so schema_version=1
 output remains stable and rollback can disable v2 without touching v1.
+
+Esquema v2 (aditivo, configs antiguos siguen válidos):
+- strategy_type "blocks": bloques con direction "long"|"short", tramos de riesgo,
+  SL/TP en ATRs y piramidación (payload avanzado buy/sell).
+- strategy_type "rules": buy_condition/sell_condition a nivel raíz con refs
+  cualificadas "TF.columna" → señales buy/sell simples (SL/TP fijos de config).
+- Indicadores: cualquiera del registry (backend/strategy_builder/indicators.py)
+  declarado con su timeframe; los pre_computed no están disponibles en MTF.
 """
 
 from __future__ import annotations
@@ -14,10 +22,13 @@ import re
 from pathlib import Path
 
 from backend.runtime.timeframes import TIMEFRAME_MINUTES, normalize_timeframe_label
+from backend.strategy_builder import indicators as ind_registry
 from backend.strategy_builder.generator import GeneratorError, STRATEGIES_DIR, ValidationError, _write_atomic
+from backend.strategy_builder.indicators import INDICATOR_SPECS
 
+VALID_MTF_INDICATOR_IDS = set(ind_registry.MTF_INDICATOR_IDS)
+VALID_DIRECTIONS = {"long", "short"}
 
-VALID_MTF_INDICATOR_IDS = {"ATR", "VORTEX"}
 BASE_COLUMNS = {
     "open", "high", "low", "close", "tick_volume", "volume",
     "real_volume", "spread", "OHLC4", "HLC3", "HL2",
@@ -34,6 +45,25 @@ def generate_mtf_strategy_file(config: dict, strategies_dir: Path = None) -> Pat
     _write_atomic(py_path, py_content)
     _write_atomic(json_path, json.dumps(config, indent=2, ensure_ascii=False))
     return py_path
+
+
+# ---------------------------------------------------------------------------
+# Validación / normalización
+# ---------------------------------------------------------------------------
+
+
+def _strategy_type(config: dict) -> str:
+    has_blocks = bool(config.get("blocks"))
+    has_rules = bool(config.get("buy_condition") or config.get("sell_condition"))
+    if has_blocks and has_rules:
+        raise ValidationError(
+            "Config MTF inválida: usa bloques O condiciones buy/sell a nivel raíz, no ambas."
+        )
+    if has_blocks:
+        return "blocks"
+    if has_rules:
+        return "rules"
+    raise ValidationError("Config MTF inválida: requiere 'blocks' o 'buy_condition'/'sell_condition'.")
 
 
 def validate_mtf_strategy_config(config: dict, is_new: bool = True, strategies_dir: Path = None) -> None:
@@ -65,258 +95,50 @@ def validate_mtf_strategy_config(config: dict, is_new: bool = True, strategies_d
     config["mode"] = "multi_timeframe"
     config["primary_timeframe"] = _valid_tf(config.get("primary_timeframe") or config.get("timeframe") or "M1")
     config["timeframe"] = config["primary_timeframe"]
-
-    config["frames"] = _normalize_frames(config)
-    config["indicators"] = _normalize_indicators(config.get("indicators") or [])
-    config["blocks"] = _normalize_blocks(config)
-    _ensure_block_indicators(config)
-    config["indicators"] = _dedupe_indicators(config["indicators"])
-
-    # Las refs sin timeframe se evalúan en runtime sobre el timeframe primario
-    # (template _parse_ref); se cualifican aquí para que la config almacenada sea
-    # explícita y la validación coincida con el runtime (antes se asumía M1).
+    config["strategy_type"] = _strategy_type(config)
     primary = config["primary_timeframe"]
-    for block in config["blocks"]:
-        block["entry_condition"] = _qualify_condition_refs(block["entry_condition"], primary)
-        block["direction_condition"] = _qualify_condition_refs(block["direction_condition"], primary)
-        block["atr_ref"] = _qualify_ref(block["atr_ref"], primary)
-        block["tiers"] = [
-            {**tier, "condition": _qualify_condition_refs(tier["condition"], primary)}
-            for tier in block["tiers"]
-        ]
 
-    available = _available_columns(config)
-    for block in config["blocks"]:
-        _validate_condition(block["entry_condition"], available, f"blocks[{block['id']}].entry_condition", primary)
-        _validate_condition(block["direction_condition"], available, f"blocks[{block['id']}].direction_condition", primary)
-        _validate_ref(block["atr_ref"], available, f"blocks[{block['id']}].atr_ref", primary)
-        for i, tier in enumerate(block["tiers"]):
-            _validate_condition(tier["condition"], available, f"blocks[{block['id']}].tiers[{i}].condition", primary)
+    config["indicators"] = _normalize_indicators(config.get("indicators") or [], default_tf=primary)
 
-    _validate_parent_graph(config["blocks"])
+    if config["strategy_type"] == "blocks":
+        config.pop("buy_condition", None)
+        config.pop("sell_condition", None)
+        config["blocks"] = _normalize_blocks(config)
+        _ensure_block_indicators(config)
+        config["indicators"] = _dedupe_indicators(config["indicators"])
 
+        # Las refs sin timeframe se evalúan en runtime sobre el timeframe primario
+        # (template _parse_ref); se cualifican aquí para que la config almacenada sea
+        # explícita y la validación coincida con el runtime.
+        for block in config["blocks"]:
+            block["entry_condition"] = _qualify_condition_refs(block["entry_condition"], primary)
+            block["direction_condition"] = _qualify_condition_refs(block["direction_condition"], primary)
+            block["atr_ref"] = _qualify_ref(block["atr_ref"], primary)
+            block["tiers"] = [
+                {**tier, "condition": _qualify_condition_refs(tier["condition"], primary)}
+                for tier in block["tiers"]
+            ]
 
-def render_mtf_strategy_source(config: dict) -> str:
-    render_config = copy.deepcopy(config)
-    validate_mtf_strategy_config(render_config, is_new=False, strategies_dir=Path("__builder_render__"))
-    config_repr = pprint.pformat(render_config, width=100, sort_dicts=False)
-    required = sorted(_collect_timeframes(render_config), key=lambda tf: TIMEFRAME_MINUTES[tf])
-
-    source = f'''"""
-Generated by Strategy Builder v2 (multi-timeframe).
-"""
-
-import pandas as pd
-
-SCHEMA_VERSION = 2
-MODE = "multi_timeframe"
-TIMEFRAME = "{render_config["primary_timeframe"]}"
-PRIMARY_TIMEFRAME = TIMEFRAME
-REQUIRED_TIMEFRAMES = {required!r}
-MAGIC_NUMBER = {int(render_config["magic_number"])}
-PARAMS = {{}}
-OBJECT_TREE_ITEMS = []
-DATA_WINDOW_FIELDS = []
-MTF_CONFIG = {config_repr}
-
-
-def _numeric(df: pd.DataFrame, key: str) -> pd.Series:
-    return pd.to_numeric(df.get(key), errors="coerce")
-
-
-def _atr(high: pd.Series, low: pd.Series, close: pd.Series, length: int) -> pd.Series:
-    prev_close = close.shift(1)
-    tr = pd.concat(
-        [high - low, (high - prev_close).abs(), (low - prev_close).abs()],
-        axis=1,
-    ).max(axis=1)
-    return tr.rolling(length).mean()
-
-
-def _vortex(high: pd.Series, low: pd.Series, close: pd.Series, length: int):
-    prev_close = close.shift(1)
-    tr = pd.concat(
-        [(high - low).abs(), (high - prev_close).abs(), (low - prev_close).abs()],
-        axis=1,
-    ).max(axis=1)
-    vm_plus = (high - low.shift(1)).abs()
-    vm_minus = (low - high.shift(1)).abs()
-    tr_sum = tr.rolling(length).sum().replace(0.0, float("nan"))
-    vi_plus = vm_plus.rolling(length).sum() / tr_sum
-    vi_minus = vm_minus.rolling(length).sum() / tr_sum
-    direction = pd.Series(-1, index=high.index, dtype="int64").mask(vi_plus > vi_minus, 1)
-    cross_up = ((vi_plus > vi_minus) & (vi_plus.shift(1) <= vi_minus.shift(1))).astype(int)
-    cross_down = ((vi_minus > vi_plus) & (vi_minus.shift(1) <= vi_plus.shift(1))).astype(int)
-    return vi_plus, vi_minus, direction, cross_up, cross_down
-
-
-def _prepare_frame(df: pd.DataFrame, timeframe: str) -> pd.DataFrame:
-    out = df.copy()
-    if not {{"high", "low", "close"}}.issubset(out.columns):
-        return out
-    high = _numeric(out, "high")
-    low = _numeric(out, "low")
-    close = _numeric(out, "close")
-    for ind in MTF_CONFIG.get("indicators", []):
-        if ind.get("timeframe") != timeframe or ind.get("pre_computed"):
-            continue
-        period = int((ind.get("params") or {{}}).get("period") or 14)
-        if ind.get("id") == "ATR":
-            atr = _atr(high, low, close, period)
-            out[f"atr_{{period}}"] = atr
-            out[f"atr_pct_{{period}}"] = atr / close.replace(0.0, float("nan"))
-        elif ind.get("id") == "VORTEX":
-            vi_plus, vi_minus, direction, cross_up, cross_down = _vortex(high, low, close, period)
-            out[f"vi_plus_{{period}}"] = vi_plus
-            out[f"vi_minus_{{period}}"] = vi_minus
-            out[f"vortex_dir_{{period}}"] = direction
-            out[f"vortex_cross_up_{{period}}"] = cross_up
-            out[f"vortex_cross_down_{{period}}"] = cross_down
-    return out
-
-
-def prepare_frames(frames: dict) -> dict:
-    out = {{}}
-    for timeframe in REQUIRED_TIMEFRAMES:
-        df = frames.get(timeframe)
-        if isinstance(df, pd.DataFrame):
-            out[timeframe] = _prepare_frame(df, timeframe)
-    return out
-
-
-def prepare_dataframe(df: pd.DataFrame) -> pd.DataFrame:
-    return prepare_frames({{TIMEFRAME: df}}).get(TIMEFRAME, df)
-
-
-def _parse_ref(ref):
-    if isinstance(ref, dict):
-        return ref.get("timeframe") or ref.get("frame") or TIMEFRAME, ref.get("column"), int(ref.get("shift") or 2)
-    if isinstance(ref, str):
-        if "." in ref:
-            timeframe, column = ref.split(".", 1)
-        else:
-            timeframe, column = TIMEFRAME, ref
-        return timeframe, column, 2
-    return None, None, 2
-
-
-def _get_value(ref, frames):
-    if isinstance(ref, (int, float, bool)):
-        return ref
-    timeframe, column, shift = _parse_ref(ref)
-    if not timeframe or not column:
-        return None
-    df = frames.get(timeframe)
-    if not isinstance(df, pd.DataFrame) or column not in df.columns or len(df) < shift:
-        return None
-    value = df.iloc[-shift][column]
-    try:
-        if pd.isna(value):
-            return None
-    except TypeError:
-        pass
-    return value
-
-
-def _compare(left, op, right) -> bool:
-    if left is None or right is None:
-        return False
-    if op == ">":
-        return left > right
-    if op == "<":
-        return left < right
-    if op == ">=":
-        return left >= right
-    if op == "<=":
-        return left <= right
-    if op == "==":
-        return left == right
-    if op == "!=":
-        return left != right
-    return False
-
-
-def _eval_condition_tree(node, frames) -> bool:
-    if not isinstance(node, dict):
-        return False
-    node_type = str(node.get("type") or "").upper()
-    if node_type == "CONDITION":
-        return _compare(_get_value(node.get("left"), frames), node.get("op"), _get_value(node.get("right"), frames))
-    children = node.get("children") or []
-    if node_type == "AND":
-        return all(_eval_condition_tree(child, frames) for child in children)
-    if node_type == "OR":
-        return any(_eval_condition_tree(child, frames) for child in children)
-    return False
-
-
-def _block_by_id(block_id: str):
-    for block in MTF_CONFIG.get("blocks", []):
-        if block.get("id") == block_id:
-            return block
-    return None
-
-
-def _block_direction_is_long(block, frames) -> bool:
-    return _eval_condition_tree(block.get("direction_condition"), frames)
-
-
-def _parent_allows(block, frames) -> bool:
-    parent_id = block.get("parent_block")
-    if not parent_id:
-        return True
-    parent = _block_by_id(parent_id)
-    return bool(parent and _block_direction_is_long(parent, frames))
-
-
-def get_last_signal_payload_mtf(frames: dict, verbose: bool = False, params=None) -> dict:
-    prepared = prepare_frames(frames or {{}})
-    for block in MTF_CONFIG.get("blocks", []):
-        if not _parent_allows(block, prepared):
-            continue
-        tiers = block.get("tiers") or []
-        for tier in tiers:
-            if not _eval_condition_tree(tier.get("condition"), prepared):
-                continue
-            atr_value = _get_value(block.get("atr_ref"), prepared)
-            try:
-                atr_value = float(atr_value or 0.0)
-            except (TypeError, ValueError):
-                atr_value = 0.0
-            if atr_value <= 0:
-                continue
-            sl_atr_mult = float(block.get("sl_atr_mult") or 1.0)
-            tp_rr = float(block.get("tp_rr") or 2.0)
-            return {{
-                "signal": "buy",
-                "reason": f"{{block.get('id')}}/{{tier.get('id')}} MTF condition met",
-                "pyramiding": True,
-                "atr_value": atr_value,
-                "sl_atr_mult": sl_atr_mult,
-                "tp_atr_mult": sl_atr_mult * tp_rr,
-                "pyramid_atr_mult": float(block.get("pyramid_atr_mult") or 0.5),
-                "risk_pct": float(tier.get("risk_pct") or 0.0),
-                "entry_index": int(tier.get("entry_index") or 0),
-                "max_entries": int(block.get("max_entries") or len(tiers) or 1),
-                "block_id": str(block.get("id") or ""),
-                "tier_id": str(tier.get("id") or ""),
-            }}
-    return {{"signal": "none", "reason": "MTF: no block signal"}}
-
-
-def get_last_signal_payload(df: pd.DataFrame, verbose: bool = False, params=None) -> dict:
-    return get_last_signal_payload_mtf({{TIMEFRAME: df}}, verbose=verbose, params=params)
-
-
-def get_last_signal(df: pd.DataFrame, verbose: bool = False) -> str:
-    return get_last_signal_payload(df, verbose=verbose).get("signal", "none")
-'''
-
-    try:
-        ast.parse(source)
-    except SyntaxError as exc:
-        raise GeneratorError(f"Generated MTF code failed ast.parse: {exc}") from exc
-    return source
+        config["frames"] = _normalize_frames(config)
+        available = _available_columns(config)
+        for block in config["blocks"]:
+            _validate_condition(block["entry_condition"], available, f"blocks[{block['id']}].entry_condition", primary)
+            _validate_condition(block["direction_condition"], available, f"blocks[{block['id']}].direction_condition", primary)
+            _validate_ref(block["atr_ref"], available, f"blocks[{block['id']}].atr_ref", primary)
+            for i, tier in enumerate(block["tiers"]):
+                _validate_condition(tier["condition"], available, f"blocks[{block['id']}].tiers[{i}].condition", primary)
+        _validate_parent_graph(config["blocks"])
+    else:
+        config["blocks"] = []
+        if not config.get("buy_condition") or not config.get("sell_condition"):
+            raise ValidationError("Modo reglas MTF: se requieren buy_condition y sell_condition.")
+        config["buy_condition"] = _qualify_condition_refs(config["buy_condition"], primary)
+        config["sell_condition"] = _qualify_condition_refs(config["sell_condition"], primary)
+        config["indicators"] = _dedupe_indicators(config["indicators"])
+        config["frames"] = _normalize_frames(config)
+        available = _available_columns(config)
+        _validate_condition(config["buy_condition"], available, "buy_condition", primary)
+        _validate_condition(config["sell_condition"], available, "sell_condition", primary)
 
 
 def _valid_tf(value) -> str:
@@ -327,43 +149,49 @@ def _valid_tf(value) -> str:
 
 
 def _normalize_frames(config: dict) -> list[dict]:
-    seen = {_valid_tf(config["primary_timeframe"])}
+    seen = set(_collect_timeframes(config))
     for frame in config.get("frames") or []:
         if isinstance(frame, dict):
             seen.add(_valid_tf(frame.get("timeframe") or frame.get("id")))
         else:
             seen.add(_valid_tf(frame))
-    for block in config.get("blocks") or []:
-        if isinstance(block, dict):
-            seen.add(_valid_tf(block.get("trigger_timeframe") or config["primary_timeframe"]))
-            for tf in block.get("confirm_timeframes") or []:
-                seen.add(_valid_tf(tf))
     return [{"id": tf, "timeframe": tf} for tf in sorted(seen, key=lambda tf: TIMEFRAME_MINUTES[tf])]
 
 
 def _indicator_columns(ind_id: str, period: int) -> list[str]:
+    # Compat: firma histórica (period); el camino general usa el registry con params.
     if ind_id not in VALID_MTF_INDICATOR_IDS:
         raise ValidationError(f"Unknown MTF indicator id '{ind_id}'.")
-    from backend.strategy_builder.indicators import indicator_columns
-    return indicator_columns(ind_id, {"period": period})
+    return ind_registry.indicator_columns(ind_id, {"period": period})
 
 
-def _normalize_indicators(indicators: list) -> list[dict]:
+def _normalize_indicators(indicators: list, default_tf: str) -> list[dict]:
     normalized = []
     for i, raw in enumerate(indicators):
         if not isinstance(raw, dict):
             raise ValidationError(f"indicators[{i}] must be an object.")
         ind_id = str(raw.get("id") or "").upper()
         if ind_id not in VALID_MTF_INDICATOR_IDS:
-            raise ValidationError(f"Unknown MTF indicator id '{ind_id}'.")
-        period = int((raw.get("params") or {}).get("period") or 14)
-        tf = _valid_tf(raw.get("timeframe") or raw.get("frame") or "M1")
+            raise ValidationError(
+                f"Unknown MTF indicator id '{ind_id}'. "
+                f"Los indicadores pre-calculados del gráfico no están disponibles en MTF."
+            )
+        spec = INDICATOR_SPECS[ind_id]
+        raw_params = raw.get("params") or {}
+        params = {}
+        for p in spec["params"]:
+            value = raw_params.get(p["key"], p["default"])
+            try:
+                params[p["key"]] = int(value) if p["type"] == "int" else float(value)
+            except (TypeError, ValueError) as exc:
+                raise ValidationError(f"indicators[{i}].params.{p['key']} must be numeric.") from exc
+        tf = _valid_tf(raw.get("timeframe") or raw.get("frame") or default_tf)
         normalized.append({
             "id": ind_id,
             "timeframe": tf,
-            "params": {"period": period},
-            "columns": _indicator_columns(ind_id, period),
-            "pre_computed": bool(raw.get("pre_computed", False)),
+            "params": params,
+            "columns": ind_registry.indicator_columns(ind_id, params),
+            "pre_computed": False,
         })
     return normalized
 
@@ -379,6 +207,9 @@ def _normalize_blocks(config: dict) -> list[dict]:
         block_id = str(raw.get("id") or raw.get("name") or f"block_{i + 1}").strip()
         if not re.match(r"^[A-Za-z][A-Za-z0-9_]*$", block_id):
             raise ValidationError(f"Invalid block id '{block_id}'.")
+        direction = str(raw.get("direction") or "long").strip().lower()
+        if direction not in VALID_DIRECTIONS:
+            raise ValidationError(f"blocks[{i}].direction must be 'long' or 'short' (got '{direction}').")
         trigger_tf = _valid_tf(raw.get("trigger_timeframe") or config["primary_timeframe"])
         confirm_raw = raw.get("confirm_timeframes") or []
         if not isinstance(confirm_raw, list):
@@ -399,12 +230,18 @@ def _normalize_blocks(config: dict) -> list[dict]:
         if parent_block is None and isinstance(raw.get("direction_filter"), dict):
             parent_block = raw["direction_filter"].get("block")
 
-        entry_condition = raw.get("entry_condition") or _condition(
-            f"{trigger_tf}.vortex_cross_up_{vortex_period}", ">", 0
-        )
-        direction_condition = raw.get("direction_condition") or _condition(
-            f"{trigger_tf}.vortex_dir_{vortex_period}", "==", 1
-        )
+        # Defaults Vortex espejados por dirección.
+        if direction == "long":
+            default_entry = _condition(f"{trigger_tf}.vortex_cross_up_{vortex_period}", ">", 0)
+            default_dir = _condition(f"{trigger_tf}.vortex_dir_{vortex_period}", "==", 1)
+            dir_value = 1
+        else:
+            default_entry = _condition(f"{trigger_tf}.vortex_cross_down_{vortex_period}", ">", 0)
+            default_dir = _condition(f"{trigger_tf}.vortex_dir_{vortex_period}", "==", -1)
+            dir_value = -1
+
+        entry_condition = raw.get("entry_condition") or default_entry
+        direction_condition = raw.get("direction_condition") or default_dir
 
         tiers = raw.get("tiers")
         if not tiers:
@@ -413,7 +250,7 @@ def _normalize_blocks(config: dict) -> list[dict]:
             for tier_index, risk_pct in enumerate(risk_tiers):
                 tf = tier_timeframes[min(tier_index, len(tier_timeframes) - 1)]
                 condition = entry_condition if tier_index == 0 else _condition(
-                    f"{tf}.vortex_dir_{vortex_period}", "==", 1
+                    f"{tf}.vortex_dir_{vortex_period}", "==", dir_value
                 )
                 tiers.append({
                     "id": f"tier{tier_index + 1}",
@@ -426,6 +263,7 @@ def _normalize_blocks(config: dict) -> list[dict]:
 
         normalized.append({
             "id": block_id,
+            "direction": direction,
             "trigger_timeframe": trigger_tf,
             "confirm_timeframes": confirm_tfs,
             "parent_block": str(parent_block).strip() if parent_block else None,
@@ -468,7 +306,7 @@ def _dedupe_indicators(indicators: list[dict]) -> list[dict]:
     out = []
     seen = set()
     for ind in indicators:
-        key = (ind["id"], ind["timeframe"], int(ind["params"]["period"]))
+        key = (ind["id"], ind["timeframe"], json.dumps(ind["params"], sort_keys=True))
         if key in seen:
             continue
         seen.add(key)
@@ -487,17 +325,35 @@ def _ensure_block_indicators(config: dict) -> None:
 
 
 def _make_indicator(ind_id: str, timeframe: str, period: int) -> dict:
+    params = {"period": int(period)}
     return {
         "id": ind_id,
         "timeframe": timeframe,
-        "params": {"period": int(period)},
-        "columns": _indicator_columns(ind_id, int(period)),
+        "params": params,
+        "columns": ind_registry.indicator_columns(ind_id, params),
         "pre_computed": False,
     }
 
 
+def _collect_condition_timeframes(node, default_tf: str) -> set[str]:
+    out: set[str] = set()
+    if not isinstance(node, dict):
+        return out
+    if str(node.get("type") or "").upper() == "CONDITION":
+        for ref in (node.get("left"), node.get("right")):
+            if isinstance(ref, str) and "." in ref:
+                out.add(_valid_tf(ref.split(".", 1)[0]))
+            elif isinstance(ref, dict):
+                out.add(_valid_tf(ref.get("timeframe") or ref.get("frame") or default_tf))
+        return out
+    for child in node.get("children") or []:
+        out |= _collect_condition_timeframes(child, default_tf)
+    return out
+
+
 def _collect_timeframes(config: dict) -> set[str]:
-    labels = {config["primary_timeframe"]}
+    primary = config["primary_timeframe"]
+    labels = {primary}
     for frame in config.get("frames") or []:
         labels.add(_valid_tf(frame.get("timeframe") if isinstance(frame, dict) else frame))
     for ind in config.get("indicators") or []:
@@ -506,6 +362,13 @@ def _collect_timeframes(config: dict) -> set[str]:
         labels.add(_valid_tf(block["trigger_timeframe"]))
         for tf in block.get("confirm_timeframes") or []:
             labels.add(_valid_tf(tf))
+        for node in (block.get("entry_condition"), block.get("direction_condition")):
+            labels |= _collect_condition_timeframes(node, primary)
+        for tier in block.get("tiers") or []:
+            labels |= _collect_condition_timeframes(tier.get("condition"), primary)
+    for node in (config.get("buy_condition"), config.get("sell_condition")):
+        if node:
+            labels |= _collect_condition_timeframes(node, primary)
     return labels
 
 
@@ -596,3 +459,237 @@ def _validate_parent_graph(blocks: list[dict]) -> None:
             if current in seen:
                 raise ValidationError(f"Cycle detected in block direction filters at '{block_id}'.")
             seen.add(current)
+
+
+# ---------------------------------------------------------------------------
+# Codegen
+# ---------------------------------------------------------------------------
+
+_RUNTIME_EVAL_TEMPLATE = '''\
+def _parse_ref(ref):
+    if isinstance(ref, dict):
+        return ref.get("timeframe") or ref.get("frame") or TIMEFRAME, ref.get("column"), int(ref.get("shift") or 2)
+    if isinstance(ref, str):
+        if "." in ref:
+            timeframe, column = ref.split(".", 1)
+        else:
+            timeframe, column = TIMEFRAME, ref
+        return timeframe, column, 2
+    return None, None, 2
+
+
+def _get_value(ref, frames):
+    if isinstance(ref, (int, float, bool)):
+        return ref
+    timeframe, column, shift = _parse_ref(ref)
+    if not timeframe or not column:
+        return None
+    df = frames.get(timeframe)
+    if not isinstance(df, pd.DataFrame) or column not in df.columns or len(df) < shift:
+        return None
+    value = df.iloc[-shift][column]
+    try:
+        if pd.isna(value):
+            return None
+    except TypeError:
+        pass
+    return value
+
+
+def _compare(left, op, right) -> bool:
+    if left is None or right is None:
+        return False
+    if op == ">":
+        return left > right
+    if op == "<":
+        return left < right
+    if op == ">=":
+        return left >= right
+    if op == "<=":
+        return left <= right
+    if op == "==":
+        return left == right
+    if op == "!=":
+        return left != right
+    return False
+
+
+def _eval_condition_tree(node, frames) -> bool:
+    if not isinstance(node, dict):
+        return False
+    node_type = str(node.get("type") or "").upper()
+    if node_type == "CONDITION":
+        return _compare(_get_value(node.get("left"), frames), node.get("op"), _get_value(node.get("right"), frames))
+    children = node.get("children") or []
+    if node_type == "AND":
+        return all(_eval_condition_tree(child, frames) for child in children)
+    if node_type == "OR":
+        return any(_eval_condition_tree(child, frames) for child in children)
+    return False'''
+
+_FRAMES_TEMPLATE = '''\
+def prepare_frames(frames: dict) -> dict:
+    out = {}
+    for timeframe in REQUIRED_TIMEFRAMES:
+        df = frames.get(timeframe)
+        if isinstance(df, pd.DataFrame):
+            out[timeframe] = _prepare_frame(df, timeframe)
+    return out
+
+
+def prepare_dataframe(df: pd.DataFrame) -> pd.DataFrame:
+    return prepare_frames({TIMEFRAME: df}).get(TIMEFRAME, df)'''
+
+_BLOCKS_PAYLOAD_TEMPLATE = '''\
+def _block_by_id(block_id: str):
+    for block in MTF_CONFIG.get("blocks", []):
+        if block.get("id") == block_id:
+            return block
+    return None
+
+
+def _block_direction_active(block, frames) -> bool:
+    return _eval_condition_tree(block.get("direction_condition"), frames)
+
+
+def _parent_allows(block, frames) -> bool:
+    parent_id = block.get("parent_block")
+    if not parent_id:
+        return True
+    parent = _block_by_id(parent_id)
+    return bool(parent and _block_direction_active(parent, frames))
+
+
+def get_last_signal_payload_mtf(frames: dict, verbose: bool = False, params=None) -> dict:
+    prepared = prepare_frames(frames or {})
+    for block in MTF_CONFIG.get("blocks", []):
+        if not _parent_allows(block, prepared):
+            continue
+        signal = "sell" if block.get("direction") == "short" else "buy"
+        tiers = block.get("tiers") or []
+        for tier in tiers:
+            if not _eval_condition_tree(tier.get("condition"), prepared):
+                continue
+            atr_value = _get_value(block.get("atr_ref"), prepared)
+            try:
+                atr_value = float(atr_value or 0.0)
+            except (TypeError, ValueError):
+                atr_value = 0.0
+            if atr_value <= 0:
+                continue
+            sl_atr_mult = float(block.get("sl_atr_mult") or 1.0)
+            tp_rr = float(block.get("tp_rr") or 2.0)
+            return {
+                "signal": signal,
+                "reason": f"{block.get('id')}/{tier.get('id')} MTF condition met",
+                "pyramiding": True,
+                "atr_value": atr_value,
+                "sl_atr_mult": sl_atr_mult,
+                "tp_atr_mult": sl_atr_mult * tp_rr,
+                "pyramid_atr_mult": float(block.get("pyramid_atr_mult") or 0.5),
+                "risk_pct": float(tier.get("risk_pct") or 0.0),
+                "entry_index": int(tier.get("entry_index") or 0),
+                "max_entries": int(block.get("max_entries") or len(tiers) or 1),
+                "block_id": str(block.get("id") or ""),
+                "tier_id": str(tier.get("id") or ""),
+            }
+    return {"signal": "none", "reason": "MTF: no block signal"}'''
+
+_RULES_PAYLOAD_TEMPLATE = '''\
+def get_last_signal_payload_mtf(frames: dict, verbose: bool = False, params=None) -> dict:
+    prepared = prepare_frames(frames or {})
+    if _eval_condition_tree(MTF_CONFIG.get("buy_condition"), prepared):
+        return {"signal": "buy", "reason": f"{DISPLAY_NAME}: buy condition met"}
+    if _eval_condition_tree(MTF_CONFIG.get("sell_condition"), prepared):
+        return {"signal": "sell", "reason": f"{DISPLAY_NAME}: sell condition met"}
+    return {"signal": "none", "reason": f"{DISPLAY_NAME}: no signal"}'''
+
+_TAIL_TEMPLATE = '''\
+def get_last_signal_payload(df: pd.DataFrame, verbose: bool = False, params=None) -> dict:
+    return get_last_signal_payload_mtf({TIMEFRAME: df}, verbose=verbose, params=params)
+
+
+def get_last_signal(df: pd.DataFrame, verbose: bool = False) -> str:
+    return get_last_signal_payload(df, verbose=verbose).get("signal", "none")'''
+
+
+def _emit_prepare_frame(config: dict) -> str:
+    """Genera _prepare_frame con un branch por timeframe que computa sus indicadores."""
+    by_tf: dict[str, list[dict]] = {}
+    for ind in config["indicators"]:
+        by_tf.setdefault(ind["timeframe"], []).append(ind)
+
+    needs_volume = "volume" in ind_registry.needed_series(config["indicators"])
+
+    lines = [
+        "def _prepare_frame(df: pd.DataFrame, timeframe: str) -> pd.DataFrame:",
+        "    out = df.copy()",
+        '    if not {"high", "low", "close"}.issubset(out.columns):',
+        "        return out",
+        '    close = _numeric(out, "close")',
+        '    high  = _numeric(out, "high")',
+        '    low   = _numeric(out, "low")',
+    ]
+    if needs_volume:
+        lines.append("    volume = _volume_series(out)")
+    lines += [
+        '    out["OHLC4"] = (_numeric(out, "open") + high + low + close) / 4.0',
+        '    out["HLC3"]  = (high + low + close) / 3.0',
+        '    out["HL2"]   = (high + low) / 2.0',
+    ]
+    for tf in sorted(by_tf, key=lambda t: TIMEFRAME_MINUTES[t]):
+        lines.append(f'    if timeframe == "{tf}":')
+        for ind in by_tf[tf]:
+            for compute_line in ind_registry.compute_lines(ind["id"], ind["params"]):
+                lines.append("    " + compute_line)
+            for col in ind["columns"]:
+                lines.append(f'        out["{col}"] = {col}')
+    lines.append("    return out")
+    return "\n".join(lines)
+
+
+def render_mtf_strategy_source(config: dict) -> str:
+    render_config = copy.deepcopy(config)
+    validate_mtf_strategy_config(render_config, is_new=False, strategies_dir=Path("__builder_render__"))
+    config_repr = pprint.pformat(render_config, width=100, sort_dicts=False)
+    required = sorted(_collect_timeframes(render_config), key=lambda tf: TIMEFRAME_MINUTES[tf])
+    display_name = str(render_config["display_name"]).replace('"', '\\"')
+
+    header = (
+        '"""\n'
+        "Generated by Strategy Builder v2 (multi-timeframe).\n"
+        '"""\n\n'
+        "import pandas as pd\n\n"
+        "SCHEMA_VERSION = 2\n"
+        'MODE = "multi_timeframe"\n'
+        f'STRATEGY_TYPE = "{render_config["strategy_type"]}"\n'
+        f'DISPLAY_NAME = "{display_name}"\n'
+        f'TIMEFRAME = "{render_config["primary_timeframe"]}"\n'
+        "PRIMARY_TIMEFRAME = TIMEFRAME\n"
+        f"REQUIRED_TIMEFRAMES = {required!r}\n"
+        f"MAGIC_NUMBER = {int(render_config['magic_number'])}\n"
+        "PARAMS = {}\n"
+        "OBJECT_TREE_ITEMS = []\n"
+        "DATA_WINDOW_FIELDS = []\n"
+        f"MTF_CONFIG = {config_repr}"
+    )
+
+    helpers = "\n\n".join(ind_registry.helpers_for(render_config["indicators"]))
+    payload = _BLOCKS_PAYLOAD_TEMPLATE if render_config["strategy_type"] == "blocks" else _RULES_PAYLOAD_TEMPLATE
+
+    sections = [
+        header,
+        helpers,
+        _emit_prepare_frame(render_config),
+        _FRAMES_TEMPLATE,
+        _RUNTIME_EVAL_TEMPLATE,
+        payload,
+        _TAIL_TEMPLATE,
+    ]
+    source = "\n\n\n".join(sections) + "\n"
+
+    try:
+        ast.parse(source)
+    except SyntaxError as exc:
+        raise GeneratorError(f"Generated MTF code failed ast.parse: {exc}") from exc
+    return source

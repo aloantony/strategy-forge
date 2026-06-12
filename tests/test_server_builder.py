@@ -76,7 +76,10 @@ def test_builder_meta(client):
     assert {o["op"] for o in meta["operators"]} == {"<", ">", "<=", ">=", "==", "!="}
     assert "H1" in meta["timeframes"]
     assert any(c["column"] == "close" for c in meta["base_columns"])
-    assert meta["mtf"]["indicator_ids"] == ["ATR", "VORTEX"]
+    mtf_ids = set(meta["mtf"]["indicator_ids"])
+    assert {"ATR", "VORTEX", "EMA", "RSI", "BB"} <= mtf_ids
+    assert not ({"HMA", "SUPERTREND", "TCI"} & mtf_ids)  # pre-computados: no en MTF
+    assert meta["mtf"]["rules_mode"] is True
     assert meta["max_group_depth"] == 4
 
 

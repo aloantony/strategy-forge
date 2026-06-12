@@ -668,6 +668,110 @@ def test_mtf_unqualified_refs_validate_against_primary():
     print("PASS test_mtf_unqualified_refs_validate_against_primary")
 
 
+def _mtf_minute_df(n=180):
+    idx = pd.date_range("2026-01-05 09:00", periods=n, freq="1min", tz="UTC")
+    # Deriva alcista con ruido: el RSI necesita velas bajistas para tener denominador.
+    np.random.seed(7)
+    close = pd.Series(100 + np.cumsum(np.random.randn(n) * 0.1 + 0.15))
+    return pd.DataFrame({
+        "time": idx,
+        "open": close,
+        "high": close + 0.5,
+        "low": close - 0.5,
+        "close": close,
+        "tick_volume": np.ones(n) * 100,
+    })
+
+
+def test_mtf_rules_mode_any_indicator():
+    """Modo reglas MTF: condiciones buy/sell con cualquier indicador por timeframe."""
+    config = {
+        "mode": "multi_timeframe",
+        "name": "mtf_rules",
+        "display_name": "MTF Rules",
+        "primary_timeframe": "M1",
+        "magic_number": 22222,
+        "indicators": [
+            {"id": "RSI", "params": {"period": 14}, "timeframe": "M2"},
+            {"id": "EMA", "params": {"period": 5}, "timeframe": "M1"},
+        ],
+        "buy_condition": {
+            "type": "AND",
+            "children": [
+                {"type": "condition", "left": "M2.rsi_14", "op": ">", "right": 0},
+                {"type": "condition", "left": "close", "op": ">", "right": "M1.ema_5"},
+            ],
+        },
+        "sell_condition": {"type": "condition", "left": "M2.rsi_14", "op": "<", "right": -1},
+    }
+    mod = build_strategy_module(config, module_name="mtf_rules_preview")
+    assert mod.STRATEGY_TYPE == "rules"
+    assert mod.REQUIRED_TIMEFRAMES == ["M1", "M2"]
+
+    df = _mtf_minute_df()
+    frames = strategy_runtime.build_timeframe_frames(df, mod.REQUIRED_TIMEFRAMES, base_timeframe="M1")
+    prepared = mod.prepare_frames(frames)
+    assert "ema_5" in prepared["M1"].columns
+    assert "rsi_14" in prepared["M2"].columns
+
+    payload = mod.get_last_signal_payload_mtf(frames)
+    assert payload["signal"] == "buy", payload  # serie alcista: rsi>0 y close>EMA
+    print("PASS test_mtf_rules_mode_any_indicator")
+
+
+def test_mtf_short_block_emits_sell():
+    """Bloques MTF con direction=short emiten signal sell con campos de riesgo."""
+    always_true = {"type": "condition", "left": "close", "op": ">", "right": 0}
+    config = {
+        "mode": "multi_timeframe",
+        "name": "mtf_short",
+        "display_name": "MTF Short",
+        "primary_timeframe": "M1",
+        "magic_number": 33333,
+        "indicators": [],
+        "blocks": [
+            {
+                "id": "bajista",
+                "direction": "short",
+                "trigger_timeframe": "M1",
+                "risk_tiers": [0.01, 0.005],
+                "entry_condition": always_true,
+                "direction_condition": always_true,
+            }
+        ],
+    }
+    mod = build_strategy_module(config, module_name="mtf_short_preview")
+    assert mod.MTF_CONFIG["blocks"][0]["direction"] == "short"
+
+    df = _mtf_minute_df()
+    frames = strategy_runtime.build_timeframe_frames(df, mod.REQUIRED_TIMEFRAMES, base_timeframe="M1")
+    payload = mod.get_last_signal_payload_mtf(frames)
+    assert payload["signal"] == "sell", payload
+    assert payload["risk_pct"] > 0 and payload["sl_atr_mult"] > 0 and payload["atr_value"] > 0
+    print("PASS test_mtf_short_block_emits_sell")
+
+
+def test_mtf_short_block_default_conditions_mirrored():
+    """Sin condiciones explícitas, un bloque corto usa cruces/dirección Vortex bajistas."""
+    from backend.strategy_builder.mtf_generator import validate_mtf_strategy_config
+    config = {
+        "schema_version": 2,
+        "mode": "multi_timeframe",
+        "name": "mtf_short_defaults",
+        "display_name": "MTF Short Defaults",
+        "primary_timeframe": "H1",
+        "magic_number": 44444,
+        "indicators": [],
+        "blocks": [{"id": "s", "direction": "short", "trigger_timeframe": "H1", "risk_tiers": [0.01]}],
+    }
+    with tempfile.TemporaryDirectory() as tmpdir:
+        validate_mtf_strategy_config(config, is_new=True, strategies_dir=Path(tmpdir))
+    block = config["blocks"][0]
+    assert block["entry_condition"]["left"] == "H1.vortex_cross_down_14"
+    assert block["direction_condition"]["right"] == -1
+    print("PASS test_mtf_short_block_default_conditions_mirrored")
+
+
 if __name__ == "__main__":
     test_canonical_example()
     test_round_trip()
