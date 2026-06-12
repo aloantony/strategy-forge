@@ -127,6 +127,7 @@ class IBrokerAdapter(ABC):
         pyramid_atr_mult: float = 0.5,
         max_entries: Optional[int] = None,
         entry_index: Optional[int] = None,
+        direction: int = 1,
     ) -> Optional[dict]:
         ...
 

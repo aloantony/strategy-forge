@@ -132,12 +132,38 @@ class PaperBrokerAdapter(IBrokerAdapter):
                              strategy_key="", strategy_label="", signal_reason="",
                              balance=None, sl_atr_mult=1.0, tp_atr_mult=2.0,
                              pyramid_atr_mult=0.5, max_entries=None,
-                             entry_index=None) -> Optional[dict]:
-        result = self.send_order(symbol, 0, lot, magic_number, 0.0, 0.0,
+                             entry_index=None, direction=1) -> Optional[dict]:
+        # Espejo del comportamiento de trading.apply_pyramid_signal (sin riesgo agregado):
+        # entrada inicial o piramidada en la dirección indicada, SL/TP desde el ATR.
+        direction = 1 if int(direction or 1) >= 0 else -1
+        price = self._price(symbol)
+        if atr_value <= 0 or price <= 0:
+            return None
+
+        positions = self.get_open_positions(symbol, magic_number)
+        if max_entries is not None and max_entries > 0 and len(positions) >= max_entries:
+            return None
+        if entry_index is not None and entry_index >= 0 and len(positions) != entry_index:
+            return None
+        if positions:
+            most_recent = positions[-1]
+            if most_recent["direction"] != direction:
+                return None
+            threshold = most_recent["price_open"] + direction * (float(pyramid_atr_mult or 0.5) * atr_value)
+            if direction == 1 and price < threshold:
+                return None
+            if direction == -1 and price > threshold:
+                return None
+
+        sl_price = price - direction * (float(sl_atr_mult or 1.0) * atr_value)
+        tp_price = price + direction * (float(tp_atr_mult or 2.0) * atr_value)
+        result = self.send_order(symbol, 0 if direction == 1 else 1, lot, magic_number,
+                                 sl_price, tp_price,
                                  strategy_key=strategy_key, signal_reason=signal_reason)
-        return {"symbol": symbol, "signal": "buy", "strategy": strategy_key,
+        return {"symbol": symbol, "signal": "buy" if direction == 1 else "sell",
+                "strategy": strategy_key, "pyramid": True,
                 "actions": [{"kind": "pyramid_open", "success": result.success,
-                             "ticket": result.order_id}]}
+                             "ticket": result.order_id, "price": result.price}]}
 
     def _current_direction(self, symbol: str, magic: int) -> int:
         with self._lock:

@@ -93,7 +93,6 @@ flowchart LR
 - `gui_charts.py` concentra demasiadas responsabilidades; esta congelado como frontend legacy (el cliente de referencia es `frontend/web/`).
 - `backend/brokers/mt5/trading.py` sigue siendo una capa legacy importante aunque `MT5BrokerAdapter` lo encapsula parcialmente.
 - `backend/main.py` (loop en vivo) sigue acoplado a MT5; la ruta broker-agnostica es el server + `IBrokerAdapter`.
-- La ruta v1/plan-executor ejecuta planes con SL/TP fijos de defaults: los campos avanzados del payload (ATR, tramos de riesgo) solo se respetan en la ruta legacy directa y en backtest.
 - El bloque PARAMS de las estrategias generadas es declarativo (overrides .params.json sin efecto); cambiar parametros = re-guardar con el Builder.
 - Algunas specs historicas en `agents/specs/` reflejan decisiones previas; antes de implementar se debe contrastar con codigo actual.
 - La documentacion vieja y nueva deben convivir hasta que se haga una consolidacion explicita.

@@ -23,10 +23,36 @@ def _normalize_signal(value) -> str:
     return signal if signal in {"buy", "sell", "none"} else "none"
 
 
+def _float(value, default=0.0) -> float:
+    try:
+        return float(value) if value is not None else default
+    except (TypeError, ValueError):
+        return default
+
+
+def _int_or_none(value):
+    try:
+        return int(value) if value is not None else None
+    except (TypeError, ValueError):
+        return None
+
+
 def _extract_signal_payload(raw) -> dict:
-    """Normaliza la salida legacy a {signal, reason}."""
+    """Normaliza la salida legacy a {signal, reason} + campos avanzados (ATR/riesgo)."""
     signal_raw = raw
     reason_raw = ""
+    advanced = {
+        "pyramiding": False,
+        "atr_value": 0.0,
+        "sl_atr_mult": 1.0,
+        "tp_atr_mult": 2.0,
+        "pyramid_atr_mult": 0.5,
+        "risk_pct": 0.0,
+        "entry_index": None,
+        "max_entries": None,
+        "block_id": "",
+        "tier_id": "",
+    }
 
     if isinstance(raw, dict):
         signal_raw = (
@@ -37,6 +63,16 @@ def _extract_signal_payload(raw) -> dict:
             raw.get("reason") or raw.get("motivo") or
             raw.get("message") or raw.get("detail") or raw.get("why") or ""
         )
+        advanced["pyramiding"] = bool(raw.get("pyramiding"))
+        advanced["atr_value"] = _float(raw.get("atr_value"))
+        advanced["sl_atr_mult"] = _float(raw.get("sl_atr_mult"), 1.0)
+        advanced["tp_atr_mult"] = _float(raw.get("tp_atr_mult"), 2.0)
+        advanced["pyramid_atr_mult"] = _float(raw.get("pyramid_atr_mult"), 0.5)
+        advanced["risk_pct"] = _float(raw.get("risk_pct"))
+        advanced["entry_index"] = _int_or_none(raw.get("entry_index"))
+        advanced["max_entries"] = _int_or_none(raw.get("max_entries"))
+        advanced["block_id"] = str(raw.get("block_id") or "")
+        advanced["tier_id"] = str(raw.get("tier_id") or "")
     elif isinstance(raw, (tuple, list)):
         if len(raw) > 0:
             signal_raw = raw[0]
@@ -50,6 +86,7 @@ def _extract_signal_payload(raw) -> dict:
     return {
         "signal": _normalize_signal(signal_raw),
         "reason": reason,
+        **advanced,
     }
 
 
@@ -123,6 +160,134 @@ def _build_close_action(symbol: str, owned_side: str, reason: str) -> dict:
     }
 
 
+_AGGREGATE_RISK_LIMIT = 0.03  # paridad con trading.check_aggregate_risk
+
+
+def _open_legs(context: dict, side: str | None = None) -> list:
+    legs = [
+        leg for leg in context.get("execution", {}).get("owned_legs", [])
+        if leg.get("status") in ("open", "pending_open", "reducing")
+    ]
+    if side is not None:
+        legs = [leg for leg in legs if leg.get("side") == side]
+    return legs
+
+
+def _aggregate_risk_ok(context: dict, side: str, new_risk_money: float) -> bool:
+    """Riesgo agregado (legs abiertas del lado + nueva entrada) ≤ 3% del equity."""
+    equity = _float(context.get("account", {}).get("equity"))
+    if equity <= 0:
+        return False
+    instrument = context.get("instrument", {})
+    tick_size = _float(instrument.get("tick_size"))
+    tick_value = _float(instrument.get("tick_value"))
+    value_per_unit = (tick_value / tick_size) if tick_size > 0 and tick_value > 0 else 0.0
+
+    existing = 0.0
+    if value_per_unit > 0:
+        for leg in _open_legs(context, side):
+            sl = _float(leg.get("stop_loss"))
+            entry = _float(leg.get("avg_entry_price"))
+            volume = _float(leg.get("remaining_volume"))
+            if sl <= 0 or entry <= 0 or volume <= 0:
+                continue
+            distance = (entry - sl) if side == "long" else (sl - entry)
+            if distance > 0:
+                existing += volume * distance * value_per_unit
+
+    return (existing + max(new_risk_money, 0.0)) / equity <= _AGGREGATE_RISK_LIMIT
+
+
+def _build_advanced_actions(symbol: str, side: str, payload: dict, defaults: dict,
+                            context: dict, reason: str) -> list:
+    """
+    Traduce un payload avanzado (ATR + tramos de riesgo + piramidación) a acciones
+    del plan, replicando las reglas de la ruta legacy directa (apply_pyramid_signal):
+    gating por entry_index/max_entries, umbral de pirámide y límite de riesgo agregado.
+    """
+    atr_value = payload["atr_value"]
+    same = _open_legs(context, side)
+    opposite = [leg for leg in _open_legs(context) if leg.get("side") != side]
+    if opposite:
+        return []  # la vía avanzada no revierte: mantiene la posición contraria
+
+    n_open = len(same)
+    max_entries = payload["max_entries"]
+    if max_entries is not None and max_entries > 0 and n_open >= max_entries:
+        return []
+    entry_index = payload["entry_index"]
+    if entry_index is not None and entry_index >= 0 and n_open != entry_index:
+        return []
+
+    quote = context.get("market", {}).get("quote", {})
+    price = _float(quote.get("ask") if side == "long" else quote.get("bid")) or _float(quote.get("mid"))
+
+    if n_open > 0:
+        if price <= 0:
+            return []
+        last = max(same, key=lambda leg: str(leg.get("opened_at") or ""))
+        last_price = _float(last.get("avg_entry_price"))
+        sign = 1 if side == "long" else -1
+        threshold = last_price + sign * (payload["pyramid_atr_mult"] * atr_value)
+        if side == "long" and price < threshold:
+            return []
+        if side == "short" and price > threshold:
+            return []
+
+    point = _float(context.get("instrument", {}).get("point"))
+    if point > 0:
+        sl_points = payload["sl_atr_mult"] * atr_value / point
+        tp_points = payload["tp_atr_mult"] * atr_value / point
+    else:
+        sl_points = _float(defaults.get("sl_points"), 300.0)
+        tp_points = _float(defaults.get("tp_points"), 500.0)
+
+    equity = _float(context.get("account", {}).get("equity"))
+    risk_pct = payload["risk_pct"]
+    if risk_pct > 0 and sl_points > 0:
+        size_spec = {"mode": "risk_pct", "value": risk_pct * 100.0, "stop_points": sl_points}
+        new_risk_money = equity * risk_pct
+    else:
+        lot = _float(defaults.get("lot"), 0.01)
+        size_spec = {"mode": "fixed_lots", "value": lot}
+        instrument = context.get("instrument", {})
+        tick_size = _float(instrument.get("tick_size"))
+        tick_value = _float(instrument.get("tick_value"))
+        value_per_unit = (tick_value / tick_size) if tick_size > 0 and tick_value > 0 else 0.0
+        new_risk_money = lot * (payload["sl_atr_mult"] * atr_value) * value_per_unit
+
+    if not _aggregate_risk_ok(context, side, new_risk_money):
+        return []
+
+    group_spec = None
+    if n_open > 0:
+        last = max(same, key=lambda leg: str(leg.get("opened_at") or ""))
+        group_id = last.get("entry_group_id")
+        if group_id:
+            group_spec = {"mode": "existing_group", "target": {"mode": "by_id", "value": group_id}}
+
+    action = {
+        "action_id": _new_id(),
+        "type": "open_position" if n_open == 0 else "add_to_position",
+        "symbol": symbol,
+        "side": side,
+        "size_spec": size_spec,
+        "entry_spec": {"mode": "market"},
+        "stop_spec": {"mode": "price_offset", "points": sl_points},
+        "take_profit_spec": {"mode": "price_offset", "points": tp_points},
+        "reason": reason,
+        "tags": {
+            "entry_kind": "initial" if n_open == 0 else "pyramid",
+            "entry_index": n_open,
+            "block_id": payload["block_id"],
+            "tier_id": payload["tier_id"],
+        },
+    }
+    if group_spec:
+        action["group_spec"] = group_spec
+    return [action]
+
+
 class LegacyStrategyAdapter:
     """
     Adapta un módulo legacy al contrato v1 decide(context, state) -> dict.
@@ -184,8 +349,15 @@ class LegacyStrategyAdapter:
         # 3. Traducir señal a actions según doc 17
         owned_side = _get_owned_side(context)
         actions = []
+        advanced = signal in ("buy", "sell") and payload["pyramiding"] and payload["atr_value"] > 0
 
-        if signal == "buy":
+        if advanced:
+            # Vía avanzada: tamaño por % de riesgo, SL/TP desde el ATR y piramidación
+            # con gating — fiel a la ruta legacy directa y al backtest.
+            side = "long" if signal == "buy" else "short"
+            actions = _build_advanced_actions(symbol, side, payload, defaults, context, reason)
+
+        elif signal == "buy":
             if owned_side == "long":
                 pass  # ya long → no-op
             elif owned_side == "short":
@@ -216,7 +388,7 @@ class LegacyStrategyAdapter:
                 "origin": "legacy_adapter",
                 "legacy_signal": signal,
                 "legacy_reason": reason,
-                "compat_mode": "signal_translation",
+                "compat_mode": "advanced_translation" if advanced else "signal_translation",
             },
         }
 

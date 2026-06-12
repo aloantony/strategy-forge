@@ -186,7 +186,7 @@ class MT5BrokerAdapter(IBrokerAdapter):
     def apply_pyramid_signal(self, symbol, magic_number, atr_value, lot,
                               strategy_key="", strategy_label="", signal_reason="", balance=None,
                               sl_atr_mult=1.0, tp_atr_mult=2.0, pyramid_atr_mult=0.5,
-                              max_entries=None, entry_index=None):
+                              max_entries=None, entry_index=None, direction=1):
         return trading.apply_pyramid_signal(
             symbol=symbol,
             magic_number=magic_number,
@@ -201,6 +201,7 @@ class MT5BrokerAdapter(IBrokerAdapter):
             pyramid_atr_mult=pyramid_atr_mult,
             max_entries=max_entries,
             entry_index=entry_index,
+            direction=direction,
         )
 
     def is_market_open(self, symbol):
