@@ -1,99 +1,166 @@
-# Trading Agent MT5
+# Trading Agent
 
-Bot de trading modular para MetaTrader 5 con interfaz visual estilo TradingView y soporte para estrategias enchufables.
+Bot de trading multiestrategia con arquitectura broker-agnóstica, constructor visual de
+estrategias, backtesting y tres frontends (GUI de escritorio, web y API REST).
 
-## Qué puedes hacer con este proyecto
+> [!WARNING]
+> **Software experimental, para investigación y aprendizaje.** Operar con dinero real es bajo
+> tu propia responsabilidad. Nada de este repositorio constituye asesoramiento financiero.
+> Prueba siempre primero en cuenta demo o con el broker de papel.
 
-- Operar desde una GUI clara y rápida.
-- Ejecutar varias estrategias a la vez.
-- Activar/desactivar estrategias sin reiniciar.
-- Añadir nuevas estrategias como módulos Python independientes.
+---
 
-## Flujo general
+## Qué es
+
+Un sistema que ejecuta varias estrategias de trading a la vez, cada una con su propio
+timeframe, y envía las órdenes al broker de forma automática. Las estrategias son módulos
+Python independientes: puedes escribirlas a mano o generarlas desde un asistente visual sin
+tocar código.
+
+El núcleo no depende de ningún broker concreto. MetaTrader 5 es un adaptador opcional (solo
+Windows); un adaptador `paper` en memoria permite ejecutar todo el sistema en Linux o en un
+servidor sin MT5.
+
+### Características
+
+- **Multiestrategia concurrente** — varias estrategias en paralelo, cada una con su timeframe,
+  su magic number y su propio ciclo de análisis.
+- **Strategy Builder** — asistente visual que genera el `.py` de la estrategia a partir de un
+  árbol de condiciones. Soporta multi-timeframe (MTF), largos y cortos, niveles de riesgo,
+  SL/TP por ATR y pyramiding.
+- **13 indicadores** en un registry único: `SMA`, `EMA`, `HMA`, `RSI`, `ATR`, `BB`, `ADX_DI`,
+  `DONCHIAN`, `SUPERTREND`, `TCI`, `VORTEX`, `VWAP`, `VOLUME_RATIO`.
+- **Backtesting alineado con el runtime en vivo** — mismo motor de señales, para que lo que
+  pruebas sea lo que ejecutas. Datos históricos de MT5, Dukascopy o ficheros locales.
+- **Persistencia SQLite** — planes, execution reports, legs, fills y event log.
+- **Tres frontends** sobre el mismo backend: GUI de escritorio estilo TradingView, web UI
+  minimalista y API REST + WebSocket.
+
+---
+
+## Arquitectura
 
 ```mermaid
-flowchart LR
-    A[MetaTrader 5 conectado] --> B[Trading Agent GUI]
-    B --> S[Application services]
-    S --> C[Estrategias activas]
-    C --> D[Señal / plan]
-    D --> E[Ejecución en MT5]
+flowchart TD
+    GUI["GUI escritorio<br/>gui_charts.py"] --> APP
+    WEB["Web UI<br/>frontend/web/"] --> SRV["API REST + WS<br/>server/"]
+    CLI["Headless / CLI<br/>backend.main"] --> APP
+    SRV --> APP["Servicios de aplicación<br/>backend/application/"]
+    APP --> RT["Runtimes<br/>backend/runtime/ · backend/backtesting/ · backend/strategy/"]
+    RT --> AD["Adaptadores<br/>backend/brokers/ · backend/data/"]
+    AD --> EXT["MT5 (opcional) · Dukascopy · SQLite"]
 ```
 
-La GUI es la entrada visual, pero la lógica de proceso debe vivir en servicios reutilizables bajo `src/application/` y en los runtimes de `main.py`, `backtesting/` y `src/runtime/`.
+Regla dura del proyecto: `backend/core`, `backend/application`, `backend/runtime` y `server/`
+**no importan MT5 directamente**, solo a través de `IBrokerAdapter` / `IHistoricalDataSource`.
+El código de MT5 vive aislado en `backend/brokers/mt5/` y `backend/data/mt5_*`. Hay un test
+(`tests/test_backend_no_mt5.py`) que lo verifica.
 
-> [!IMPORTANT]
-> Abre MetaTrader 5 y deja la cuenta conectada antes de lanzar el bot.
+| Directorio | Responsabilidad |
+| --- | --- |
+| `backend/core/` | Configuración central: símbolo, lotaje, SL/TP, estrategias activas. |
+| `backend/application/` | Servicios de proceso compartidos por todos los frontends. |
+| `backend/runtime/` | Pipeline v1: context builder, state store, plan interpreter, execution engine. |
+| `backend/backtesting/` | Motor de backtesting y su CLI. |
+| `backend/brokers/` | `IBrokerAdapter`, factory, broker de papel y adaptador MT5. |
+| `backend/data/` | Fuentes de datos históricas y en vivo, indicadores derivados. |
+| `backend/strategy_builder/` | Registry de indicadores y generadores de estrategias. |
+| `backend/persistence/` | Esquema SQLite, migraciones y repositorios. |
+| `server/` | API FastAPI (REST + WebSocket) y servido de la web UI. |
+| `frontend/web/` | Web UI y wizard del Strategy Builder. |
+| `strategies/` | Estrategias como módulos Python independientes. |
 
-## Inicio rápido en 5 pasos (GUI)
+---
 
-1. Clona el repositorio y entra en la carpeta del proyecto.
-2. Instala dependencias:
+## Instalación
+
+Requiere **Python 3.9+**.
 
 ```bash
-pip install -r requirements.txt
+git clone https://github.com/aloantony/trading-agent.git
 ```
 
-3. Ajusta `config.py` con tus parámetros básicos:
-   - `SYMBOL`
-   - `LOT`
-   - `SL_POINTS` y `TP_POINTS`
-   - `STRATEGY_KEY`, `STRATEGY_MODULE`, `ACTIVE_STRATEGIES` (opcional)
-   - Si ejecutas muchas estrategias en vivo: `STRATEGY_MAX_WORKERS`, `STRATEGY_ANALYSIS_TIMEOUT_SECONDS`, `MAX_ORDERS_PER_ITERATION`
-4. Inicia la interfaz:
+```bash
+cd trading-agent && python install.py
+```
+
+`install.py` instala las dependencias y te indica qué está disponible en tu plataforma. Si
+prefieres hacerlo a mano, `pip install -r requirements.txt`.
+
+En Linux, la GUI de escritorio necesita además `libwebkit2gtk` del sistema. Si solo vas a usar
+el servidor y la web UI, no hace falta.
+
+---
+
+## Puesta en marcha
+
+### Opción A — Servidor + web UI (cualquier plataforma)
+
+Es la vía recomendada para probar el sistema sin MT5:
+
+```bash
+TRADING_BROKER=paper uvicorn server.app:app --host 0.0.0.0 --port 8000
+```
+
+Abre `http://localhost:8000/`. Desde ahí puedes ver el gráfico, gestionar estrategias y usar el
+wizard del Strategy Builder.
+
+### Opción B — GUI de escritorio (Windows + MT5)
+
+Abre MetaTrader 5 y deja la cuenta conectada. Después:
 
 ```bash
 python gui_charts.py
 ```
 
-5. En la pestaña `Estrategias`, usa `Iniciar motor` para comenzar la ejecución automática.
+En la pestaña `Estrategias`, activa las que quieras y pulsa `Iniciar motor`.
 
-## Cómo usar la interfaz (mapa rápido)
+### Opción C — Headless
 
-| Acción | Dónde hacerlo |
-| --- | --- |
-| Iniciar o detener ejecución | `Estrategias` > `Iniciar motor` / `Detener motor` |
-| Activar o desactivar una estrategia | `Estrategias` > botón `Activa` / `Inactiva` |
-| Seleccionar qué estrategia visualizar | `Estrategias` > click en la estrategia |
-| Mostrar/ocultar indicadores | `Object Tree` |
-| Ver datos de vela e info de operaciones | `Data Window` |
-| Cambiar periodo visible del gráfico | Barra inferior (`1D`, `5D`, `1M`, etc.) |
+```bash
+python -m backend.main
+```
 
-## Crear una estrategia nueva (desde cero)
+### Backtesting desde CLI
 
-Guía completa: `strategies/README.md`  
-A continuación tienes el camino corto para arrancar rápido.
+```bash
+python -m backend.backtesting runtime --help
+```
 
-### 1) Crea tu módulo
+---
 
-Archivo recomendado:
+## Configuración
 
-- `strategies/mi_estrategia.py`
+Los parámetros operativos viven en `backend/core/config.py`:
 
-### 2) Implementa la API mínima obligatoria
+```python
+SYMBOL = "#Germany40"   # DAX. El prefijo varía según el broker
+LOT = 0.01
+SL_POINTS = 300.0
+TP_POINTS = 500.0
+ACTIVE_STRATEGIES = []  # Estrategias que arrancan activas
+STRATEGY_MAX_WORKERS = 8
+```
 
-Tu módulo debe exponer al menos `get_last_signal(df, verbose=False) -> str` y devolver:
+El broker se elige con la variable de entorno `TRADING_BROKER` (`mt5`, `paper` o `auto`), que
+tiene prioridad sobre `config.BROKER`. Con `auto` usa MT5 si está disponible y `paper` si no.
 
-- `"buy"`
-- `"sell"`
-- `"none"`
+---
 
-Opcional (recomendado si quieres ver el motivo de señal en GUI/tooltip):
+## Escribir una estrategia
 
-- `get_last_signal_payload(df, verbose=False) -> dict`
-- Formato sugerido: `{"signal": "buy"|"sell"|"none", "reason": "texto corto"}`
-
-Plantilla mínima:
+Una estrategia es un módulo en `strategies/` que expone una función. El contrato mínimo:
 
 ```python
 import pandas as pd
 
-TIMEFRAME = "M1"  # opcional, pero recomendado
+TIMEFRAME = "M1"  # opcional: timeframe propio de la estrategia
 
 def get_last_signal(df: pd.DataFrame, verbose: bool = False) -> str:
+    """Devuelve "buy", "sell" o "none"."""
     if len(df) < 2:
         return "none"
-    row = df.iloc[-2]  # vela cerrada
+    row = df.iloc[-2]          # siempre la última vela CERRADA
     if row["close"] > row["open"]:
         return "buy"
     if row["close"] < row["open"]:
@@ -101,55 +168,50 @@ def get_last_signal(df: pd.DataFrame, verbose: bool = False) -> str:
     return "none"
 ```
 
-### 3) Actívala por `config.py` (opción estable)
+Opcional pero recomendado:
 
-Configura:
+| Función | Para qué sirve |
+| --- | --- |
+| `get_last_signal_payload(df, verbose)` | Devuelve `{"signal": ..., "reason": ...}` y el motivo aparece en la GUI. |
+| `prepare_dataframe(df)` | Añade columnas de indicadores propios. |
+| `compute_signals(df, enable_signals)` | Añade `up_sig` / `dn_sig` para pintar marcadores. |
+| `DATA_WINDOW_FIELDS` | Define qué mostrar en el Data Window de la GUI. |
+| `MAGIC_NUMBER` | Fuerza un magic number en lugar del generado automáticamente. |
 
-```python
-STRATEGY_KEY = "mi_estrategia"
-STRATEGY_MODULE = "strategies.mi_estrategia"
-ACTIVE_STRATEGIES = [STRATEGY_KEY]
-```
+**Las estrategias están aisladas a propósito**: no deben importar `config`, la GUI ni nada del
+backend. Reciben un DataFrame ya preparado y devuelven señales. Sin IO, sin conexiones, sin
+efectos secundarios.
 
-### 4) O añádela desde la GUI (sin tocar config)
+Guía completa en [`strategies/README.md`](strategies/README.md).
 
-En la pestaña `Estrategias`:
+---
 
-1. Pulsa `Añadir estrategia`.
-2. Escribe nombre + módulo (ejemplo: `strategies.mi_estrategia`) y confirma.
-3. Alternativa: arrastra tu archivo `.py` a la zona de carga.
-
-## Reglas recomendadas para estrategias
-
-- Mantén la estrategia desacoplada del resto del proyecto.
-- Evita importar `config`, `data_feed`, `trading`, `mt5_connection` o la GUI.
-- Usa efectos secundarios mínimos (sin IO ni conexiones dentro de la estrategia).
-
-## Estrategias incluidas
-
-- `strategies.strategy_primera_estrategia`
-
-## Modo consola (opcional, sin GUI)
-
-También puedes ejecutar el bot en modo script:
+## Tests
 
 ```bash
-python main.py
+python -m pytest tests -q
 ```
 
-## Documentación para developers
+---
 
-La documentación técnica vive en `docs/DocsTradingSystemObsidian/`:
+## Documentación
 
-- arquitectura y diagramas: `docs/DocsTradingSystemObsidian/architecture/`
-- diseño por subsistema: `docs/DocsTradingSystemObsidian/design/`
-- roles de agentes y cómo pedir correcciones: `docs/DocsTradingSystemObsidian/agents/`
+La documentación técnica está en [`docs/`](docs/):
 
-Regla arquitectónica actual: nuevas funcionalidades de proceso deben ir primero a servicios de aplicación reutilizables, y la GUI debe limitarse a presentar estado y capturar intención del usuario.
+- [`docs/wiki/`](docs/wiki/) — wiki HTML navegable, reconstruida verificando el código fuente.
+- [`docs/DocsTradingSystemObsidian/`](docs/DocsTradingSystemObsidian/README.md) — vault de
+  análisis, arquitectura (con diagramas C4) y diseño por subsistema.
+- [`docs/DocsTradingSystemObsidian/00-system-map.md`](docs/DocsTradingSystemObsidian/00-system-map.md)
+  — el mejor punto de entrada: el sistema entero en 15 minutos.
 
-## Recomendaciones de seguridad
+---
 
-- Prueba primero en cuenta demo.
-- Empieza con lotaje bajo.
-- Verifica símbolo y horario de mercado antes de operar en real.
-- No ejecutes en real sin revisar el `SYMBOL`, el lote y los stops de `config.py`.
+## Estado del proyecto
+
+En desarrollo activo. La GUI de escritorio (`gui_charts.py`) está congelada a la espera de
+dividirse en `frontend/desktop/`; el desarrollo nuevo va al backend, al servidor y a la web UI.
+MT5 se mantiene como adaptador opcional, pero la dirección del proyecto es poder correr sin él.
+
+## Licencia
+
+[GPL-3.0](LICENSE). Los trabajos derivados deben publicarse también bajo GPL-3.0.

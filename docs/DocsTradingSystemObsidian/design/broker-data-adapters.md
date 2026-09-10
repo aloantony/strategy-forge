@@ -1,15 +1,15 @@
 ---
 title: Broker And Data Adapter Design
 status: draft
-audience: developers, agents
+audience: developers
 last_reviewed: 2026-04-27
 sources:
-  - ../../../src/broker/interface.py
-  - ../../../src/broker/mt5_adapter.py
-  - ../../../src/data/interface.py
-  - ../../../src/data/factory.py
-  - ../../../src/data/symbols.json
-  - ../../../trading.py
+  - ../../../backend/broker/interface.py
+  - ../../../backend/broker/mt5_adapter.py
+  - ../../../backend/data/interface.py
+  - ../../../backend/data/factory.py
+  - ../../../backend/data/symbols.json
+  - ../../../backend/brokers/mt5/trading.py
 ---
 
 # Broker And Data Adapter Design
@@ -26,7 +26,7 @@ Separar el core del sistema de proveedores concretos. MT5 es la implementacion a
 - Senales de alto nivel legacy: `apply_signal`, `apply_pyramid_signal`.
 - Estado: mercado abierto, posiciones, cuenta e instrumento.
 
-`MT5BrokerAdapter` traduce esas llamadas a MT5 y helpers de `trading.py`.
+`MT5BrokerAdapter` traduce esas llamadas a MT5 y helpers de `backend/brokers/mt5/trading.py`.
 
 ## Data Interfaces
 
@@ -36,7 +36,7 @@ Separar el core del sistema de proveedores concretos. MT5 es la implementacion a
 
 ## Symbol Mapping
 
-`src/data/symbols.json` mapea simbolos canonicos con proveedores. Ejemplo conceptual:
+`backend/data/symbols.json` mapea simbolos canonicos con proveedores. Ejemplo conceptual:
 
 ```mermaid
 flowchart LR
@@ -70,6 +70,6 @@ Para anadir un broker:
 ## Reglas
 
 - Nuevos modulos de datos que toquen MT5 deben proteger import si aplica.
-- No usar `trading.py` desde codigo nuevo salvo que sea deliberado adapter legacy.
+- No usar `backend/brokers/mt5/trading.py` desde codigo nuevo salvo que sea deliberado adapter legacy.
 - No duplicar metadata de simbolo fuera de `symbols.json` o del broker.
 

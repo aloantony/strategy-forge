@@ -1,15 +1,15 @@
 ---
 title: Backtesting Architecture
 status: draft
-audience: developers, agents
+audience: developers
 last_reviewed: 2026-04-27
 sources:
-  - ../../../backtesting/FLUJO_BACKTESTING_ACTUAL.md
-  - ../../../src/application/backtest_service.py
-  - ../../../backtesting/runtime.py
-  - ../../../backtesting/cli.py
+  - ../../../backend/backtesting/FLUJO_BACKTESTING_ACTUAL.md
+  - ../../../backend/application/backtest_service.py
+  - ../../../backend/backtesting/runtime.py
+  - ../../../backend/backtesting/cli.py
   - ../../../gui_charts.py
-  - ../../../strategy_runtime.py
+  - ../../../backend/strategy/runtime.py
 ---
 
 # Backtesting Architecture
@@ -27,7 +27,7 @@ sequenceDiagram
   participant Req as BacktestRequest
   participant DS as IHistoricalDataSource
   participant Engine as BacktestEngine
-  participant SR as strategy_runtime
+  participant SR as backend.strategy.runtime
   participant Strategy as Strategy Module
 
   GUI->>Service: prepare_run / prepare_comparison

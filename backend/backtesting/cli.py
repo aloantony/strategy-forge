@@ -78,7 +78,7 @@ def _resolve_strategy_module_ref(strategy_key: str, strategy_module: str) -> str
 
 def _build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
-        prog="python -m backtesting",
+        prog="python -m backend.backtesting",
         description="CLI del backtesting actual",
     )
     subparsers = parser.add_subparsers(dest="command", required=True)

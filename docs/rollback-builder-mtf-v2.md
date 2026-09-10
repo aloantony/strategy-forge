@@ -8,7 +8,7 @@
 
 ## Apagado rápido
 
-1. En `config.py`, mantener o volver a poner:
+1. En `backend/core/config.py`, mantener o volver a poner:
    ```python
    ENABLE_BUILDER_MTF = False
    ```

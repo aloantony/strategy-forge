@@ -1,7 +1,7 @@
 ---
 title: <Title>
 status: draft
-audience: developers, agents
+audience: developers
 last_reviewed: YYYY-MM-DD
 sources:
   - ../../path/to/source.py

@@ -1,13 +1,13 @@
 ---
 title: Persistence Design
 status: draft
-audience: developers, agents
+audience: developers
 last_reviewed: 2026-04-27
 sources:
-  - ../../../src/persistence/schema.py
-  - ../../../src/persistence/dal.py
-  - ../../../src/runtime/execution_engine.py
-  - ../../../src/runtime/state_store.py
+  - ../../../backend/persistence/schema.py
+  - ../../../backend/persistence/dal.py
+  - ../../../backend/runtime/execution_engine.py
+  - ../../../backend/runtime/state_store.py
 ---
 
 # Persistence Design

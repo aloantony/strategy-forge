@@ -1,16 +1,16 @@
 ---
 title: Runtime Architecture
 status: draft
-audience: developers, agents
+audience: developers
 last_reviewed: 2026-04-27
 sources:
-  - ../../../main.py
-  - ../../../strategy_runtime.py
-  - ../../../src/runtime/adapter.py
-  - ../../../src/runtime/context_builder.py
-  - ../../../src/runtime/plan_interpreter.py
-  - ../../../src/runtime/execution_engine.py
-  - ../../../src/runtime/state_store.py
+  - ../../../backend/main.py
+  - ../../../backend/strategy/runtime.py
+  - ../../../backend/runtime/adapter.py
+  - ../../../backend/runtime/context_builder.py
+  - ../../../backend/runtime/plan_interpreter.py
+  - ../../../backend/runtime/execution_engine.py
+  - ../../../backend/runtime/state_store.py
 ---
 
 # Runtime Architecture

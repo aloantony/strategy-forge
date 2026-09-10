@@ -1,13 +1,13 @@
 ---
 title: Trading Agent Developer Docs
 status: draft
-audience: developers, agents
+audience: developers
 last_reviewed: 2026-04-27
 ---
 
 # Trading Agent Developer Docs
 
-Esta carpeta documenta el analisis, la arquitectura y el diseno del sistema para developers y agentes. La documentacion principal vive aqui; los artefactos operativos de agentes siguen viviendo en [agents/](../../agents/).
+Esta carpeta documenta el analisis, la arquitectura y el diseno del sistema. Esta escrita como Markdown portable: se lee igual en GitHub, en Obsidian y como sitio estatico.
 
 ## Como Usar Esta Documentacion
 
@@ -15,7 +15,7 @@ Esta carpeta documenta el analisis, la arquitectura y el diseno del sistema para
 - Para entender por que existe cada parte: lee [analysis/domain-and-goals.md](analysis/domain-and-goals.md) y [analysis/requirements.md](analysis/requirements.md).
 - Para ver arquitectura y diagramas: entra en [architecture/overview.md](architecture/overview.md) y [architecture/c4.md](architecture/c4.md).
 - Para implementar o revisar cambios: usa los documentos de [design/](design/).
-- Para saber que hacen los agentes y como pedir correcciones: usa [agents/agent-map.md](agents/agent-map.md) y [agents/correction-request.md](agents/correction-request.md).
+- Para reportar una discrepancia entre docs y codigo: usa [templates/correction-request.md](templates/correction-request.md).
 - Para publicar esto como HTML mas adelante: revisa [site-publishing.md](site-publishing.md).
 
 ## Indice
@@ -42,15 +42,10 @@ Esta carpeta documenta el analisis, la arquitectura y el diseno del sistema para
 | Diseno | [design/backtesting.md](design/backtesting.md) | Semantica de simulacion y resultados. |
 | Diseno | [design/broker-data-adapters.md](design/broker-data-adapters.md) | Interfaces y adaptadores. |
 | Diseno | [design/persistence.md](design/persistence.md) | Persistencia v1 y recursos canonicos. |
-| Agentes | [agents/agent-map.md](agents/agent-map.md) | Roles, scopes y limites. |
-| Agentes | [agents/task-lifecycle.md](agents/task-lifecycle.md) | Ciclo de vida de tareas. |
-| Agentes | [agents/routing-guide.md](agents/routing-guide.md) | Como decidir a quien pedir cada correccion. |
-| Agentes | [agents/correction-request.md](agents/correction-request.md) | Plantilla operativa para pedir cambios. |
-| Agentes | [agents/review-checklist.md](agents/review-checklist.md) | Checklist de revision humana. |
 | ADR | [adr/0001-documentation-format.md](adr/0001-documentation-format.md) | Decision del formato documental. |
 | ADR | [adr/0002-application-services.md](adr/0002-application-services.md) | Decision de extraer procesos de la GUI. |
 | Templates | [templates/technical-page.md](templates/technical-page.md) | Plantilla para nuevas paginas tecnicas. |
-| Templates | [templates/correction-request.md](templates/correction-request.md) | Plantilla de correccion para agentes. |
+| Templates | [templates/correction-request.md](templates/correction-request.md) | Plantilla para reportar discrepancias. |
 | Templates | [templates/review-checklist.md](templates/review-checklist.md) | Checklist reutilizable. |
 
 ## Convenciones
@@ -65,11 +60,11 @@ Esta carpeta documenta el analisis, la arquitectura y el diseno del sistema para
 
 - [README.md](../../README.md)
 - [CLAUDE.md](../../CLAUDE.md)
-- [config.py](../../config.py)
-- [main.py](../../main.py)
+- [backend/core/config.py](../../backend/core/config.py)
+- [backend/main.py](../../backend/main.py)
+- [backend/strategy/runtime.py](../../backend/strategy/runtime.py)
+- [backend/backtesting/](../../backend/backtesting/)
+- [backend/strategy_builder/](../../backend/strategy_builder/)
+- [server/](../../server/)
+- [frontend/](../../frontend/)
 - [gui_charts.py](../../gui_charts.py)
-- [strategy_runtime.py](../../strategy_runtime.py)
-- [backtesting/](../../backtesting/)
-- [src/](../../src/)
-- [strategy_builder/](../../strategy_builder/)
-- [agents/](../../agents/)

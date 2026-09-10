@@ -36,3 +36,37 @@ _gui_diff.txt
 *.sqlite3
 *.db
 *.log
+
+# ---------------------------------------------------------------------------
+# Temporales de tests y de runtime
+# ---------------------------------------------------------------------------
+.tmp/
+tests/.tmp_pytest/
+*.pyc.*
+
+# ---------------------------------------------------------------------------
+# Tooling de desarrollo local (no forma parte del producto)
+# ---------------------------------------------------------------------------
+.claude/
+/agents/
+feedback/
+
+# ---------------------------------------------------------------------------
+# Configuracion personal de Obsidian dentro del vault de docs
+# ---------------------------------------------------------------------------
+**/.obsidian/
+
+# ---------------------------------------------------------------------------
+# Datos locales de estrategias y backtests
+# ---------------------------------------------------------------------------
+*.params.json
+/data/
+
+# Documentacion del flujo de agentes (deprecado, se conserva solo en local)
+docs/DocsTradingSystemObsidian/agents/
+
+# Documento academico ajeno al proyecto, colado por error
+docs/03-05-2026-V3.pdf
+
+# Test del hook de dispatch (andamiaje deprecado, fuera del repo)
+tests/test_dispatch.py

@@ -1,19 +1,19 @@
 ---
 title: Data And Broker Architecture
 status: draft
-audience: developers, agents
+audience: developers
 last_reviewed: 2026-04-27
 sources:
-  - ../../../data_feed.py
-  - ../../../trading.py
-  - ../../../src/application/backtest_service.py
-  - ../../../src/data/interface.py
-  - ../../../src/data/factory.py
-  - ../../../src/data/mt5_data_feed.py
-  - ../../../src/data/mt5_historical_source.py
-  - ../../../src/data/dukascopy_historical_source.py
-  - ../../../src/broker/interface.py
-  - ../../../src/broker/mt5_adapter.py
+  - ../../../backend/data/data_feed.py
+  - ../../../backend/brokers/mt5/trading.py
+  - ../../../backend/application/backtest_service.py
+  - ../../../backend/data/interface.py
+  - ../../../backend/data/factory.py
+  - ../../../backend/data/mt5_data_feed.py
+  - ../../../backend/data/mt5_historical_source.py
+  - ../../../backend/data/dukascopy_historical_source.py
+  - ../../../backend/broker/interface.py
+  - ../../../backend/broker/mt5_adapter.py
 ---
 
 # Data And Broker Architecture
@@ -70,7 +70,7 @@ classDiagram
 - Supertrend: `supertrend`, `supertrend_dir`, `supertrend_up`, `supertrend_down`.
 - TCI: `tci`, `tci_signal`, `tci_hist`.
 
-`main.py` usa `MT5DataFeed` por defecto. `data_feed.py` conserva helpers legacy para enriquecer datos y es reutilizado por backtesting.
+`backend/main.py` usa `MT5DataFeed` por defecto. `backend/data/data_feed.py` conserva helpers legacy para enriquecer datos y es reutilizado por backtesting.
 
 ## Datos Historicos
 
@@ -95,7 +95,7 @@ La factoria:
 
 ## Broker
 
-`MT5BrokerAdapter` implementa `IBrokerAdapter` usando `trading.py` para:
+`MT5BrokerAdapter` implementa `IBrokerAdapter` usando `backend/brokers/mt5/trading.py` para:
 
 - Normalizar volumen.
 - Ajustar SL/TP a reglas del simbolo.
@@ -107,6 +107,6 @@ El adapter es la frontera entre runtime v1 y MT5. Nuevos brokers deben implement
 
 ## Riesgos
 
-- `trading.py` sigue concentrando logica legacy y debe tratarse como modulo compartido sensible.
+- `backend/brokers/mt5/trading.py` sigue concentrando logica legacy y debe tratarse como modulo compartido sensible.
 - `mt5` puede ser `None` si la dependencia no esta disponible.
 - Las reglas de simbolo dependen del broker: point, tick size, tick value, volume step, stops level y filling mode.

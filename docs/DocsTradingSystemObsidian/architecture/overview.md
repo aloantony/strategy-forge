@@ -1,7 +1,7 @@
 ---
 title: Architecture Overview
 status: draft
-audience: developers, agents
+audience: developers
 last_reviewed: 2026-06-11
 sources:
   - ../../../backend/main.py
@@ -57,7 +57,6 @@ flowchart TB
 | Runtime v1 | Decision estructurada, planes, ejecucion y estado. | `backend/runtime/` |
 | Broker/Data | Adaptadores de broker (`IBrokerAdapter`: mt5/paper via factory) y fuentes de datos. | `backend/brokers/`, `backend/data/` |
 | Persistence | SQLite, migraciones, repositorios y event log. | `backend/persistence/` |
-| Agent Ops | Specs, reviews, tareas y roles. | `agents/` |
 
 Regla dura: `backend/core`, `backend/application`, `backend/runtime` y `server/` no importan MT5
 directamente; MT5 vive en `backend/brokers/mt5/` y `backend/data/mt5_*` como adaptador opcional
@@ -94,5 +93,4 @@ flowchart LR
 - `backend/brokers/mt5/trading.py` sigue siendo una capa legacy importante aunque `MT5BrokerAdapter` lo encapsula parcialmente.
 - `backend/main.py` (loop en vivo) sigue acoplado a MT5; la ruta broker-agnostica es el server + `IBrokerAdapter`.
 - El bloque PARAMS de las estrategias generadas es declarativo (overrides .params.json sin efecto); cambiar parametros = re-guardar con el Builder.
-- Algunas specs historicas en `agents/specs/` reflejan decisiones previas; antes de implementar se debe contrastar con codigo actual.
 - La documentacion vieja y nueva deben convivir hasta que se haga una consolidacion explicita.

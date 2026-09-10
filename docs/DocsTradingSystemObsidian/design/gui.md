@@ -1,21 +1,19 @@
 ---
 title: GUI Design
 status: draft
-audience: developers, agents
+audience: developers
 last_reviewed: 2026-04-27
 sources:
   - ../../../gui_charts.py
-  - ../../../agents/grace.md
-  - ../../../agents/felix.md
-  - ../../../backtesting/runtime.py
-  - ../../../strategy_builder/generator.py
+  - ../../../backend/backtesting/runtime.py
+  - ../../../backend/strategy_builder/generator.py
 ---
 
 # GUI Design
 
 ## Rol
 
-`gui_charts.py` implementa `TradingBotGUI`, la interfaz principal. Debe capturar intencion del usuario y renderizar estado; los procesos reutilizables deben moverse a `src/application/` o a runtimes/backend existentes.
+`gui_charts.py` implementa `TradingBotGUI`, la interfaz principal. Debe capturar intencion del usuario y renderizar estado; los procesos reutilizables deben moverse a `backend/application/` o a runtimes/backend existentes.
 
 ## Estructura Logica
 
@@ -65,7 +63,7 @@ Nuevas features visuales deben leer de registry antes que de `config.ACTIVE_STRA
   causa real anexada (p.ej. "Cierre · SL"). La causa sale de `deal.reason` nativo
   (SL/TP/Stop Out/Reversion-Bot/Manual), no del comentario.
 
-El emparejado entrada↔salida (round-trip) vive en `src/analytics/trade_history.py`
+El emparejado entrada↔salida (round-trip) vive en `backend/analytics/trade_history.py`
 (`build_round_trips`, `resolve_exit_cause`, `points_from_price_delta`) — logica pura, testeada en
 `tests/test_trade_markers.py`. La GUI la consume via wrappers (`_build_round_trips`,
 `_resolve_deal_exit_cause`) y la expone en:
@@ -94,7 +92,7 @@ Contextos relevantes:
 - Bot loop thread: ejecucion automatica.
 - Quote/callback threads: actualizaciones y handlers.
 
-Segun los role files actuales, cualquier cambio no trivial a `gui_charts.py` debe pasar por Grace para spec y Felix para implementacion.
+Cualquier cambio no trivial a `gui_charts.py` debe partir de leer completos los metodos afectados: el JS embebido y el threading se rompen en silencio.
 
 ## Backtest GUI
 
@@ -107,7 +105,7 @@ La GUI:
 
 ## Regla De Servicios
 
-No anadir nueva orquestacion de proceso directamente a `gui_charts.py`. Si el cambio valida, coordina, ejecuta o construye requests reutilizables, debe ir a `src/application/` o a un runtime/backend existente.
+No anadir nueva orquestacion de proceso directamente a `gui_charts.py`. Si el cambio valida, coordina, ejecuta o construye requests reutilizables, debe ir a `backend/application/` o a un runtime/backend existente.
 
 ## Reglas Para Cambios
 
@@ -115,4 +113,3 @@ No anadir nueva orquestacion de proceso directamente a `gui_charts.py`. Si el ca
 - No hacer refactors oportunistas.
 - Nuevos DOM nodes deben ser idempotentes.
 - Nuevas llamadas a config deben usar `getattr(config, "KEY", default)`.
-- Cambios de Strategy Builder o Backtest GUI suelen requerir spec de Grace.

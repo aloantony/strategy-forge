@@ -1,14 +1,14 @@
 ---
 title: Strategy System Design
 status: draft
-audience: developers, agents
+audience: developers
 last_reviewed: 2026-04-27
 sources:
   - ../../../strategies/README.md
-  - ../../../strategy_runtime.py
-  - ../../../main.py
+  - ../../../backend/strategy/runtime.py
+  - ../../../backend/main.py
   - ../../../gui_charts.py
-  - ../../../strategy_builder/generator.py
+  - ../../../backend/strategy_builder/generator.py
 ---
 
 # Strategy System Design
@@ -23,7 +23,7 @@ Permitir estrategias Python independientes, reutilizables en live, GUI y backtes
 flowchart LR
   DF["Prepared DataFrame"] --> Strategy["Strategy module"]
   Strategy --> Payload["Signal payload"]
-  Payload --> Normalize["strategy_runtime.normalize_signal_payload"]
+  Payload --> Normalize["backend.strategy.runtime.normalize_signal_payload"]
   Normalize --> Live["Live runtime"]
   Normalize --> Backtest["Backtest runtime"]
   Normalize --> GUI["GUI state"]
@@ -58,7 +58,7 @@ Opcional:
 
 ## Payload Normalizado
 
-`strategy_runtime.normalize_signal_payload` produce:
+`backend.strategy.runtime.normalize_signal_payload` produce:
 
 - `signal`.
 - `reason`.
@@ -97,5 +97,5 @@ El mismo modulo debe poder ejecutarse en:
 - Live runtime.
 - Backtesting.
 
-Por eso la semantica comun vive en `strategy_runtime.py`.
+Por eso la semantica comun vive en `backend/strategy/runtime.py`.
 

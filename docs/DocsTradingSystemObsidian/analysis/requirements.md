@@ -1,16 +1,16 @@
 ---
 title: Requirements
 status: draft
-audience: developers, agents
+audience: developers
 last_reviewed: 2026-04-27
 sources:
   - ../../../README.md
-  - ../../../config.py
-  - ../../../main.py
+  - ../../../backend/core/config.py
+  - ../../../backend/main.py
   - ../../../gui_charts.py
-  - ../../../src/application/
-  - ../../../strategy_runtime.py
-  - ../../../backtesting/runtime.py
+  - ../../../backend/application/
+  - ../../../backend/strategy/runtime.py
+  - ../../../backend/backtesting/runtime.py
 ---
 
 # Requirements
@@ -39,14 +39,14 @@ sources:
 - **Resiliencia**: errores de estrategia o broker no deben tirar todo el loop.
 - **Portabilidad documental**: los docs deben renderizar en Obsidian, GitHub y futura web HTML.
 - **Minimo acoplamiento**: backtesting debe depender de `IHistoricalDataSource`, no de MT5 directamente cuando se inyecta una fuente.
-- **GUI como entrada visual**: la GUI puede iniciar procesos, pero las reglas reutilizables deben vivir en `src/application/` o runtimes/backend existentes.
+- **GUI como entrada visual**: la GUI puede iniciar procesos, pero las reglas reutilizables deben vivir en `backend/application/` o runtimes/backend existentes.
 
 ## Restricciones Actuales
 
 - `config.SYMBOL` es el simbolo operativo principal en live.
 - La ejecucion real depende de MT5 disponible y conectado.
 - En Windows se usa `MetaTrader5`; fuera de Windows se contempla `mt5linux`.
-- `gui_charts.py` es un archivo grande y sensible; cambios no triviales deben pasar por Grace/Felix.
+- `gui_charts.py` es un archivo grande y sensible; los cambios no triviales requieren leer completos los metodos afectados.
 - `STRATEGY_RUNTIME_MODE = "v1_only"` y `PLAN_EXECUTOR_ENABLED = True` hacen que el camino live principal use runtime v1 cuando la persistencia esta disponible.
 - El backtesting no debe tocar posiciones reales.
 

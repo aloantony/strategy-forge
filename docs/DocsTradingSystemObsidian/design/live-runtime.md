@@ -1,14 +1,14 @@
 ---
 title: Live Runtime Design
 status: draft
-audience: developers, agents
+audience: developers
 last_reviewed: 2026-04-27
 sources:
-  - ../../../main.py
-  - ../../../config.py
-  - ../../../strategy_runtime.py
-  - ../../../src/runtime/
-  - ../../../src/broker/mt5_adapter.py
+  - ../../../backend/main.py
+  - ../../../backend/core/config.py
+  - ../../../backend/strategy/runtime.py
+  - ../../../backend/runtime/
+  - ../../../backend/broker/mt5_adapter.py
 ---
 
 # Live Runtime Design
@@ -67,21 +67,21 @@ En modo `v1_only`:
 
 En modo legacy:
 
-1. Usa payload normalizado de `strategy_runtime.py`.
+1. Usa payload normalizado de `backend/strategy/runtime.py`.
 2. Si hay piramidado valido y senal `buy`, llama `trading.apply_pyramid_signal`.
 3. En caso contrario llama `trading.apply_signal`.
 
 ## Puntos De Extension
 
-- Nuevo proceso reusable: crear servicio en `src/application/` y llamarlo desde GUI/CLI.
+- Nuevo proceso reusable: crear servicio en `backend/application/` y llamarlo desde GUI/CLI.
 - Nueva API de estrategia v1: implementar `STRATEGY_API_VERSION = 1`, `initial_state` opcional y `decide(context, state)`.
 - Nuevo broker: implementar `IBrokerAdapter` y pasar al `ExecutionEngine`.
 - Nueva fuente live: implementar `IDataFeed`.
 
 ## Zonas De Riesgo
 
-- No mezclar llamadas directas a `trading.py` dentro de runtime v1 nuevo.
+- No mezclar llamadas directas a `backend/brokers/mt5/trading.py` dentro de runtime v1 nuevo.
 - No anadir nueva orquestacion live directamente a `gui_charts.py`; extraer a servicio si debe ser reusable.
 - No bloquear el loop con IO pesado dentro de estrategias.
-- No cambiar semantica de `strategy_runtime.py` sin revisar backtesting.
+- No cambiar semantica de `backend/strategy/runtime.py` sin revisar backtesting.
 - No modificar locks sin entender SQLite y envio de ordenes.

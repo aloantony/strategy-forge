@@ -1,13 +1,12 @@
 ---
 title: Domain And Goals
 status: draft
-audience: developers, agents
+audience: developers
 last_reviewed: 2026-04-27
 sources:
   - ../../../README.md
   - ../../../CLAUDE.md
-  - ../../../config.py
-  - ../../../agents/context-core.md
+  - ../../../backend/core/config.py
 ---
 
 # Domain And Goals

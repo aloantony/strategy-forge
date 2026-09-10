@@ -1,7 +1,7 @@
 ---
 title: Review Checklist Template
 status: draft
-audience: developers, agents
+audience: developers
 last_reviewed: 2026-04-27
 ---
 

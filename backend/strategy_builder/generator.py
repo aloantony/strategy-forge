@@ -1,11 +1,10 @@
 """
-strategy_builder/generator.py — Strategy Builder generator module.
+backend/strategy_builder/generator.py — Strategy Builder generator module.
 
 Provides generate_strategy_file() — the entry point that receives a validated
 StrategyConfig dict and writes strategies/strategy_<name>.py + strategy_<name>.json.
 
-All pseudocode source: agents/specs/TASK-014c-strategy-data-model-and-generator.md
-Condition tree model: agents/specs/TASK-014b-condition-tree-model.md
+Indicator catalogue and condition tree model: backend/strategy_builder/indicators.py.
 
 This module is NOT imported by generated strategies (isolation rule).
 

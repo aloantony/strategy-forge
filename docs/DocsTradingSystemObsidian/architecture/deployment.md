@@ -1,13 +1,13 @@
 ---
 title: Deployment Architecture
 status: draft
-audience: developers, agents
+audience: developers
 last_reviewed: 2026-04-27
 sources:
   - ../../../README.md
   - ../../../requirements.txt
-  - ../../../config.py
-  - ../../../src/mt5_import.py
+  - ../../../backend/core/config.py
+  - ../../../backend/mt5_import.py
 ---
 
 # Deployment Architecture
@@ -46,19 +46,19 @@ Desde [requirements.txt](../../../requirements.txt):
 | Comando | Uso |
 | --- | --- |
 | `python gui_charts.py` | Modo principal con GUI. |
-| `python main.py` | Loop live sin GUI, util para debugging. |
-| `python -m backtesting runtime --help` | CLI de backtesting actual. |
+| `python -m backend.main` | Loop live sin GUI, util para debugging. |
+| `python -m backend.backtesting runtime --help` | CLI de backtesting actual. |
 
 ## Mac/Linux
 
-`config.py` contiene `MT5LINUX_HOST` y `MT5LINUX_PORT`. En plataformas no Windows, el sistema depende de un servidor `mt5linux` conectado a una maquina Windows con MT5.
+`backend/core/config.py` contiene `MT5LINUX_HOST` y `MT5LINUX_PORT`. En plataformas no Windows, el sistema depende de un servidor `mt5linux` conectado a una maquina Windows con MT5.
 
 ## Datos Locales
 
 - Estrategias: `strategies/`.
 - Config generada por Strategy Builder: `strategies/*.json`.
 - Base SQLite: `trading_bot.db` por defecto.
-- Documentacion operativa: `docs/` y `agents/`.
+- Documentacion operativa: `docs/`.
 
 ## Consideraciones
 

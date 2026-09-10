@@ -1,13 +1,13 @@
 ---
 title: Persistence Architecture
 status: draft
-audience: developers, agents
+audience: developers
 last_reviewed: 2026-04-27
 sources:
-  - ../../../src/persistence/schema.py
-  - ../../../src/persistence/dal.py
-  - ../../../src/persistence/migrations.py
-  - ../../../src/persistence/__init__.py
+  - ../../../backend/persistence/schema.py
+  - ../../../backend/persistence/dal.py
+  - ../../../backend/persistence/migrations.py
+  - ../../../backend/persistence/__init__.py
 ---
 
 # Persistence Architecture
@@ -67,7 +67,7 @@ erDiagram
 
 ## Repositorios
 
-`src/persistence/dal.py` expone repositorios por tabla y `UnitOfWork`. La capa runtime debe escribir a traves de estos repositorios, no con SQL disperso.
+`backend/persistence/dal.py` expone repositorios por tabla y `UnitOfWork`. La capa runtime debe escribir a traves de estos repositorios, no con SQL disperso.
 
 ## Estados Relevantes
 
@@ -90,5 +90,5 @@ stateDiagram-v2
 - `event_log` no usa foreign keys duras para ser robusto.
 - `strategy_state.revision` debe aumentar al persistir nuevo estado.
 - `plans.plan_json` y report JSON son serializados por DAL.
-- Las escrituras de runtime live estan protegidas por locks en `main.py`.
+- Las escrituras de runtime live estan protegidas por locks en `backend/main.py`.
 

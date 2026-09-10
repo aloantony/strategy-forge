@@ -1,13 +1,13 @@
 ---
 title: Glossary
 status: draft
-audience: developers, agents
+audience: developers
 last_reviewed: 2026-04-27
 sources:
   - ../../../README.md
-  - ../../../strategy_runtime.py
-  - ../../../src/runtime/
-  - ../../../src/persistence/schema.py
+  - ../../../backend/strategy/runtime.py
+  - ../../../backend/runtime/
+  - ../../../backend/persistence/schema.py
 ---
 
 # Glossary
@@ -35,7 +35,6 @@ sources:
 | Broker adapter | Implementacion de `IBrokerAdapter`; actualmente `MT5BrokerAdapter`. |
 | Magic number | Identificador usado por MT5 para agrupar ordenes por estrategia. |
 | Strategy Builder | GUI/generador que produce estrategias `.py` y `.json` desde configuracion. |
-| Agent | Rol operativo en `agents/`, por ejemplo Daniel, Grace, Felix o Alex. |
 | Spec | Documento previo a implementacion que deja decisiones cerradas para un coder. |
 | Correction request | Peticion estructurada de un developer para que un agente corrija algo. |
 

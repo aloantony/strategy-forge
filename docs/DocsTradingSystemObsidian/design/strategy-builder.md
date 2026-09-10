@@ -1,15 +1,14 @@
 ---
 title: Strategy Builder Design
 status: draft
-audience: developers, agents
+audience: developers
 last_reviewed: 2026-04-27
 sources:
-  - ../../../strategy_builder/generator.py
+  - ../../../backend/strategy_builder/generator.py
   - ../../../gui_charts.py
-  - ../../../agents/specs/TASK-014a-indicator-catalogue.md
-  - ../../../agents/specs/TASK-014b-condition-tree-model.md
-  - ../../../agents/specs/TASK-014c-strategy-data-model-and-generator.md
-  - ../../../agents/specs/TASK-015-strategy-builder-gui-spec.md
+  - ../../../backend/strategy_builder/indicators.py
+  - ../../../backend/strategy_builder/mtf_generator.py
+  - ../../../backend/application/builder_service.py
 ---
 
 # Strategy Builder Design
@@ -70,7 +69,7 @@ Antes de escribir, ejecuta `ast.parse` para validar sintaxis.
 ## Reglas
 
 - El generador no debe ser importado por estrategias generadas.
-- Las estrategias generadas deben cumplir el contrato normal de `strategy_runtime.py`.
+- Las estrategias generadas deben cumplir el contrato normal de `backend/strategy/runtime.py`.
 - Edicion de una estrategia Builder debe preservar magic number.
 - Si hay una estrategia manual con el mismo nombre, debe fallar por colision.
 - El nombre de maquina se deriva del `display_name` (`sanitize_name`); la GUI muestra el id como

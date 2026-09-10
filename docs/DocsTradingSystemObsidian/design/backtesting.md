@@ -1,15 +1,15 @@
 ---
 title: Backtesting Design
 status: draft
-audience: developers, agents
+audience: developers
 last_reviewed: 2026-04-27
 sources:
-  - ../../../src/application/backtest_service.py
-  - ../../../backtesting/runtime.py
-  - ../../../backtesting/cli.py
-  - ../../../backtesting/FLUJO_BACKTESTING_ACTUAL.md
-  - ../../../strategy_runtime.py
-  - ../../../src/data/interface.py
+  - ../../../backend/application/backtest_service.py
+  - ../../../backend/backtesting/runtime.py
+  - ../../../backend/backtesting/cli.py
+  - ../../../backend/backtesting/FLUJO_BACKTESTING_ACTUAL.md
+  - ../../../backend/strategy/runtime.py
+  - ../../../backend/data/interface.py
 ---
 
 # Backtesting Design
@@ -42,7 +42,7 @@ Simular estrategias con la semantica mas cercana posible al runtime live sin toc
 4. Ordena por `time`.
 5. Aplica `data_feed.add_source_columns`.
 
-Luego `run_with_df` aplica procesamiento de estrategia con `strategy_runtime.apply_strategy_processing`.
+Luego `run_with_df` aplica procesamiento de estrategia con `backend.strategy.runtime.apply_strategy_processing`.
 
 ## Loop De Simulacion
 
@@ -82,7 +82,7 @@ Estos costes afectan entrada y balance en la simulacion.
 
 ## Acceptance Basica Para Cambios
 
-- Tests de `src/application/backtest_service.py` deben pasar si cambia validacion/request building.
+- Tests de `backend/application/backtest_service.py` deben pasar si cambia validacion/request building.
 - Tests existentes de `tests/test_backtest_runtime.py` deben pasar.
 - Cambios de semantica deben actualizar [../architecture/backtesting.md](../architecture/backtesting.md).
-- Si se modifica payload, revisar `strategy_runtime.py`, GUI y live loop.
+- Si se modifica payload, revisar `backend/strategy/runtime.py`, GUI y live loop.

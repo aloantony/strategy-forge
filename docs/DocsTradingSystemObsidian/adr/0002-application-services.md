@@ -1,11 +1,11 @@
 ---
 title: ADR 0002 Application Services
 status: accepted
-audience: developers, agents
+audience: developers
 last_reviewed: 2026-04-27
 sources:
   - ../../../gui_charts.py
-  - ../../../src/application/backtest_service.py
+  - ../../../backend/application/backtest_service.py
   - ../architecture/application-services.md
 ---
 
@@ -21,7 +21,7 @@ Accepted.
 
 ## Decision
 
-Introducir `src/application/` como capa de servicios reutilizables por GUI, CLI y tests. La GUI captura intencion del usuario y renderiza estado; los servicios validan, construyen requests, resuelven dependencias y llaman a runtimes/adapters.
+Introducir `backend/application/` como capa de servicios reutilizables por GUI, CLI y tests. La GUI captura intencion del usuario y renderiza estado; los servicios validan, construyen requests, resuelven dependencias y llaman a runtimes/adapters.
 
 El primer servicio implementado es `BacktestService`.
 
@@ -32,7 +32,7 @@ Positivas:
 - Backtesting se puede probar sin GUI.
 - La GUI reduce logica de proceso.
 - CLI y GUI pueden converger sobre servicios compartidos.
-- Los agentes tienen un routing mas claro: proceso/backend va a Daniel/Alex; visual va a Grace/Felix.
+- La frontera es explicita: la logica de proceso vive en `backend/application/`, la GUI solo presenta estado y captura intencion.
 
 Negativas:
 
@@ -41,4 +41,4 @@ Negativas:
 
 ## Regla
 
-No anadir nueva orquestacion de proceso a `gui_charts.py` si puede vivir en `src/application/`.
+No anadir nueva orquestacion de proceso a `gui_charts.py` si puede vivir en `backend/application/`.

@@ -35,7 +35,6 @@ Key docs:
 - `docs/DocsTradingSystemObsidian/architecture/overview.md`
 - `docs/DocsTradingSystemObsidian/architecture/application-services.md`
 - `docs/DocsTradingSystemObsidian/design/gui.md`
-- `docs/DocsTradingSystemObsidian/agents/routing-guide.md`
 
 ## Architecture
 
@@ -75,7 +74,7 @@ import MT5 directly — only through `IBrokerAdapter`/`IHistoricalDataSource`. M
 
 ### Service Extraction Rule
 
-Do not add new business process orchestration directly to `gui_charts.py`. Add it to `backend/application/` or an existing runtime/backend module, then call it from the GUI. GUI changes that remain visual still go through Grace/Felix; process/service changes go through Daniel/Alex when non-trivial.
+Do not add new business process orchestration directly to `gui_charts.py`. Add it to `backend/application/` or an existing runtime/backend module, then call it from the GUI. `gui_charts.py` should only present state and capture user intent.
 
 ### Strategy System
 

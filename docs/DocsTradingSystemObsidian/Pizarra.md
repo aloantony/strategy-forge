@@ -18,15 +18,15 @@ main.py\nLive bot loop ^k346KT12
 
 backtesting.runtime\nBacktestEngine ^7NfsbJAH
 
-strategy_runtime.py\nStrategy helpers ^32wiZy4S
+backend/strategy/runtime.py\nStrategy helpers ^32wiZy4S
 
-src/runtime\nAdapter + Interpreter + Engine ^i8vrh08B
+backend/runtime\nAdapter + Interpreter + Engine ^i8vrh08B
 
-src/broker\nIBrokerAdapter + MT5BrokerAdapter ^8T5ekKfd
+backend/broker\nIBrokerAdapter + MT5BrokerAdapter ^8T5ekKfd
 
 MetaTrader 5 ^XFHLRLt1
 
-src/data + data_feed.py\nMarket data ^LzFmWqAo
+backend/data + data_feed.py\nMarket data ^LzFmWqAo
 
 IHistoricalDataSource\nMT5 / Dukascopy / File ^vk1I5t5Z
 

@@ -1,7 +1,17 @@
 #!/usr/bin/env python3
-"""Instalador cross-platform del Trading Bot."""
+"""Instalador cross-platform del Trading Agent."""
 import subprocess
 import sys
+
+
+COMANDOS = """
+Comandos disponibles:
+  GUI de escritorio:   python gui_charts.py
+  Servidor + web UI:   uvicorn server.app:app --host 0.0.0.0 --port 8000
+  Bot headless:        python -m backend.main
+  Backtesting (CLI):   python -m backend.backtesting runtime --help
+  Tests:               python -m pytest tests -q
+"""
 
 
 def main():
@@ -23,32 +33,25 @@ def main():
         sys.exit(r.returncode)
     print("Dependencias instaladas correctamente.")
 
-    plat = sys.platform
-    if plat == "win32":
-        print("\n[Windows] Instalación completa. Comandos disponibles:")
-        print("  GUI:          python gui_charts.py")
-        print("  Headless:     python main.py")
-        print("  Backtesting:  python -m backtesting runtime --data-source mt5 ...")
-        print("                python -m backtesting runtime --data-source dukascopy ...")
+    if sys.platform == "win32":
+        print("\n[Windows] MetaTrader5 disponible: puedes usar TRADING_BROKER=mt5.")
+        print("Abre MT5 y deja la cuenta conectada antes de operar en vivo.")
     else:
-        name = "macOS" if plat == "darwin" else "Linux"
-        print(f"\n[{name}] mt5linux instalado. Para trading en vivo necesitas:")
-        print("  1. En tu Windows con MT5: pip install mt5linux")
-        print("     Iniciar el servidor:   python -c \"from mt5linux import MetaTrader5Server; MetaTrader5Server().start()\"")
-        print("  2. En config.py de este proyecto: configura MT5LINUX_HOST y MT5LINUX_PORT")
-        print("\nComandos disponibles una vez configurado:")
-        print("  GUI:          python gui_charts.py")
-        print("  Headless:     python main.py")
-        print("  Backtesting:  python -m backtesting runtime --data-source dukascopy \\")
-        print("                  --symbol EURUSD --start 2024-01-01 --end 2024-12-31 \\")
-        print("                  --strategy-key nombre_estrategia")
-        if plat == "linux":
-            print("\n[Linux] La GUI requiere libwebkit2gtk-4.0 del sistema:")
+        name = "macOS" if sys.platform == "darwin" else "Linux"
+        print(f"\n[{name}] MetaTrader5 no está disponible en esta plataforma.")
+        print("El sistema funciona igualmente con el broker de papel:")
+        print("  export TRADING_BROKER=paper")
+        print("Los datos históricos para backtesting vienen de Dukascopy, que no")
+        print("requiere MT5.")
+        if sys.platform == "linux":
+            print("\n[Linux] La GUI de escritorio requiere libwebkit2gtk del sistema:")
             print("  Ubuntu/Debian:  sudo apt install libwebkit2gtk-4.0-dev")
             print("  Fedora:         sudo dnf install webkitgtk4")
             print("  Arch:           sudo pacman -S webkit2gtk")
+            print("Si solo vas a usar el servidor y la web UI, no hace falta.")
 
-    print("\nInstalación completada.")
+    print(COMANDOS)
+    print("Instalación completada.")
 
 
 if __name__ == "__main__":

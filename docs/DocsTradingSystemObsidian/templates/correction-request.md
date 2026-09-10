@@ -1,7 +1,7 @@
 ---
 title: Correction Request Template
 status: draft
-audience: developers, agents
+audience: developers
 last_reviewed: 2026-04-27
 ---
 
@@ -29,7 +29,7 @@ Que deberia ocurrir.
 
 ## Agente recomendado
 
-Daniel / Grace / Felix / Alex / Jarvis / Docs.
+Area afectada: backend / server / frontend / docs.
 
 ## Scope permitido
 

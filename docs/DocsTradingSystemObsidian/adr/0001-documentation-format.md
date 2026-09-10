@@ -1,7 +1,7 @@
 ---
 title: ADR 0001 Documentation Format
 status: accepted
-audience: developers, agents
+audience: developers
 last_reviewed: 2026-04-27
 sources:
   - ../README.md
