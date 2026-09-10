@@ -70,3 +70,6 @@ docs/03-05-2026-V3.pdf
 
 # Test del hook de dispatch (andamiaje deprecado, fuera del repo)
 tests/test_dispatch.py
+
+# Guia interna para Claude Code (no se publica)
+CLAUDE.md

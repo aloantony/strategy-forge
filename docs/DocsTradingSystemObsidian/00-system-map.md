@@ -5,7 +5,6 @@ audience: developers
 last_reviewed: 2026-04-27
 sources:
   - ../../README.md
-  - ../../CLAUDE.md
   - ../../backend/core/config.py
   - ../../backend/main.py
   - ../../gui_charts.py

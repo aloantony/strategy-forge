@@ -59,7 +59,6 @@ Esta carpeta documenta el analisis, la arquitectura y el diseno del sistema. Est
 ## Fuentes Principales Del Repo
 
 - [README.md](../../README.md)
-- [CLAUDE.md](../../CLAUDE.md)
 - [backend/core/config.py](../../backend/core/config.py)
 - [backend/main.py](../../backend/main.py)
 - [backend/strategy/runtime.py](../../backend/strategy/runtime.py)

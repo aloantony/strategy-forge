@@ -40,5 +40,4 @@ Archivos eliminados por quedar huérfanos: `runtime.html`, `datos-brokers.html`.
 ## Trazabilidad
 
 Cada página termina con un pie **"Fuente (código)"** que enumera los `.py` de los que sale su
-contenido. No se usó ningún material de `docs/DocsTradingSystemObsidian/`, `.claude/`, `agents/` ni
-`CLAUDE.md`.
+contenido. No se partió de documentación previa: solo del código.
