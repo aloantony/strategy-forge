@@ -4,27 +4,27 @@
 
 En la versión actual hay un único motor operativo de backtesting dentro del paquete `backtesting`:
 
-- `backtesting.runtime`: es el motor **actual** que usa la GUI y el que está alineado con el runtime real del bot.
+- `backend.backtesting.runtime`: es el motor **actual** que usa la GUI y el que está alineado con el runtime real del bot.
 
 ## Mapa de archivos
 
 - [backtesting/runtime.py](./runtime.py)
 - [backtesting/cli.py](./cli.py)
 - [backtesting/__main__.py](./__main__.py)
-- [backend/application/backtest_service.py](../backend/application/backtest_service.py)
-- [strategy_runtime.py](../strategy_runtime.py)
-- [gui_charts.py](../gui_charts.py)
-- [backend/data/factory.py](../backend/data/factory.py)
-- [tests/test_backtest_runtime.py](../tests/test_backtest_runtime.py)
-- [tests/test_backtesting_cli.py](../tests/test_backtesting_cli.py)
-- [tests/test_backtest_service.py](../tests/test_backtest_service.py)
+- [backend/application/backtest_service.py](../application/backtest_service.py)
+- [strategy_runtime.py](../strategy/runtime.py)
+- [gui_charts.py](../../gui_charts.py)
+- [backend/data/factory.py](../data/factory.py)
+- [tests/test_backtest_runtime.py](../../tests/test_backtest_runtime.py)
+- [tests/test_backtesting_cli.py](../../tests/test_backtesting_cli.py)
+- [tests/test_backtest_service.py](../../tests/test_backtest_service.py)
 
 Si solo quieres entender **qué usa hoy la interfaz gráfica**, céntrate en este recorrido:
 
 1. La pestaña `Backtest` de la GUI recoge estrategia, símbolo, rango de fechas, balance inicial y fuente de datos.
 2. La GUI delega validación, construcción del `request` y resolución de datasource en `backend.application.BacktestService`.
-3. `BacktestService` llama a `backtesting.run_backtest(...)` o `backtesting.run_backtest_comparison(...)`.
-4. `backtesting.runtime` carga histórico desde el datasource elegido, aplica el pipeline de datos y evalúa la estrategia vela a vela.
+3. `BacktestService` llama a `backend.backtesting.run_backtest(...)` o `backend.backtesting.run_backtest_comparison(...)`.
+4. `backend.backtesting.runtime` carga histórico desde el datasource elegido, aplica el pipeline de datos y evalúa la estrategia vela a vela.
 5. El motor simula entradas, salidas, reversals, piramidación y cierre forzado al final del rango.
 6. Devuelve un `result` con `final_balance`, `total_profit`, `% return`, `closed_trades`, `win_rate`, `max_drawdown` y detalle de `trades`.
 
@@ -224,7 +224,7 @@ Reglas:
 - puede piramidar
 - si `dynamic_sizing` está activo y `volume_ratio > 0`, calcula lote dinámico
 - si ya hay una posición larga abierta, solo añade una nueva si el precio avanzó `0.5 * ATR` desde la última entrada
-- antes de abrir, verifica el riesgo agregado con `trading.check_aggregate_risk(...)`
+- antes de abrir, verifica el riesgo agregado con `backend.brokers.mt5.trading.check_aggregate_risk(...)`
 - el `SL` queda en `entry - ATR`
 - el `TP` queda en `entry + 2 * ATR`
 
@@ -351,7 +351,7 @@ Usa el motor actual:
 - crea el `request`
 - inicializa MT5
 - valida símbolo
-- ejecuta `backtesting.runtime.run_backtest(...)`
+- ejecuta `backend.backtesting.runtime.run_backtest(...)`
 - imprime el resultado como JSON
 
 Referencia:

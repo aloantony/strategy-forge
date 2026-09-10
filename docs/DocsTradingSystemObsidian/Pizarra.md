@@ -16,7 +16,7 @@ gui_charts.py\nTradingBotGUI ^tSTcf5pm
 
 main.py\nLive bot loop ^k346KT12
 
-backtesting.runtime\nBacktestEngine ^7NfsbJAH
+backend.backtesting.runtime\nBacktestEngine ^7NfsbJAH
 
 backend/strategy/runtime.py\nStrategy helpers ^32wiZy4S
 

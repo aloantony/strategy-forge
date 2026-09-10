@@ -19,7 +19,7 @@ sources:
 
 `config.STRATEGY_RUNTIME_MODE` controla el camino principal:
 
-- `legacy`: analiza senales y ejecuta con `trading.apply_signal`.
+- `legacy`: analiza senales y ejecuta con `backend.brokers.mt5.trading.apply_signal`.
 - `dual`: modo de transicion historico.
 - `v1_only`: todos los modulos pasan por runtime v1 si `PLAN_EXECUTOR_ENABLED` y persistencia estan activos.
 
@@ -30,7 +30,7 @@ En la configuracion actual, `STRATEGY_RUNTIME_MODE = "v1_only"`, `PLAN_EXECUTOR_
 ```mermaid
 sequenceDiagram
   autonumber
-  participant Loop as main.run_bot_loop
+  participant BotLoop as backend.main.run_bot_loop
   participant DF as DataFeed
   participant Strategy as Strategy Module
   participant Context as StrategyContextBuilder
@@ -40,19 +40,19 @@ sequenceDiagram
   participant Broker as MT5BrokerAdapter
   participant DB as SQLite
 
-  Loop->>DF: get enriched market DataFrame
-  Loop->>Strategy: analyze strategy payload for scheduling metrics
-  Loop->>Context: build context
+  BotLoop->>DF: get enriched market DataFrame
+  BotLoop->>Strategy: analyze strategy payload for scheduling metrics
+  BotLoop->>Context: build context
   Context->>DB: load owned resources and state context
-  Loop->>Adapter: decide(context, state)
-  Adapter-->>Loop: plan + next_state
-  Loop->>DB: insert plan_received
-  Loop->>Interp: validate_and_normalize(plan, context)
-  Interp-->>Loop: normalized_actions
-  Loop->>Engine: execute_plan(plan, normalized_actions)
+  BotLoop->>Adapter: decide(context, state)
+  Adapter-->>BotLoop: plan + next_state
+  BotLoop->>DB: insert plan_received
+  BotLoop->>Interp: validate_and_normalize(plan, context)
+  Interp-->>BotLoop: normalized_actions
+  BotLoop->>Engine: execute_plan(plan, normalized_actions)
   Engine->>Broker: send_order / close_position / modify
   Engine->>DB: reports, legs, fills, event_log
-  Loop->>DB: persist next_state
+  BotLoop->>DB: persist next_state
 ```
 
 ## Legacy Strategy Adapter

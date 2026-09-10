@@ -25,7 +25,7 @@ La persistencia v1 da trazabilidad al runtime:
 
 ## Bootstrap
 
-`bootstrap_persistence(db_path)` abre SQLite, aplica pragmas y migraciones pendientes. En live lo llama `main.main()` si `PERSISTENCE_ENABLED = True`.
+`bootstrap_persistence(db_path)` abre SQLite, aplica pragmas y migraciones pendientes. En live lo llama `backend.main.main()` si `PERSISTENCE_ENABLED = True`.
 
 ## ER Diagram
 

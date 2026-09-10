@@ -14,7 +14,7 @@ sources:
 
 # Backtesting Architecture
 
-El motor activo es `backtesting.runtime`. La GUI lo usa a traves de `BacktestService`; la CLI actual puede llamarlo directamente.
+El motor activo es `backend.backtesting.runtime`. La GUI lo usa a traves de `BacktestService`; la CLI actual puede llamarlo directamente.
 
 ## Flujo
 

@@ -19,7 +19,7 @@ sources:
 | Signal | Valor normalizado: `buy`, `sell` o `none`. |
 | Signal payload | Dict con `signal`, `reason` y campos opcionales como `pyramiding`, `atr_value`, `dynamic_sizing`. |
 | Closed candle | Ultima vela cerrada; las estrategias deben evitar decidir sobre una vela incompleta. |
-| Runtime legacy | Camino que convierte senales directamente en llamadas a `trading.apply_signal`. |
+| Runtime legacy | Camino que convierte senales directamente en llamadas a `backend.brokers.mt5.trading.apply_signal`. |
 | Runtime v1 | Camino basado en `context`, `state`, `plan`, normalizacion y `ExecutionEngine`. |
 | Plan | Decision estructurada de una estrategia v1 con `actions`. |
 | Action | Operacion pedida por un plan: abrir, cerrar, reducir, mover SL/TP, etc. |

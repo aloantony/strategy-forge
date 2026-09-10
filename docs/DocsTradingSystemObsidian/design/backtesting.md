@@ -40,7 +40,7 @@ Simular estrategias con la semantica mas cercana posible al runtime live sin toc
 2. Calcula `warmup_start`.
 3. Llama `data_source.get_rates_df`.
 4. Ordena por `time`.
-5. Aplica `data_feed.add_source_columns`.
+5. Aplica `backend.data.data_feed.add_source_columns`.
 
 Luego `run_with_df` aplica procesamiento de estrategia con `backend.strategy.runtime.apply_strategy_processing`.
 

@@ -25,7 +25,7 @@ Registrar decisiones y ejecuciones de forma auditable sin acoplar el runtime a S
 ```mermaid
 sequenceDiagram
   autonumber
-  participant Main as main._run_v1_strategy_cycle
+  participant Main as backend.main._run_v1_strategy_cycle
   participant UOW as UnitOfWork
   participant Engine as ExecutionEngine
   participant DB as SQLite

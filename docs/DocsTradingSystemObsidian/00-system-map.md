@@ -27,7 +27,7 @@ flowchart LR
   Trader["Trader / Developer"] --> GUI["gui_charts.py\nTradingBotGUI"]
   GUI --> Services["backend/application\nApplication services"]
   Services --> Live["main.py\nLive bot loop"]
-  Services --> BT["backtesting.runtime\nBacktestEngine"]
+  Services --> BT["backend.backtesting.runtime\nBacktestEngine"]
   Live --> SR["backend/strategy/runtime.py\nStrategy helpers"]
   BT --> SR
   Live --> RuntimeV1["backend/runtime\nAdapter + Interpreter + Engine"]
@@ -71,12 +71,12 @@ flowchart TD
   GUI --> GUIBot["Bot loop GUI"]
   GUIBT --> BT["backend.backtesting.run_backtest"]
   GUIBot --> LiveLike["TradingBotGUI.bot_loop"]
-  Console --> MainLoop["main.run_bot_loop"]
+  Console --> MainLoop["backend.main.run_bot_loop"]
   CLI --> BT
   LiveLike --> Broker["MT5BrokerAdapter / trading.py"]
   MainLoop --> Runtime{"STRATEGY_RUNTIME_MODE"}
   Runtime -->|v1_only| V1["backend/runtime pipeline"]
-  Runtime -->|legacy| Legacy["trading.apply_signal"]
+  Runtime -->|legacy| Legacy["backend.brokers.mt5.trading.apply_signal"]
   V1 --> Broker
   Legacy --> Broker
 ```

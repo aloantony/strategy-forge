@@ -19,7 +19,7 @@ Ejecutar estrategias activas sobre datos live, respetando timeframes, limites de
 
 ## Carga De Estrategias
 
-`main.load_active_strategies()`:
+`backend.strategy.loader.load_active_strategies()`:
 
 - Descubre modulos en `strategies/`.
 - Resuelve `STRATEGY_KEY`, `STRATEGY_MODULE` y `ACTIVE_STRATEGIES`.
@@ -31,14 +31,14 @@ Ejecutar estrategias activas sobre datos live, respetando timeframes, limites de
 
 ```mermaid
 flowchart TD
-  Start["run_bot_loop"] --> Market["trading.is_market_open"]
+  Start["run_bot_loop"] --> Market["backend.brokers.mt5.trading.is_market_open"]
   Market --> Frames["Build market_cache by timeframe"]
   Frames --> Schedule["Fair scheduling by last_analyzed_ts"]
   Schedule --> Analyze["Analyze strategies with ThreadPoolExecutor"]
   Analyze --> Iteration["Create iteration_id"]
   Iteration --> Mode{"Runtime mode"}
   Mode -->|v1_only| V1["_run_v1_strategy_cycle"]
-  Mode -->|legacy| Legacy["trading.apply_signal / apply_pyramid_signal"]
+  Mode -->|legacy| Legacy["backend.brokers.mt5.trading.apply_signal / apply_pyramid_signal"]
   V1 --> Sleep["sleep by min timeframe"]
   Legacy --> Sleep
   Sleep --> Market
@@ -68,8 +68,8 @@ En modo `v1_only`:
 En modo legacy:
 
 1. Usa payload normalizado de `backend/strategy/runtime.py`.
-2. Si hay piramidado valido y senal `buy`, llama `trading.apply_pyramid_signal`.
-3. En caso contrario llama `trading.apply_signal`.
+2. Si hay piramidado valido y senal `buy`, llama `backend.brokers.mt5.trading.apply_pyramid_signal`.
+3. En caso contrario llama `backend.brokers.mt5.trading.apply_signal`.
 
 ## Puntos De Extension
 
