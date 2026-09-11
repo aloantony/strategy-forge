@@ -1,3 +1,10 @@
+# Trading Agent — https://github.com/aloantony/trading-agent
+# Required Notice: Copyright 2026 aloantony (https://github.com/aloantony)
+# Licensed under the PolyForm Noncommercial License 1.0.0 — see LICENSE, or
+# <https://polyformproject.org/licenses/noncommercial/1.0.0>. Noncommercial use
+# is free; commercial use, including production use, requires a written
+# agreement with the copyright holder.
+
 """
 tests/test_trade_markers.py — Tests de la capa pura de analítica de operaciones
 (src/analytics/trade_history.py): emparejado round-trip, causa de cierre y puntos.
