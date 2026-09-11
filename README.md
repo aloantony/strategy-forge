@@ -1,5 +1,9 @@
 # Strategy Forge
 
+[![Licencia: PolyForm Noncommercial 1.0.0](https://img.shields.io/badge/licencia-PolyForm%20Noncommercial%201.0.0-blue)](NOTICE.md)
+[![Uso comercial: requiere acuerdo](https://img.shields.io/badge/uso%20comercial-requiere%20acuerdo-orange)](NOTICE.md)
+[![Python 3.9+](https://img.shields.io/badge/python-3.9%2B-3776AB)](https://www.python.org/)
+
 Bot de trading multiestrategia con arquitectura broker-agnóstica, constructor visual de
 estrategias, backtesting y tres frontends (GUI de escritorio, web y API REST).
 
