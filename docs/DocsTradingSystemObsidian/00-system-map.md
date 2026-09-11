@@ -17,7 +17,7 @@ sources:
 
 # System Map
 
-Trading Agent es un bot modular para MetaTrader 5 con GUI estilo TradingView, estrategias enchufables, backtesting y un runtime v1 con planes, persistencia y recursos canonicos.
+Strategy Forge es un bot modular para MetaTrader 5 con GUI estilo TradingView, estrategias enchufables, backtesting y un runtime v1 con planes, persistencia y recursos canonicos.
 
 ## Vista General
 

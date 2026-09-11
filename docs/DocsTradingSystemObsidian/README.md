@@ -1,11 +1,11 @@
 ---
-title: Trading Agent Developer Docs
+title: Strategy Forge Developer Docs
 status: draft
 audience: developers
 last_reviewed: 2026-04-27
 ---
 
-# Trading Agent Developer Docs
+# Strategy Forge Developer Docs
 
 Esta carpeta documenta el analisis, la arquitectura y el diseno del sistema. Esta escrita como Markdown portable: se lee igual en GitHub, en Obsidian y como sitio estatico.
 

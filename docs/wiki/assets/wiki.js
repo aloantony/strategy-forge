@@ -1,4 +1,4 @@
-/* Trading Agent · Wiki — interacciones mínimas, sin dependencias externas. */
+/* Strategy Forge · Wiki — interacciones mínimas, sin dependencias externas. */
 (function () {
   "use strict";
   var root = document.documentElement;

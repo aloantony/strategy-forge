@@ -17,7 +17,7 @@ sources:
 ```mermaid
 flowchart TB
   subgraph Windows["Windows workstation"]
-    Python["Python process\nTrading Agent"]
+    Python["Python process\nStrategy Forge"]
     MT5["MetaTrader 5 terminal\nlogged in"]
     DB["SQLite file\ntrading_bot.db"]
     Files["Repo files\nstrategies, docs, agents"]

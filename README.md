@@ -1,4 +1,4 @@
-# Trading Agent
+# Strategy Forge
 
 Bot de trading multiestrategia con arquitectura broker-agnóstica, constructor visual de
 estrategias, backtesting y tres frontends (GUI de escritorio, web y API REST).
@@ -82,7 +82,7 @@ El código de MT5 vive aislado en `backend/brokers/mt5/` y `backend/data/mt5_*`.
 Requiere **Python 3.9+**.
 
 ```bash
-git clone https://github.com/aloantony/trading-agent.git
+git clone https://github.com/aloantony/strategy-forge.git
 ```
 
 ```bash
@@ -227,8 +227,8 @@ educativas y públicas.
 
 **Cualquier uso comercial requiere un acuerdo por escrito** con el autor. Eso incluye
 ejecutarlo en producción, operar con dinero real en un contexto comercial, o integrarlo en un
-producto o servicio. Si quieres usarlo así, [abre un issue](https://github.com/aloantony/trading-agent/issues)
+producto o servicio. Si quieres usarlo así, [abre un issue](https://github.com/aloantony/strategy-forge/issues)
 y lo hablamos.
 
 Si redistribuyes el software o parte de él, debes incluir estos términos y la línea
-`Required Notice` que encabeza el fichero [LICENSE](LICENSE).
+`Required Notice` de [NOTICE.md](NOTICE.md). Cada fichero fuente la lleva ya en su cabecera.

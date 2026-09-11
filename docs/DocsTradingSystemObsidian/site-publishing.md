@@ -43,7 +43,7 @@ flowchart LR
 ## Futuro `mkdocs.yml` Sugerido
 
 ```yaml
-site_name: Trading Agent Docs
+site_name: Strategy Forge Docs
 docs_dir: docs/DocsTradingSystemObsidian
 theme:
   name: material

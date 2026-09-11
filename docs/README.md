@@ -1,4 +1,4 @@
-# Trading Agent Docs
+# Strategy Forge Docs
 
 The canonical developer documentation vault is:
 
