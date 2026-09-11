@@ -8,6 +8,11 @@ estrategias, backtesting y tres frontends (GUI de escritorio, web y API REST).
 > tu propia responsabilidad. Nada de este repositorio constituye asesoramiento financiero.
 > Prueba siempre primero en cuenta demo o con el broker de papel.
 
+> [!IMPORTANT]
+> **Licencia no comercial.** Uso libre para estudio, investigación y proyectos personales.
+> El uso comercial —incluido ejecutarlo en producción— requiere acuerdo previo con el autor.
+> Ver [Licencia](#licencia).
+
 ---
 
 ## Qué es
@@ -214,4 +219,16 @@ MT5 se mantiene como adaptador opcional, pero la dirección del proyecto es pode
 
 ## Licencia
 
-[GPL-3.0](LICENSE). Los trabajos derivados deben publicarse también bajo GPL-3.0.
+[PolyForm Noncommercial 1.0.0](LICENSE).
+
+**El uso no comercial es libre**: estudiarlo, modificarlo, redistribuirlo, usarlo para
+investigación, aprendizaje, proyectos personales o por organizaciones sin ánimo de lucro,
+educativas y públicas.
+
+**Cualquier uso comercial requiere un acuerdo por escrito** con el autor. Eso incluye
+ejecutarlo en producción, operar con dinero real en un contexto comercial, o integrarlo en un
+producto o servicio. Si quieres usarlo así, [abre un issue](https://github.com/aloantony/trading-agent/issues)
+y lo hablamos.
+
+Si redistribuyes el software o parte de él, debes incluir estos términos y la línea
+`Required Notice` que encabeza el fichero [LICENSE](LICENSE).
